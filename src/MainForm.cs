@@ -27,6 +27,7 @@ namespace Spor
         public MainForm()
         {
             Text = "Spor " + Scanner.Version;
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }   // the exe's own icon (resources\Spor.ico)
             Font = SystemFonts.MessageBoxFont;
             AutoScaleMode = AutoScaleMode.Font;
             FormBorderStyle = FormBorderStyle.FixedSingle;

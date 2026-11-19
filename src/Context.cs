@@ -61,6 +61,8 @@ namespace Spor
         public readonly Options Opt;
         public Log Out = new Log();   // the running module's detail section
         public readonly DateTime Since;
+        /// <summary>The PC's UTC offset when the scan started. FRST shows file times with it, so FILES does too.</summary>
+        public readonly TimeSpan LocalOffset;
         public readonly string SystemDrive = (Environment.GetEnvironmentVariable("SystemDrive") ?? "C:").TrimEnd('\\');
         public readonly string WinDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         public readonly List<string> Err = new List<string>();   // errors of the running module
@@ -89,6 +91,7 @@ namespace Spor
         {
             Opt = opt;
             Since = DateTime.UtcNow.AddDays(-opt.Days);
+            LocalOffset = TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow);
             try
             {
                 using (var pl = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"))
@@ -132,6 +135,11 @@ namespace Spor
 
         public void Find(string text) => Findings.Add((null, Module, text));
         public void Find(DateTime? t, string text) => Findings.Add((t, Module, text));
+        /// <summary>
+        /// A finding whose time is not when something happened: when = what the time is ("file modified", "key changed", ...).
+        /// Not written to the line (the summary's tag and text stay as parsers know them); the summary's comment and the LEGEND explain the times.
+        /// </summary>
+        public void Find(DateTime? t, string text, string when, string from = null) => Findings.Add((t, Module, text));
 
         /// <summary>A private temp folder, deleted at the end.</summary>
         public string Temp
@@ -180,7 +188,7 @@ namespace Spor
         /// <summary>Removes \\?\ and \??\ prefixes and expands 8.3 short names.</summary>
         public string Long(string p)
         {
-            p = Regex.Replace((p ?? "").Trim(), @"^\\\\\?\\|^\\\?\?\\", "");
+            p = Util.StripDevicePrefix(p);
             if (p.IndexOf('~') < 0) return p;
             foreach (var s in shortNames)
                 if (p.StartsWith(s.Key + "\\", StringComparison.OrdinalIgnoreCase)) return s.Value + p.Substring(s.Key.Length);

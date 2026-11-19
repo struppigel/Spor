@@ -75,7 +75,7 @@ Persistence lines start with the kind of entry and use `=>` for the program that
 ## 3. Reading order
 
 1. **SUMMARY**: everything Spor flagged.
-2. **TIMELINE**: This allows you to reconstruct what happened, starting with newest first. Find the first suspicious event, then read what happened before and after.
+2. **TIMELINE**: This allows you to reconstruct what happened, starting with oldest first. Find the first suspicious event, then read what happened before and after.
 3. **The sections**: Contains more details about the entries in the timeline (loaded files, persistence entries, accounts, network use). Look at these to enrich your findings from the summary and timeline.
 4. **FILES**: hash, signature and version of every file in the log, one line each. Use it to look up files, e.g. on VirusTotal.
 5. **LEGEND**: what every source tag, status word and flag means.
@@ -94,8 +94,8 @@ Not every source means that a file ran. A file that Windows only *recorded* is n
 | `BAM` | Background Activity Moderator | **ran**, last time per user |
 | `SRU` | SRUM | **was active and used the network** (first activity in the time window, data sent) |
 | `MPL` | Defender log | Defender **looked the file up in the cloud**, usually because it ran or was written |
-| `AM` | Amcache | Windows **recorded** the file. It was there, but did not necessarily run. |
-| `SC` | ShimCache | file **modified**, often that means dropped. No proof of execution on Windows 10 and 11. |
+| `AM` | Amcache | Windows **recorded** the file. It was there, but did not necessarily run. The time is when Windows wrote the entry. |
+| `SC` | ShimCache | the file **existed**. The time is the file's modification time, not when it ran or arrived: a copied file keeps its old time. No proof of execution on Windows 10 and 11. |
 | `NEW` | file system | file **created**, with the download URL from Zone.Identifier if there is one |
 | `STP` | change journal, NTFS times | **timestamps were set**, maybe faked |
 | `DL` | browser history | **downloaded**, with the URL and the page it came from |
@@ -173,7 +173,8 @@ Ask for a run with the whitelist off (uncheck *Whitelist*, or `-nowhitelist`) if
 ## 8. Section by section
 
 ### SUMMARY
-Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Persistence]`, `[Defender]`, …). Every line is a starting point, not a verdict.
+Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Persistence]`, `[Defender]`, …), oldest first. Every line is a starting point, not a verdict.
+The time is when something happened, except for these: ShimCache lines show the file's modification time, Amcache lines when Windows wrote the entry, Run keys and services when the key was last changed, tasks and Startup items when the file was created, and log or config files when they were last written. Such a time can be much older or newer than the infection: a dropped copy of MSBuild.exe keeps the modification time of the original.
 
 ### TIMELINE
 Look for **clusters**: a download (`DL`), the file starts (`PF PCA BAM`), new files (`NEW`) in AppData, ProgramData or Temp, a task or Run key (`TSK`, `AUT`), network use (`SRU`). Typical chains are:
@@ -253,6 +254,7 @@ Expect these and don't report them as malware without more evidence:
 - Unsigned programs from Git (`Program Files\Git\usr\bin`), PostgreSQL, 7-Zip, HandBrake, MakeMKV, games (Steam, itch.io), Python `Scripts\*.exe` launchers and developer tools
 - Old versions of updated programs shown as `gone`, e.g. Discord `app-1.0.xxxx`, VS Code extensions, Edge WebView
 - Installers in Downloads and on the Desktop
+- `Spor.exe` itself with `PCA: Installer failed`: Windows' compatibility assistant treats programs that ask for admin rights like installers
 - `Defender detection history deleted` now and then
 - Disk images mounted by virtual machines (WSL, Docker, Hyper-V)
 - Defender detections of files that the user analyses on purpose, e.g. if they are malware researchers or use security tools

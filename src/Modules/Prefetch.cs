@@ -30,6 +30,14 @@ namespace Spor.Modules
         static readonly Regex Vol = new Regex(@"^\\VOLUME\{[0-9a-f]+-([0-9a-f]{8})\}(.*)$", O);
         static readonly Regex VolPrefix = new Regex(@"^\\VOLUME\{[^}]+\}", O);
         const string NoiseList = @"^\\(\$WINREAGENT|\$WINDOWS\.~BT|\$WINDOWS\.~WS)\\|^\\PROGRAMDATA\\(MICROSOFT\\(WINDOWS DEFENDER|WINDOWS\\WER|CLICKTORUN|EDGEUPDATE)|NVIDIA CORPORATION|A-VOLUTE|LENOVO)\\|\\START MENU\\|\\\.M2\\|\\\.VSCODE\\EXTENSIONS\\|\\NODE_MODULES\\|\\SITE-PACKAGES\\|\\APPDATA\\LOCAL\\(PACKAGES|DISCORD|PROGRAMS\\MICROSOFT VS CODE)\\|\\APPDATA\\LOCAL\\MICROSOFT\\EDGE\\USER DATA\\(?!DEFAULT\\EXTENSIONS)|\\APPDATA\\LOCAL\\TEMP\\(MSEDGE_|HSPERFDATA|__PSSCRIPTPOLICYTEST)|\\__PYCACHE__\\|\\PYTHON\d+\\(LIB|DLLS)\\|\\QMLCACHE\\|\\MICROSOFT\\WINDOWS\\RECENT\\";
+        // harmless loaded files (whitelist), each with a condition that keeps the attack it could hide visible
+        static readonly Regex PsHost = new Regex(@"\\(POWERSHELL|PWSH)\.EXE$", O);
+        static readonly Regex PsPolicyTest = new Regex(@"^\\USERS\\[^\\]+\\APPDATA\\LOCAL\\TEMP\\__PSSCRIPTPOLICYTEST_[A-Z0-9]{8}\.[A-Z0-9]{3}\.PS1$", O);
+        static readonly Regex DefEngine = new Regex(@"^\\PROGRAMDATA\\MICROSOFT\\WINDOWS DEFENDER\\DEFINITION UPDATES\\\{[0-9A-F-]{36}\}\\MPENGINE\.DLL$", O);
+        static readonly Regex DefLoader = new Regex(@"\\(MPSIGSTUB|MSMPENG|MPCMDRUN)\.EXE$", O);
+        static readonly Regex MsFolder = new Regex(@"^\\PROGRAMDATA\\MICROSOFT\\(WINDOWS\\APPREPOSITORY\\PACKAGES|VISUALSTUDIO\\SETUP)\\", O);
+        static readonly HashSet<string> MsSigners = new HashSet<string>(new[] { "Microsoft Windows", "Microsoft Corporation", "Microsoft Windows Publisher", "Microsoft Windows Software Compatibility Publisher" }, StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, int> harmless = new Dictionary<string, int>();
         const int Many = 5;
         static readonly string Self = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;   // files used by this many programs are listed once
 
@@ -89,7 +97,7 @@ namespace Spor.Modules
                 "Only executables, scripts and archives outside trusted locations. time = program's last run.\n" +
                 "loaded: file [status] <==== flags");
             var lt = new Table("@time", "!status", "<flags", "*program");
-            foreach (var x in recent.OrderByDescending(r => r.Last))
+            foreach (var x in recent.OrderBy(r => r.Last))
             {
                 var f = x.Files.Where(s => cnt[s] < Many).ToList();
                 if (f.Count == 0) continue;
@@ -103,12 +111,15 @@ namespace Spor.Modules
                     {
                         var r = Real(s);
                         lt.More("loaded", c.FF(r, !NoHash.IsMatch(s), Rules.Strong(Rules.Flags(r))));
-                        c.Find(x.Last, c.File(r) + Rules.FlagText(Rules.Strong(Rules.Flags(r))) + "  (loaded by " + pf2.Path + ")");
+                        c.Find(x.Last, c.File(r) + Rules.FlagText(Rules.Strong(Rules.Flags(r))) + "  (loaded by " + pf2.Path + ")", "program's last run");
                     }
                     foreach (var s in rest) lt.More("loaded", c.FF(Real(s), !NoHash.IsMatch(s)));   // every file: the paths are needed for removal
                 }
             }
             lt.WriteTo(c.Out);
+            if (harmless.Count > 0)
+                c.Out.Comment($"Hidden: {harmless.Values.Sum()} harmless loaded files (-nowhitelist lists them): " +
+                              string.Join(", ", harmless.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")));
 
             var common = cnt.Where(kv => kv.Value >= Many).OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).ToList();
             if (common.Count > 0)
@@ -177,6 +188,61 @@ namespace Spor.Modules
             return 2;
         }
 
+        static string Who(Signature.Result r) => (r.Signer ?? "").Replace(" (catalog)", "").Replace(" (package)", "");
+
+        /// <summary>The program that loaded the files is in a trusted location and validly signed (a copy of explorer.exe elsewhere is not).</summary>
+        bool TrustedLoader(string raw) => raw != null && Rules.InTrustedLocation(Real(raw)) && Rules.Strong(Rules.Flags(Real(raw))).Count == 0 && c.SignedOk(Real(raw));
+
+        /// <summary>
+        /// A loaded file that is harmless although it is outside trusted locations: returns why (for the hidden count), or null.
+        /// Only on the system drive, only files without flags. Each case has a condition that keeps what it could hide visible:
+        /// - a shortcut read by a trusted program that is not a LOLBin (the shell for icons and jump lists, Task Manager's startup list, vendor tools):
+        ///   only if its target is trusted and its arguments harmless, so a hijacked taskbar or Startup shortcut stays visible
+        /// - a DLL in the program's own folder: only if validly signed by the program's signer or by Microsoft, so sideloaded DLLs stay visible
+        /// - PowerShell's AppLocker test script __PSScriptPolicyTest_xxxxxxxx.xxx.ps1 in Temp, loaded by powershell.exe or pwsh.exe
+        /// - Defender's engine updates (Definition Updates\{GUID}\mpengine.dll, only SYSTEM can write there) loaded by Defender's updater
+        /// - Microsoft's own files in ProgramData\Microsoft\Windows\AppRepository\Packages and ProgramData\Microsoft\VisualStudio\Setup: only validly Microsoft-signed
+        /// </summary>
+        string Harmless(string f, string raw)
+        {
+            if (!Rules.Whitelist || raw == null) return null;
+            var m = Vol.Match(f);
+            if (!m.Success || !m.Groups[1].Value.Equals(sysSerial, StringComparison.OrdinalIgnoreCase)) return null;
+            var rel = m.Groups[2].Value; var real = Real(f);
+            if (Rules.Flags(real).Count > 0 || Inject.IsMatch(rel)) return null;
+            try
+            {
+                if (rel.EndsWith(".LNK", StringComparison.OrdinalIgnoreCase) && !Rules.Lol.IsMatch(raw) && TrustedLoader(raw))
+                {
+                    var l = File.Exists(real) ? Lnk.Parse(File.ReadAllBytes(real)) : null;
+                    if (l?.Target != null && l.Net == null && c.TrustedFile(Environment.ExpandEnvironmentVariables(l.Target))
+                        && (string.IsNullOrWhiteSpace(l.Args) || !Rules.ArgsSuspicious(l.Args)))
+                        return "shortcuts with a trusted target, read by a trusted program";
+                    return null;
+                }
+                if (PsPolicyTest.IsMatch(rel) && PsHost.IsMatch(raw) && TrustedLoader(raw)) return "PowerShell's AppLocker test scripts";
+                if (DefEngine.IsMatch(rel) && DefLoader.IsMatch(raw) && TrustedLoader(raw)) return "Defender engine updates";
+                if (MsFolder.IsMatch(rel) && Signature.Applies(real) && File.Exists(real))
+                {
+                    var s = Signature.Check(real);
+                    if (s.Valid && MsSigners.Contains(Who(s))) return "Microsoft-signed files in ProgramData\\Microsoft";
+                    return null;
+                }
+                if (rel.EndsWith(".DLL", StringComparison.OrdinalIgnoreCase) && File.Exists(real)
+                    && Util.Folder(real).Equals(Util.Folder(Real(raw)), StringComparison.OrdinalIgnoreCase))
+                {
+                    var s = Signature.Check(real);
+                    if (!s.Valid) return null;
+                    var p = Real(raw);
+                    var ps = File.Exists(p) ? Signature.Check(p) : null;
+                    if (MsSigners.Contains(Who(s)) || (ps != null && ps.Valid && Who(ps).Equals(Who(s), StringComparison.OrdinalIgnoreCase)))
+                        return "DLLs in the program's own folder, signed by its publisher or Microsoft";
+                }
+            }
+            catch { }
+            return null;
+        }
+
         Prog Read(string path)
         {
             var b = File.ReadAllBytes(path);
@@ -202,6 +268,7 @@ namespace Spor.Modules
             {
                 if (f == raw) continue;
                 int h = Hot(f, false, recent);
+                if (h == 2 && recent && Harmless(f, raw) is string why) { harmless[why] = (harmless.TryGetValue(why, out var n) ? n : 0) + 1; continue; }
                 if (h == 2) r.Files.Add(f); else if (h == 1) r.Quiet.Add(f);
             }
             // a program in a known-noise folder (VS Code, Discord, ...) is counted, not listed; files it loads still are

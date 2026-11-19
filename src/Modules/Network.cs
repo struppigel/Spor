@@ -77,6 +77,10 @@ namespace Spor.Modules
                 var user = string.Join(", ", kv.Value.Users.Select(u => users.TryGetValue(u, out var s) ? c.UserOf(s) : "").Where(s => s.Length > 0 && !s.StartsWith("S-1-5-1")).Distinct());
                 return (Path: path, IsFile: Rules.DrivePath.IsMatch(path), kv.Value.Sent, kv.Value.Recv, kv.Value.First, kv.Value.Last, User: user);
             }).ToList();
+            // SRUM can hold the same program under several app ids (other path spelling, other user): one row per path, sums
+            rows = rows.GroupBy(r => r.Path, Util.IC).Select(g => (Path: g.First().Path, IsFile: g.First().IsFile, Sent: g.Sum(r => r.Sent), Recv: g.Sum(r => r.Recv),
+                        First: g.Min(r => r.First), Last: g.Max(r => r.Last),
+                        User: string.Join(", ", g.SelectMany(r => r.User.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries)).Distinct()))).ToList();
             var shown = rows.Where(r => r.IsFile && (!Rules.Whitelist || !Trusted(r.Path) || Rules.Lol.IsMatch(r.Path))).OrderByDescending(r => r.Sent).ThenByDescending(r => r.Last).ToList();
             var top = rows.Where(r => r.Sent > 0).OrderByDescending(r => r.Sent).Take(5).ToList();
             var st = new Table("first seen", "@last seen", "sent", "received", "[user", "!status", "<flags", "*program");
@@ -87,7 +91,7 @@ namespace Spor.Modules
                 st.Add(Log.T(r.First), Log.T(r.Last), Cmd.Bytes(r.Sent), Cmd.Bytes(r.Recv), r.User, f.Status, Rules.FlagCol(fl), f.Path);
                 // timeline: the 60 programs that sent the most (the table lists all)
                 if (k++ < 60 || Rules.Strong(fl).Count > 0) c.Event(r.First, "SRU", r.Path, $"SRUM first activity in the window; sent {Cmd.Bytes(r.Sent)} in total");
-                if (r.Sent >= 50L << 20 && !c.SignedOk(r.Path)) c.Find(r.Last, $"{c.File(r.Path)} sent {Cmd.Bytes(r.Sent)} ({r.First:MM-dd} to {r.Last:MM-dd}, SRUM)");
+                if (r.Sent >= 50L << 20 && !c.SignedOk(r.Path)) c.Find(r.Last, $"{c.File(r.Path)} sent {Cmd.Bytes(r.Sent)} ({r.First:MM-dd} to {r.Last:MM-dd}, SRUM)", "last activity");
             }
             if (top.Count > 0) c.Out.Wrap("most data sent overall: ", top.Select(r => $"{(r.IsFile ? Rules.Fix(c.RealCase(r.Path)) : r.Path)} {Cmd.Bytes(r.Sent)}"));
             st.WriteTo(c.Out);

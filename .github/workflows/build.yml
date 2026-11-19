@@ -26,6 +26,10 @@ jobs:
           $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') { "-p:Version=$($env:GITHUB_REF_NAME.TrimStart('v'))" } else { "" }
           dotnet build Spor.csproj -c Release $ver
 
+      - name: Test
+        shell: pwsh
+        run: dotnet test tests/Spor.Tests -c Release
+
       - name: Hash
         shell: pwsh
         run: |

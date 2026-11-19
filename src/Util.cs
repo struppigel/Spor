@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -26,10 +27,30 @@ namespace Spor
             return null;
         }
 
-        public static string Utc(DateTime? t) => t.HasValue ? t.Value.ToString("yyyy-MM-dd HH:mm:ss") + " UTC" : "(no time)";
+        public static string Utc(DateTime? t) => t.HasValue ? t.Value.ToString(Log.TimeFmt, CultureInfo.InvariantCulture) + " UTC" : "(no time)";
 
-        /// <summary>One line: line breaks become spaces. Never shortened (n is ignored; the log keeps full text).</summary>
-        public static string Clip(object o, int n = 0) => Regex.Replace(Convert.ToString(o) ?? "", @"[\r\n]+", " ").Trim();
+        /// <summary>
+        /// A file time as FRST shows it: UTC plus the PC's offset when the scan ran (FileTimeToLocalFileTime),
+        /// not the daylight saving rule of the file's own date, which ToLocalTime() would apply.
+        /// </summary>
+        public static DateTime FrstLocal(DateTime utc, TimeSpan offset) => DateTime.SpecifyKind(utc, DateTimeKind.Unspecified) + offset;
+
+        static readonly Regex DevicePrefix = new Regex(@"^(?:\\\\\?\\|\\\?\?\\)", RegexOptions.CultureInvariant);
+
+        /// <summary>The path without a "\\?\" or "\??\" prefix; "\\?\UNC\server\x" becomes "\\server\x".</summary>
+        public static string StripDevicePrefix(string p)
+        {
+            p = (p ?? "").Trim();
+            if (p.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + p.Substring(8);
+            return DevicePrefix.Replace(p, "");
+        }
+
+        static readonly Regex LineBreaks = new Regex(@"[\r\n]+", RegexOptions.CultureInvariant);
+        // C0 control characters other than tab and line breaks (a NUL after a Zone.Identifier URL, ...).
+        static readonly Regex Controls = new Regex(@"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", RegexOptions.CultureInvariant);
+
+        /// <summary>One line: line breaks become spaces, other control characters are removed. Never shortened (n is ignored; the log keeps full text).</summary>
+        public static string Clip(object o, int n = 0) => LineBreaks.Replace(Controls.Replace(Convert.ToString(o) ?? "", ""), " ").Trim();
 
         /// <summary>Folder part of a path ("" if none).</summary>
         public static string Folder(string p) => p.Substring(0, Math.Max(0, p.LastIndexOf('\\')));

@@ -76,7 +76,7 @@ namespace Spor.Modules
                                last.HasValue ? Log.T(last) : hasProfile ? "-" : "no profile", u.full_name, Sid(msid, u.name, u.user_id));
                         if (recent && enabled) c.Event(pwSet, "USR", null, text: $"password of {(admin ? "admin" : "user")} account {u.name} set (or account created)");
                         if (fl.Count > 0 || (recent && enabled && admin && !builtin.Contains(u.user_id) && !hasProfile && u.password_age > 0))
-                            c.Find(pwSet, $"account {u.name} ({(admin ? "admin" : "user")}){Rules.FlagText(fl)}, password set {pwSet:yyyy-MM-dd HH:mm}{(hasProfile ? "" : ", never signed in")}");
+                            c.Find(pwSet, $"account {u.name} ({(admin ? "admin" : "user")}){Rules.FlagText(fl)}, password set {pwSet:yyyy-MM-dd HH:mm}{(hasProfile ? "" : ", never signed in")}", "password set");
                     }
                 }
                 finally { NetApiBufferFree(buf); }
@@ -104,6 +104,7 @@ namespace Spor.Modules
 
             c.Out.Sub($"Account changes in the last {c.Opt.Days} days (Security log)");
             var ev = Ev.Query("Security", Ev.Ids(4720, 4722, 4724, 4726, 4728, 4732, 4781), c.Since, 2000, c.Err);
+            ev.Reverse();   // the newest are read (up to the limit), listed oldest first
             var et = new Table("@time", "[event", "*change");
             foreach (var e in ev)
             {

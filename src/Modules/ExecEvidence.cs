@@ -166,17 +166,27 @@ namespace Spor.Modules
             }
 
             // ---- ShimCache to the timeline: per folder the newest PerDir files, then one "+N more" line ----
+            // Older entries only go to the summary if flagged. A LOLBin alone is no finding here: ShimCache proves no run on Windows 10/11,
+            // and a validly signed Windows tool in its own folder that was modified before the time window is a Windows update.
+            // A LOLBin copy elsewhere, or one with a bad signature, is still a finding.
+            int oldLol = 0;
             foreach (var x in Grouped(shim, r => r.N.ToString("D8")))
             {
                 if (x.More > 0) c.Event(x.M, "SC", null, text: Rules.Fix(c.RealCase(x.P.TrimEnd('\\'))) + "\\ => " + x.More + " more files modified in this folder: " + Rules.Fix(x.Names));
-                else if (x.M.HasValue && x.M.Value >= c.Since) c.Event(x.M, "SC", x.P, null, x.F);
-                else c.Find(x.M, c.File(x.P) + Rules.FlagText(x.F) + "  (ShimCache: file modified)");   // flagged, older
+                else if (Rules.Whitelist && Rules.Strong(x.F).Count == 0 && Rules.InTrustedLocation(x.P) && c.SignedOk(x.P)) oldLol++;   // also inside the window: a Windows update
+                else if (x.M.HasValue && x.M.Value >= c.Since)
+                {
+                    if (Rules.DrivePath.IsMatch(x.P ?? "")) c.Event(x.M, "SC", x.P, null, x.F);
+                    else c.Event(x.M, "SC", null, null, x.F, text: "ShimCache entry without a folder: " + Rules.Fix(x.P));
+                }
+                else c.Find(x.M, c.File(x.P) + Rules.FlagText(x.F) + "  (ShimCache: file modified)", "file modified", "ShimCache");   // flagged, older
             }
 
             // ---- details ----
             var o = c.Opt;
             c.Out.Comment($"Entries read: PCA {npca}, UserAssist {nua}, BAM {nbam}, ShimCache {nshim}, Compatibility Assistant {ncas}.");
             c.Out.Comment($"Programs run in the last {o.Days} days{(Rules.Whitelist ? " outside trusted locations" : "")} are in the timeline (PCA, UA, BAM), and ShimCache files modified then (SC).");
+            if (oldLol > 0) c.Out.Comment($"Hidden: {oldLol} ShimCache entries of validly signed LOLBins in trusted locations (Windows updates; ShimCache proves no run; -nowhitelist lists them).");
             if (shimNote.Length > 0) c.Out.Comment(shimNote.Trim());
             c.Out.Sub("Compatibility Assistant: programs that ran at some point and are gone now", "No times are stored. Per folder the first " + o.PerDir + " one per line, then the other file names on one line.");
             var cr = cas.Where(x => Regex.IsMatch(x.P, @"^[a-z]:\\", Util.RX) && !File.Exists(x.P))
@@ -199,6 +209,8 @@ namespace Spor.Modules
             var res = new List<Row>(); int per = c.Opt.PerDir;
             foreach (var g in rows.GroupBy(r => Util.Folder(r.P), Util.IC))
             {
+                // entries without a folder (ShimCache keeps some as a bare name or "SIGN.IE=... name"): each on its own line, never grouped
+                if (string.IsNullOrEmpty(g.Key)) { res.AddRange(g); continue; }
                 res.AddRange(g.Where(r => r.F.Count > 0));
                 var rest = g.Where(r => r.F.Count == 0).OrderBy(order, StringComparer.OrdinalIgnoreCase).ToList();
                 res.AddRange(rest.Take(per));

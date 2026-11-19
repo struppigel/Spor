@@ -86,7 +86,7 @@ namespace Spor.Modules
                 var sg = Signature.Check(man);
                 return (sg.Signer ?? "-", sg.Valid ? "-" : sg.Status == "unsigned" || sg.Status == "no access" ? sg.Status : sg.Status + " signature", sg.Valid);
             }
-            foreach (var o in ops.Values.OrderByDescending(v => v.T))
+            foreach (var o in ops.Values.OrderBy(v => v.T))
             {
                 var dir = Dir(o.Pkg);
                 var now = Sig(dir);
@@ -196,7 +196,7 @@ namespace Spor.Modules
                             text: $"installed or updated: {r.Name} {r.Ver}".TrimEnd() + (r.Pub.Length > 0 ? $" ({r.Pub})" : "") + (r.Scope.StartsWith("user") ? ", per user" : ""));
                 }
             }
-            foreach (var (l, i) in lines.Select((l, i) => (l, i)).OrderByDescending(x => x.l.T))
+            foreach (var (l, i) in lines.Select((l, i) => (l, i)).OrderBy(x => x.l.T))
             {
                 t.Add(l.F);
                 if (batch.TryGetValue(i, out var b)) { t.More("programs", b.Names); foreach (var k in b.Keys) t.More("key", k); }
@@ -210,6 +210,7 @@ namespace Spor.Modules
             c.Out.Sub($"Windows Installer: installs and removals in the last {c.Opt.Days} days (Application log)",
                 "1033 = installed, 1034 = removed, 11708 = install failed; status 0 = success.");
             var ev = Ev.Query("Application", "Provider[@Name='MsiInstaller'] and (" + Ev.Ids(1033, 1034, 11708) + ")", c.Since, 5000, c.Err);
+            ev.Reverse();   // listed oldest first
             var t = new Table("@time", "[event", "*what", "=user", "name", "product code");
             var seen = new HashSet<string>(Util.IC);
             foreach (var e in ev)

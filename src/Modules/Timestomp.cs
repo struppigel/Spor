@@ -143,7 +143,7 @@ namespace Spor.Modules
                 bool Tunneled(long id) => named.TryGetValue(id, out var l) && l.Any(x => vacated.TryGetValue(x.Key, out var v) && v.Any(t => t <= x.T.AddSeconds(1) && t >= x.T.AddSeconds(-16)));
                 int tunneled = 0, skippedType = 0;
 
-                int gone = 0;
+                int gone = 0, frst = 0;
                 foreach (var kv in infoChange)
                 {
                     var path = PathOf(vol, kv.Key);
@@ -168,10 +168,12 @@ namespace Spor.Modules
                         score += 1; sig.Add("both times are more than 7 days before the timestamp change");
                     }
                     if (score < (Rules.Whitelist ? MinScore : 1)) continue;
+                    if (Rules.Whitelist && FrstSqlite(path, kv.Value)) { frst++; continue; }
                     found.Add((kv.Value, score, c.F(path).Path, c.F(path).Status, ct, mt, sig));
                 }
                 if (gone > 0) c.Out.Comment($"{drive} {gone} files with changed timestamps are deleted since");
                 if (skippedType > 0 && Rules.Whitelist) c.Out.Comment($"{drive} {skippedType} files with changed timestamps not scored: documents, pictures and other data files, or signed executables in Windows / Program Files");
+                if (frst > 0) c.Out.Comment($"{drive} {frst} SQLite DLLs in FRST's folder (C:\\FRST\\bin) not counted: FRST writes them with their original 2019 times when it runs");
                 if (tunneled > 0) c.Out.Comment($"{drive} {tunneled} files got an older creation time through NTFS tunneling (saved by writing a new file over the old name): normal, not counted");
             }
         }
@@ -180,6 +182,19 @@ namespace Spor.Modules
         /// Round values are what SetFileTime-based tools write; real NTFS times have 100 ns precision. Creation times count more:
         /// archive extraction and installers set round MODIFICATION times all the time (zip stores 2-second times), creation times rarely.
         /// </summary>
+        static readonly Regex FrstExe = new Regex(@"\\FRST(64)?( ?\(\d+\))?\.exe$", RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// FRST unpacks its SQLite DLL to C:\FRST\bin with the file's original (old, whole-second) times every time it runs.
+        /// Not counted only if it is exactly that file on the system drive and an FRST program ran within 15 minutes of the timestamp change.
+        /// </summary>
+        bool FrstSqlite(string path, DateTime changed)
+        {
+            if (!Regex.IsMatch(path, @"^[A-Z]:\\FRST\\bin\\sqlite3(_x64)?\.dll$", RegexOptions.IgnoreCase)
+                || !path.Substring(0, 2).Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase)) return false;
+            return c.Events.Any(e => e.Path != null && FrstExe.IsMatch(e.Path) && Math.Abs((e.T - changed).TotalMinutes) <= 15);
+        }
+
         static void Round(DateTime t, string what, bool creation, ref int score, List<string> sig)
         {
             if (t.Ticks % 10000000 == 0)

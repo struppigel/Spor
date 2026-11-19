@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace Spor
@@ -33,6 +35,10 @@ Without options Spor opens its window. With options it scans without a window:
         [STAThread]
         static int Main(string[] args)
         {
+            // Times and numbers the same on every PC ("2026-11-19 21:09:24", "149.8 s"): parsers read the log.
+            // The UI culture stays, so Windows' event messages keep the PC's language.
+            CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+            Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
             if (args.Length == 0)
             {
                 Application.EnableVisualStyles();

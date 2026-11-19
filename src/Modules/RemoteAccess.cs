@@ -38,7 +38,7 @@ namespace Spor.Modules
         void Webcam(List<Hive> hives)
         {
             int max = c.Opt.Max;
-            c.Out.Sub("Webcam and microphone: last use per desktop program (newest first)");
+            c.Out.Sub("Webcam and microphone: last use per desktop program (oldest first)");
             var cam = new List<(DateTime T, DateTime? E, string Cap, string User, string P)>();
             var pkg = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
             var roots = new List<(string User, RegistryKey Root, string Sub)> { ("", Registry.LocalMachine, "SOFTWARE") };
@@ -74,7 +74,7 @@ namespace Spor.Modules
                 }
 
             var cg = cam.GroupBy(x => Regex.Replace(x.P, @"\\app-[\d.]+\\", @"\app-*\", Util.RX) + "\u0001" + x.Cap, Util.IC)
-                        .Select(g => g.OrderByDescending(x => x.T).First()).OrderByDescending(x => x.T).ToList();
+                        .Select(g => g.OrderByDescending(x => x.T).First()).OrderBy(x => x.T).ToList();
             foreach (var g in cg)
             {
                 bool open = g.E == null || g.E < g.T;
@@ -168,12 +168,12 @@ namespace Spor.Modules
                             c.Event(Local(m.Groups[2].Value + " " + m.Groups[3].Value, "yyyy-MM-dd H:mm"), "RMM", null,
                                 text: $"AnyDesk {m.Groups[1].Value.ToLowerInvariant()} connection, remote ID {m.Groups[5].Value}, auth {m.Groups[4].Value}");
                         }
-                        c.Find(File.GetLastWriteTimeUtc(f), $"AnyDesk connection log: {n} connections ({c.File(f, false)})");
+                        c.Find(File.GetLastWriteTimeUtc(f), $"AnyDesk connection log: {n} connections ({c.File(f, false)})", "file written");
                     }
                     catch (Exception e) { c.Err.Add("AnyDesk " + f + ": " + e.Message); }
                 f = Path.Combine(d, "file_transfer_trace.txt");
                 if (File.Exists(f))
-                    try { Tail("AnyDesk", f, " (file transfers)", max); c.Find(File.GetLastWriteTimeUtc(f), "AnyDesk file transfer log: " + c.File(f, false)); }
+                    try { Tail("AnyDesk", f, " (file transfers)", max); c.Find(File.GetLastWriteTimeUtc(f), "AnyDesk file transfer log: " + c.File(f, false), "file written"); }
                     catch (Exception e) { c.Err.Add("AnyDesk " + f + ": " + e.Message); }
                 string[] traces = new string[0];
                 try { traces = Directory.GetFiles(d, "*.trace"); } catch { }
@@ -213,7 +213,7 @@ namespace Spor.Modules
                         c.Event(Local(col[2], "dd-MM-yyyy HH:mm:ss", "dd-MM-yyyy HH:mm"), "RMM", null,
                             text: $"TeamViewer incoming connection, remote ID {col[0]}{(col.Length > 1 && col[1].Trim().Length > 0 ? " (" + col[1].Trim() + ")" : "")}");
                     }
-                    c.Find(File.GetLastWriteTimeUtc(f), $"TeamViewer: {l.Count} incoming connections ({c.File(f, false)})");
+                    c.Find(File.GetLastWriteTimeUtc(f), $"TeamViewer: {l.Count} incoming connections ({c.File(f, false)})", "file written");
                 }
                 catch (Exception e) { c.Err.Add("TeamViewer: " + e.Message); }
             }
@@ -229,7 +229,7 @@ namespace Spor.Modules
                             var h = Regex.Match(ip, @"[?&]h=([^&""\s]+)"); var p = Regex.Match(ip, @"[?&]p=(\d+)");
                             var relay = $"relay {(h.Success ? h.Groups[1].Value : "?")}:{(p.Success ? p.Groups[1].Value : "?")}";
                             rt.Add(Log.T(Native.LastWrite(k)), "ScreenConnect", "service " + n, relay);
-                            c.Find(Native.LastWrite(k), $"ScreenConnect service \"{n}\": {relay}");
+                            c.Find(Native.LastWrite(k), $"ScreenConnect service \"{n}\": {relay}", "key changed");
                         }
             }
             catch (Exception e) { c.Err.Add("ScreenConnect service: " + e.Message); }
@@ -262,7 +262,7 @@ namespace Spor.Modules
                     var l = t.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0 && !Regex.IsMatch(x, "is started|Listening for incoming|Radmin Server Log", Util.RX)).ToList();
                     any = true; rt.Add(Log.T(File.GetLastWriteTimeUtc(f)), "Radmin", c.F(f, false).Path, $"{l.Count} lines without start messages");
                     foreach (var x in l.Skip(Math.Max(0, l.Count - max))) rt.More("line", x);
-                    c.Find(File.GetLastWriteTimeUtc(f), "Radmin server log: " + c.File(f, false));
+                    c.Find(File.GetLastWriteTimeUtc(f), "Radmin server log: " + c.File(f, false), "file written");
                 }
                 catch (Exception e) { c.Err.Add("Radmin: " + e.Message); }
             }
@@ -276,7 +276,7 @@ namespace Spor.Modules
                         any = true;
                         var line = $"account {k.GetValue("IntegratorLogin")}, AccountId {k.GetValue("AccountId")}, AgentId {k.GetValue("AgentId")}";
                         rt.Add(Log.T(Native.LastWrite(k)), "Atera", @"HKLM\SOFTWARE\ATERA Networks\AlphaAgent", line);
-                        c.Find(Native.LastWrite(k), "Atera agent: " + line);
+                        c.Find(Native.LastWrite(k), "Atera agent: " + line, "key changed");
                     }
             }
             catch { }
@@ -303,7 +303,7 @@ namespace Spor.Modules
                         bool silent = Regex.IsMatch(t, @"(?m)^\s*silent\s*=\s*1", Util.RX);
                         if (silent) rt.More("setting", "silent=1 (NetSupport client hidden from the user)");
                         c.Event(f.LastWriteTimeUtc, "RMM", f.FullName, "server config: " + Util.Clip(hit[0].Trim(), 80));
-                        c.Find(f.LastWriteTimeUtc, "remote access config " + c.File(f.FullName) + ": " + Util.Clip(hit[0].Trim(), 100) + (silent ? ", silent=1" : ""));
+                        c.Find(f.LastWriteTimeUtc, "remote access config " + c.File(f.FullName) + ": " + Util.Clip(hit[0].Trim(), 100) + (silent ? ", silent=1" : ""), "file written");
                     }
                     catch { }
                 }
@@ -328,7 +328,7 @@ namespace Spor.Modules
                         if (fs.Count == 0 && exe.Count == 0) continue;
                         any = true;
                         rt.Add(fs.Count > 0 ? Log.T(fs[0].LastWriteTimeUtc) : "-", "RMM folder", c.RealCase(d) + "\\", $"{exe.Count} exe, {fs.Count} log/config files");
-                        c.Find(fs.Count > 0 ? fs[0].LastWriteTimeUtc : (DateTime?)null, $"remote access tool folder {c.RealCase(d)}\\");
+                        c.Find(fs.Count > 0 ? fs[0].LastWriteTimeUtc : (DateTime?)null, $"remote access tool folder {c.RealCase(d)}\\", "file written");
                         if (fs.Count > 0) c.Event(fs[0].LastWriteTimeUtc, "RMM", null, text: $"{c.RealCase(d)}\\: newest log/config written ({fs[0].Name})");
                         foreach (var x in exe) rt.More("exe", c.FF(x.FullName));
                         foreach (var f in fs.Skip(3)) rt.More("file", $"{Log.T(f.LastWriteTimeUtc)} {f.FullName}");

@@ -51,8 +51,9 @@ namespace Spor.Modules
 
         void Events()
         {
-            c.Out.Sub("Defender events (newest first)");
+            c.Out.Sub("Defender events (oldest first)");
             var ev = Ev.Query(DefLog, Ev.Ids(1006, 1007, 1008, 1013, 1015, 1116, 1117, 1118, 1119, 5001, 5004, 5007, 5010, 5012, 5013), c.Since, 5000, c.Err);
+            ev.Reverse();   // the newest are read (up to the limit), listed oldest first
             int routine = 0; var purged = new List<DateTime>();
             var et = new Table("@time", "[event", "<flags", "*what");
             foreach (var e in ev)
@@ -132,7 +133,7 @@ namespace Spor.Modules
                         if (m.Success)
                         {
                             var t = Time(m.Groups["t"].Value); if (t == null || t < c.Since) continue;
-                            var p = c.DevicePath(m.Groups["p"].Value.Trim());
+                            var p = c.Long(c.DevicePath(m.Groups["p"].Value.Trim()));   // MPLog writes \\?\C:\...
                             if (Rules.Whitelist && !Keep(p)) continue;
                             var sh = Sha2.Match(l);
                             hits[p] = hits.TryGetValue(p, out var h)
@@ -147,7 +148,7 @@ namespace Spor.Modules
                 catch (Exception e) { c.Err.Add("MPLog " + Path.GetFileName(f) + ": " + e.Message); }
             }
             var mt = new Table("@last seen", "first seen", "times", "!status", "<flags", "*file");
-            foreach (var kv in hits.OrderByDescending(kv => kv.Value.Last))
+            foreach (var kv in hits.OrderBy(kv => kv.Value.Last))
             {
                 var h = kv.Value; var f = c.F(kv.Key);
                 mt.Add(Log.T(h.Last), Log.T(h.First), h.N.ToString(), f.Status, Rules.FlagCol(Rules.Flags(kv.Key)), f.Path);
@@ -159,7 +160,7 @@ namespace Spor.Modules
             {
                 c.Out.Sub("MPLog detection lines");
                 var dt = new Table("@time", "*line");
-                foreach (var d in det.OrderByDescending(x => x.T))
+                foreach (var d in det.OrderBy(x => x.T))
                 {
                     dt.Add(Log.T(d.T), d.R);
                     c.Event(d.T, "DEF", null, text: "MPLog: " + d.R);
@@ -188,7 +189,7 @@ namespace Spor.Modules
                         var names = k.GetValueNames();
                         if (names.Length == 0) continue;
                         var t = Native.LastWrite(k);
-                        foreach (var n in names) { xt.Add(Log.T(t), kind, Rules.Fix(n)); if (t < c.Since) c.Find(t, $"Defender exclusion ({kind}): {Rules.Fix(n)}"); }   // newer changes: timeline DEF line
+                        foreach (var n in names) { xt.Add(Log.T(t), kind, Rules.Fix(n)); if (t < c.Since) c.Find(t, $"Defender exclusion ({kind}): {Rules.Fix(n)}", "key changed"); }   // newer changes: timeline DEF line
                         c.Event(t, "DEF", null, text: $"Defender {kind.ToLowerInvariant()} exclusions changed (now {names.Length}: {Util.Clip(string.Join(", ", names), 100)})", flags: new List<string> { "!defender-exclusion" });
                     }
                 }
@@ -203,7 +204,7 @@ namespace Spor.Modules
             c.Out.Sub("Event logs cleared");
             var ev = Ev.Query("System", "EventID=104", c.Since, 500, c.Err).Concat(Ev.Query("Security", "EventID=1102", c.Since, 500, c.Err)).ToList();
             var lt = new Table("@time", "<flags", "*log");
-            foreach (var e in ev.OrderByDescending(e => e.TimeCreated))
+            foreach (var e in ev.OrderBy(e => e.TimeCreated))
             {
                 var t = e.TimeCreated?.ToUniversalTime();
                 var log = e.Id == 1102 ? "Security" : Ev.P(e, 2) is string s && s.Length > 0 ? s : Util.Clip(Ev.Msg(e), 80);

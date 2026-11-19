@@ -55,7 +55,7 @@ namespace Spor.Modules
                             bool sus = Sus.IsMatch(v);
                             rt.Add(n == 1 ? Log.T(t) : "-", h.User, n.ToString(), sus ? "!suspicious" : "-", v);
                             if (n == 1) c.Event(t, "RUN", null, text: c.U(h.User) + "Run dialog: " + v, flags: sus ? new List<string> { "!suspicious" } : null);
-                            if (sus) c.Find(n == 1 ? t : null, "Run dialog " + c.U(h.User) + v);
+                            if (sus) c.Find(n == 1 ? t : null, "Run dialog " + c.U(h.User) + v, n == 1 ? "typed" : null);
                         }
                     }
                 }
@@ -81,7 +81,7 @@ namespace Spor.Modules
                         {
                             var v = Convert.ToString(k.GetValue(n)) ?? "";
                             bool s = Sus.IsMatch(v) || Shape.IsMatch(v);
-                            if (s) { bad++; c.Find(n == "url1" ? t : null, "Explorer address bar " + c.U(h.User) + v); }
+                            if (s) { bad++; c.Find(n == "url1" ? t : null, "Explorer address bar " + c.U(h.User) + v, n == "url1" ? "typed" : null); }
                             if (s || !Rules.Whitelist) at.Add(n == "url1" ? Log.T(t) : "-", h.User, n, s ? "!suspicious" : "-", v);
                         }
                         if (all.Count > 0) counts.Add($"{h.User}: {all.Count} entries, {bad} suspicious");
@@ -112,7 +112,7 @@ namespace Spor.Modules
                             "All suspicious lines, then the last " + tail + " lines. PowerShell never saves lines with password/token/apikey/secret,\n" +
                             "so attackers can keep a pasted command out: an empty or harmless history does not prove nothing was pasted.");
                         c.Event(t, "PSH", null, text: $"{c.U(p.User)}PowerShell history {Path.GetFileName(f)} written ({hits.Count} suspicious lines of {lines.Count})");
-                        if (hits.Count > 0) c.Find(t, $"PowerShell history {c.U(p.User)}{Path.GetFileName(f)}: {hits.Count} suspicious lines");
+                        if (hits.Count > 0) c.Find(t, $"PowerShell history {c.U(p.User)}{Path.GetFileName(f)}: {hits.Count} suspicious lines", "file written");
                         var ht = new Table("@line", "[part", "<flags", "*command");
                         foreach (var i in hits) ht.Add((i + 1).ToString(), "suspicious", "!suspicious", lines[i].Trim());
                         for (int i = Math.Max(0, lines.Count - tail); i < lines.Count; i++)

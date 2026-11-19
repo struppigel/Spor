@@ -263,25 +263,25 @@ namespace Spor.Modules
             c.Out.Comment("Windows also records files in inventory scans and when programs are installed or updated.");
             c.Out.Sub("Drivers that are unsigned or outside the driver folders (any time)");
             var dt = new Table("@time", "!status", "<flags", "*driver", "=details");
-            foreach (var x in odd.OrderByDescending(x => x.T))
+            foreach (var x in odd.OrderBy(x => x.T))
             {
                 var f = c.F(x.P);
                 dt.Add(Log.T(x.T), f.Status, Rules.FlagCol(x.F), f.Path, x.I);
-                c.Find(x.T, f.Path + Rules.FlagText(x.F) + "  (driver)");
+                c.Find(x.T, f.Path + Rules.FlagText(x.F) + "  (driver)", "entry written");
             }
             dt.WriteTo(c.Out);
             c.Out.Sub("Entries without path (not in the timeline)",
                 "Windows stores no path and often no name for these; the name is then cut to 16 characters (…). sha1 = the file when recorded.");
             var nt = new Table("@time", "<flags", "sha1", "*name", "=details");
-            foreach (var x in nop.OrderByDescending(x => x.T))
+            foreach (var x in nop.OrderBy(x => x.T))
             {
                 nt.Add(Log.T(x.T), Rules.FlagCol(x.F), x.Sha.ToUpperInvariant(), Rules.Fix(x.I), string.Join(", ", new[] { x.D, x.K }.Where(v => !string.IsNullOrEmpty(v))));
-                if (Rules.Strong(x.F).Count > 0) c.Find(x.T, Rules.Fix(x.I) + Rules.FlagText(x.F) + "  (Amcache entry without path)");
+                if (Rules.Strong(x.F).Count > 0) c.Find(x.T, Rules.Fix(x.I) + Rules.FlagText(x.F) + "  (Amcache entry without path)", "entry written");
             }
             nt.WriteTo(c.Out);
             c.Out.Sub("Inventory scans (not in the timeline)");
             var st = new Table("@time", "*entries", "mostly in");
-            foreach (var x in scans.OrderByDescending(x => x.T)) { st.Add(Log.T(x.T), x.N + " entries", x.Top); foreach (var fo in x.Files) st.More("files", fo); }
+            foreach (var x in scans.OrderBy(x => x.T)) { st.Add(Log.T(x.T), x.N + " entries", x.Top); foreach (var fo in x.Files) st.More("files", fo); }
             st.WriteTo(c.Out);
             c.Out.Hidden(qk, "entries");
         }

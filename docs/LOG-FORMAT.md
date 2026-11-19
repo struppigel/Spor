@@ -5,9 +5,9 @@ This describes how `Spor.txt` is built. It is meant for helpers who want to know
 ## Layout
 
 1. **Header**: `key: value` lines with the creation time, the computer, who ran Spor, the users and the options
-2. **SUMMARY**: only the flagged items
-3. **TIMELINE**: everything with a time from all modules, newest first, with the sources in brackets
-4. **One section per module** with everything that does not fit into a timeline, see [MODULES.md](MODULES.md)
+2. **SUMMARY**: only the flagged items, oldest first. Items without a time (e.g. invalid signatures, Run dialog entries) come last. The comment under the title says which times are not when something happened (ShimCache: file modified; Amcache: entry written; Run keys and services: key changed; ...).
+3. **TIMELINE**: everything with a time from all modules, oldest first, with the sources in brackets
+4. **One section per module** with everything that does not fit into a timeline, see [MODULES.md](MODULES.md). Lists with times are oldest first too. Exceptions: the Run dialog and archive tool histories keep Windows' order (newest first, only the newest entry has a time), and some lists are sorted by size or score.
 5. **FILES**: one line per file with hash, signature, version information and the SHA1 that Amcache recorded
 6. **AMCACHE FILES**: SHA1 from Amcache of files that are not listed in FILES
 7. **LEGEND**: the timeline sources, status words and flags, one per line
@@ -20,6 +20,8 @@ The timeline sources are:
 * persistence: `AUT` Run key, `SVC` service, `TSK` task, `STA` Startup folder, `DRV` driver
 * security: `DEF` Defender, `LOG` log cleared, `USR` accounts
 * remote access and ClickFix: `CAM` and `MIC` webcam and microphone, `RMM`, `RUN` Run dialog, `ADR` address bar, `PSH` PowerShell history
+
+Lines seen only by `SC` (ShimCache) or `AM` (Amcache) end their details with what their time is, e.g. `file modified at this time (ShimCache: no proof it ran; a copied file keeps its old time)`.
 
 If several sources see the same file within 2 minutes, it is one line, e.g. `[PF PCA BAM]`. A file that was seen many times shows its first and last time, and every time it was flagged.
 Paths that only differ in numbers in folder names (version folders, dated or GUID temp folders) count as the same file. Such a line is followed by one indented `path:` line per real path, so every path is still in the log.
@@ -53,22 +55,24 @@ An item line has these parts in this order. Every part is left out if it is empt
 time [tags] item => target [status], details <==== flags
 ```
 
-1. time as `yyyy-MM-dd HH:mm:ss` in UTC
-2. tags in brackets, e.g. `[PF PCA BAM]`, `[run]`, `[4720]`
-3. the item: a path, command, account or event text
+1. time as `yyyy-MM-dd HH:mm:ss` in UTC, always with `-`, `:` and the Gregorian calendar, whatever the PC's language
+2. tags in brackets, e.g. `[PF PCA BAM]`, `[run]`, `[4720]`. A line can have several, each in its own brackets: `[task] [106]` (a Task Scheduler event), `[strup] [7-Zip]`, `[anna] [Brave]` (the user, on a PC with several users)
+3. the item: a path, command, account or event text. Event texts can contain ` => ` themselves, e.g. `Defender detected: NAME => path; action A` (also `Defender action taken:` and `Defender action FAILED:`, the last with `!not-removed`) or `C:\folder\ => 14 new files: ...`
 4. `=> target` if the line has one, e.g. the program of a persistence entry or the hash in FILES
 5. ` [status]` after the target, or after the item if there is no target
-6. details after ` => ` (or after `, ` if there is a target), separated by `; `. Labeled details are written as `name value`, e.g. `first seen 2026-11-01 10:00:00; sent 5 MB`
+6. details after ` => ` (or after `, ` if there is a target), separated by `; `. Labeled details are written as `name value`, e.g. `first seen 2026-11-01 10:00:00; sent 5242880 bytes`
 7. ` <==== !flag !flag` at the end
 
 How to split a line:
 
-* If the line starts with a digit, the first 19 characters are the time
+* If the line starts with a digit, the first 19 characters are the time. Exception: the PowerShell history lines in CLICKFIX start with the line number in the history file (`222 [suspicious] command`)
 * `<==== ` splits off the flags
 * The first ` => ` splits the item from the rest
-* ` [status]` is one of the status words below
+* ` [status]` is one of the status words below, or several of them joined with `, ` (`[> 500 MB, not hashed, unsigned]`)
 
 Paths cannot contain `<`. They can contain ` => ` and text like `[gone]`, but then they get the flag `!log-syntax-in-name`. Such names are rare and are probably meant to mislead, so check the flags before you trust a split.
+
+Sizes are exact numbers of bytes, never rounded (`sent 50855936 bytes`), so two logs can be compared.
 
 ## Status words
 
@@ -86,7 +90,7 @@ path => hash, signature valid; signer X; thumbprint Y; note Z; file version X; d
 
 * `md5` is left out with `-algo MD5` or if the file was not hashed
 * `size` is in bytes
-* `created` and `modified` are the file times in the **local time of the PC**. All other times in the log are UTC.
+* `created` and `modified` are the file times in the **local time of the PC**, as FRST shows them: UTC plus the PC's UTC offset when Spor ran (the one in the `Created:` header line), also for files from the other daylight saving period. So they equal FRST's times for the same file. All other times in the log are UTC.
 
 Files named in a Defender detection are hashed if they still exist, so they get a FILES line too. For `x.zip->inner.exe` this is the archive.
 

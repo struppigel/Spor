@@ -120,7 +120,7 @@ namespace Spor.Modules
                             progs.Add(n);
                             // value: the value name as stored (it can contain backslashes, so it cannot be cut from the entry reliably)
                             rt.Add(Log.T(t), kind, pf.Status, Rules.FlagCol(fl), k.Name + "\\" + Rules.Fix(n), pf.Path, Rules.Fix(Cmd.Args(cmd)), Rules.Fix(n));
-                            if (Rules.Strong(fl).Count > 0) c.Find(t, $"Run entry {Rules.Fix(n)} = {c.File(prog)}{Rules.FlagText(fl)}");
+                            if (Rules.Strong(fl).Count > 0) c.Find(t, $"Run entry {Rules.Fix(n)} = {c.File(prog)}{Rules.FlagText(fl)}", "key changed");
                         }
                         c.Event(t, "AUT", null, text: $"{k.Name} changed (now: {string.Join(", ", progs)})");
                     }
@@ -159,15 +159,16 @@ namespace Spor.Modules
                             sv.Add((t, new[] { Log.T(t), kind, st, pf.Status, Rules.FlagCol(fl), Rules.Fix(n), pf.Path + (dll != null && cmd == dll ? " (svchost DLL)" : "") }, dllLine));
                             if (Rules.DrivePath.IsMatch(prog)) c.Event(t, "SVC", prog, $"service {n} ({st}) changed");
                             else c.Event(t, "SVC", null, text: $"service {n} ({st}) changed: {Util.Clip(Rules.Fix(ip), 120)}");
-                            if (Rules.Strong(fl).Count > 0 || (!Trusted(prog) && start <= 2 && Ctx.BadSig(pf.Status))) c.Find(t, $"service {Rules.Fix(n)} ({st}): {disp}{Rules.FlagText(fl)}");
+                            if (Rules.Strong(fl).Count > 0 || (!Trusted(prog) && start <= 2 && Ctx.BadSig(pf.Status))) c.Find(t, $"service {Rules.Fix(n)} ({st}): {disp}{Rules.FlagText(fl)}", "key changed");
                         }
             }
             catch (Exception e) { c.Err.Add("Services: " + e.Message); }
             var svt = new Table("@time", "[kind", "start", "!status", "<flags", "*service", ">program");
-            foreach (var r in sv.OrderByDescending(r => r.T)) { svt.Add(r.F); svt.More("dll", r.Dll); }
+            foreach (var r in sv.OrderBy(r => r.T)) { svt.Add(r.F); svt.More("dll", r.Dll); }
             svt.WriteTo(c.Out);
 
             var ev = Ev.Query("System", "EventID=7045", c.Since, 2000, c.Err);
+            ev.Reverse();   // the newest are read (up to the limit), listed oldest first
             c.Out.Sub("Services installed in the last " + c.Opt.Days + " days (System event 7045)" + (Rules.Whitelist ? ", except signed programs in trusted locations" : ""));
             var it = new Table("@time", "[kind", "account", "!status", "<flags", "*service", ">program");
             foreach (var e in ev)
@@ -279,11 +280,11 @@ namespace Spor.Modules
                         if (changed) c.Event(fi.LastWriteTimeUtc, "TSK", null, text: $"task {Rules.Fix(name)} changed");
                     }
                     if (acts.Any(a => Rules.Strong(a.Fl).Count > 0 || (a.Prog.Length > 0 && !Trusted(a.Prog) && Ctx.BadSig(a.Line))) || (hidden && !ms && acts.Any(a => a.Prog.Length > 0 && !Trusted(a.Prog))))
-                        c.Find(fi.CreationTimeUtc, $"task {Rules.Fix(name)}{(hidden ? " (hidden)" : "")}: {first.Line}");
+                        c.Find(fi.CreationTimeUtc, $"task {Rules.Fix(name)}{(hidden ? " (hidden)" : "")}: {first.Line}", "task file created");
                 }
                 catch (Exception e) { c.Err.Add("Task " + f + ": " + e.Message); }
             }
-            foreach (var r in trows.OrderByDescending(r => r.T))
+            foreach (var r in trows.OrderBy(r => r.T))
             {
                 tt.Add(r.F);
                 foreach (var m in r.More) { int i = m.IndexOf(": "); tt.More(m.Substring(0, i), m.Substring(i + 2)); }
@@ -292,6 +293,7 @@ namespace Spor.Modules
 
             // Task Scheduler log: registered / updated / deleted (deleted tasks are only here)
             var ev = Ev.Query("Microsoft-Windows-TaskScheduler/Operational", Ev.Ids(106, 140, 141), c.Since, 3000, c.Err);
+            ev.Reverse();   // the newest are read (up to the limit), listed oldest first
             var shown = ev.Where(e => !(Rules.Whitelist && hiddenTasks.Contains(Ev.P(e, 0)))).ToList();   // deleted tasks are always shown
             if (shown.Count > 0)
             {
@@ -334,9 +336,9 @@ namespace Spor.Modules
                         var pf = ProgF(target, out var prog, out var fl);
                         var ta = Cmd.Args(target);
                         stt.More("target", Log.Item(pf.Path, pf.Status, ta.Length > 0 ? "arguments " + Rules.Fix(ta) : null, Rules.FlagCol(fl)));
-                        if (Rules.Strong(fl).Count > 0 || fl.Contains("!lolbin")) c.Find(f.CreationTimeUtc, "Startup item " + line + " -> " + c.File(prog) + Rules.FlagText(fl));
+                        if (Rules.Strong(fl).Count > 0 || fl.Contains("!lolbin")) c.Find(f.CreationTimeUtc, "Startup item " + line + " -> " + c.File(prog) + Rules.FlagText(fl), "created");
                     }
-                    else if (!f.Extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase)) c.Find(f.CreationTimeUtc, "Startup folder file (not a shortcut): " + line);
+                    else if (!f.Extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase)) c.Find(f.CreationTimeUtc, "Startup folder file (not a shortcut): " + line, "created");
                     c.Event(f.CreationTimeUtc, "STA", f.FullName, target != null ? "-> " + target : null);
                 }
             }

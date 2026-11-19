@@ -38,8 +38,8 @@ namespace Spor
             ("BAM", "Background Activity Moderator: program ran"),
             ("MPL", "Defender looked the file up in the cloud (usually when it ran or was written)"),
             ("SRU", "SRUM: program first active in the window"),
-            ("AM", "Amcache: file recorded by Windows (not necessarily run)"),
-            ("SC", "ShimCache: file modified (often when it was created/dropped)"),
+            ("AM", "Amcache: time = when Windows wrote the entry (the file was there; not necessarily run)"),
+            ("SC", "ShimCache: time = the file's modification time (not when it ran or arrived: a copied file keeps its old time)"),
             ("NEW", "file created"),
             ("STP", "timestamps set, possibly faked (timestomping)"),
             ("DL", "browser download"),
@@ -182,10 +182,23 @@ namespace Spor
             return string.Join("\\", segs) + p.Substring(k);
         }
 
+        /// <summary>
+        /// For lines whose sources only record a file, not an action: what the line's time is. Lines with a run, download, ... need none.
+        /// </summary>
+        static string TimeMeaning(IEnumerable<string> sources)
+        {
+            var s = sources.Distinct().ToList();
+            if (s.All(x => x == "SC")) return "file modified at this time (ShimCache: no proof it ran; a copied file keeps its old time)";
+            if (s.All(x => x == "AM")) return "Amcache entry written at this time (no proof it ran)";
+            if (s.All(x => x == "SC" || x == "AM")) return "file modified or Amcache entry written at this time (no proof it ran)";
+            return null;
+        }
+
         static Log Timeline(Ctx c, out List<Row> result)
         {
             var rows = new List<Row>();
             var signedHidden = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            int defUpdates = 0;
             int Order(string t) { for (int i = 0; i < Tags.Length; i++) if (Tags[i].Tag == t) return i; return 99; }
             // whitelist: a file validly signed by a well-known publisher, without flags, is counted instead of listed
             // (a deleted file: its signed newer version next to it, see Ctx.Replacement)
@@ -225,6 +238,7 @@ namespace Spor
                 var first = cl[0].Min(e => e.T);
                 if (!cl.Any(x => x.Any(e => e.Flags != null && e.Flags.Count > 0)))
                 {
+                    if (Rules.Whitelist && paths.All(Rules.DefenderUpdate) && paths.All(p => Rules.Flags(p).Count == 0)) { defUpdates += cl.Count + dropped; continue; }
                     var who = paths.Select(SignedBy).ToList();
                     if (who.All(w => w != null)) { var k = who[0]; signedHidden[k] = (signedHidden.TryGetValue(k, out var n) ? n : 0) + cl.Count + dropped; continue; }
                 }
@@ -232,6 +246,7 @@ namespace Spor
                 {
                     var path = x.OrderByDescending(e => e.T).First().Path;
                     var ex = x.Where(e => !string.IsNullOrEmpty(e.Extra)).Select(e => e.Extra).Distinct().ToList();
+                    if (TimeMeaning(x.Select(e => e.Src)) is string tm) ex.Add(tm);   // last, so the other details keep their place
                     bool last = x == cl[cl.Count - 1];
                     if (dropped > 0 && last)
                         ex.Add($"+{dropped} more times since {first:yyyy-MM-dd HH:mm}" + (paths.Count > 1 ? $" in {paths.Count} folders that differ only in numbers, all listed below" : ""));
@@ -243,7 +258,7 @@ namespace Spor
                     };
                     // grouped lines: every real path with its own times, so nothing has to be guessed for removal
                     if (paths.Count > 1 && last)
-                        foreach (var pg in g.GroupBy(e => e.Path, Util.IC).OrderByDescending(pg => pg.Max(e => e.T)))
+                        foreach (var pg in g.GroupBy(e => e.Path, Util.IC).OrderBy(pg => pg.Max(e => e.T)))
                         {
                             var pf = c.F(pg.Key, !pg.All(e => e.NoHash));
                             var times = pg.Select(e => e.T).Distinct().Count();
@@ -254,13 +269,16 @@ namespace Spor
                 }
             }
             foreach (var e in c.Events.Where(e => e.Path == null))
-                rows.Add(new Row { T = e.T, Src = e.Src, Status = "-", Obj = e.Text, Details = e.Extra, Flags = e.Flags ?? new List<string>(), More = e.More });
-            rows = rows.OrderByDescending(x => x.T).ToList();
+                rows.Add(new Row { T = e.T, Src = e.Src, Status = "-", Obj = e.Text, Flags = e.Flags ?? new List<string>(), More = e.More,
+                                   Details = string.Join("; ", new[] { e.Extra, TimeMeaning(new[] { e.Src }) }.Where(s => !string.IsNullOrEmpty(s))) });
+            rows = rows.OrderBy(x => x.T).ToList();   // oldest first: read it like a story
 
             var log = new Log();
-            log.Heading($"TIMELINE - last {c.Opt.Days} days, newest first");
+            log.Heading($"TIMELINE - last {c.Opt.Days} days, oldest first");
             log.Comment("Sources [PF AM ...], status [gone ...] and flags <==== !...: see LEGEND at the end of the log.");
             log.Comment("A file seen by several sources within 2 minutes is one line. A file seen many times: the first and the last time.");
+            if (defUpdates > 0)
+                log.Comment($"Hidden: {defUpdates} runs of Defender update packages (Windows\\SoftwareDistribution\\Download\\Install\\AM_Delta_Patch_*.exe; -nowhitelist lists them).");
             if (signedHidden.Count > 0)
                 log.Comment($"Hidden: {signedHidden.Values.Sum()} runs of files validly signed by well-known publishers, without flags (-nowhitelist lists them): " +
                             string.Join(", ", signedHidden.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")));
@@ -275,11 +293,17 @@ namespace Spor
         {
             log.W();
             log.Heading("SUMMARY - flagged items; details in the sections below");
+            log.Comment("time = when it happened, except: ShimCache = the file's modification time (a copied file keeps its old time), Amcache = when Windows wrote the entry,");
+            log.Comment("Run keys and services = when the key was last changed, tasks and Startup items = file created, log and config files = file last written.");
             var flagged = rows.Where(r => Rules.Strong(r.Flags).Count > 0).ToList();
             var lolbins = rows.Where(r => r.Flags.Contains("!lolbin") && Rules.DrivePath.IsMatch(r.Obj ?? "")).Select(r => Util.Leaf(r.Obj)).Distinct(Util.IC).ToList();
             var t = new Table("@time", "[from", "*item", "!status", "=details", "<flags");
-            foreach (var r in flagged) t.Add(Log.T(r.T), "timeline " + r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(Rules.Strong(r.Flags)));
-            foreach (var f in c.Findings.Distinct()) t.Add(Log.T(f.T), f.Module, f.Text);
+            // sorted by time, oldest first; findings without a time (signatures, Run dialog, ...) at the end, in module order
+            var items = flagged.Select(r => (T: (DateTime?)r.T, Fields: new[] { Log.T(r.T), "timeline " + r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(Rules.Strong(r.Flags)) }))
+                .Concat(c.Findings.Distinct().Select(f => (T: f.T, Fields: new[] { Log.T(f.T), f.Module, f.Text, null, null, null })))
+                .Select((x, i) => (x.T, x.Fields, I: i))
+                .OrderBy(x => x.T.HasValue ? 0 : 1).ThenBy(x => x.T ?? DateTime.MaxValue).ThenBy(x => x.I);
+            foreach (var x in items) t.Add(x.Fields);
             t.WriteTo(log, "nothing flagged");
             if (lolbins.Count > 0) log.Wrap("LOLBins run in the last " + c.Opt.Days + " days (normal on many PCs, see the timeline): ", lolbins);
         }
@@ -301,7 +325,7 @@ namespace Spor
                     c.Sha256.TryGetValue(k, out var h); c.Signer.TryGetValue(k, out var sg); c.Version.TryGetValue(k, out var vi); c.AmSha1.TryGetValue(k, out var am);
                     c.Md5.TryGetValue(k, out var md5); bool meta = c.Meta.TryGetValue(k, out var fm);
                     t.Add(k, h ?? "not hashed", sg, vi == "none" ? null : vi, am?.ToUpperInvariant(), md5,
-                          meta ? fm.Size.ToString() : null, meta ? fm.Created.ToLocalTime().ToString(Log.TimeFmt) : null, meta ? fm.Modified.ToLocalTime().ToString(Log.TimeFmt) : null);
+                          meta ? fm.Size.ToString() : null, meta ? Log.T(Util.FrstLocal(fm.Created, c.LocalOffset)) : null, meta ? Log.T(Util.FrstLocal(fm.Modified, c.LocalOffset)) : null);
                 }
                 t.WriteTo(log);
             }

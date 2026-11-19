@@ -77,6 +77,14 @@ namespace Spor
             "Lenovo", "Dell Inc", "HP Inc.", "Logitech Inc", "Logitech", "Anthropic, PBC", "Slack Technologies, LLC", "Notion Labs, Inc."
         }, System.StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// Defender definition update packages that Windows Update downloads and runs: C:\Windows\SoftwareDistribution\Download\Install\AM_Delta_Patch_1.2.3.4.exe.
+        /// Only SYSTEM can write there, and they delete themselves, so a signature cannot be checked. Exact name and folder on the system drive.
+        /// </summary>
+        public static bool DefenderUpdate(string p) =>
+            Regex.IsMatch(p ?? "", @"^([A-Z]:)\\WINDOWS\\SOFTWAREDISTRIBUTION\\DOWNLOAD\\INSTALL\\AM_DELTA_PATCH_\d+(\.\d+){3}\.EXE$", O)
+            && p.Substring(0, 2).Equals(SystemDrive, System.StringComparison.OrdinalIgnoreCase);
+
         /// <summary>Interpreters and script hosts: signed by their publishers, but malware runs its scripts with them. Never hidden by signer.</summary>
         public static readonly Regex Interpreter = new Regex(
             @"\\(PYTHONW?|PYTHON3[\d.]*W?|PY|PYW|NODE|JAVAW?|JAVAWS|AUTOIT3(_X64)?|AUTOHOTKEY(U?(32|64))?|AUTOHOTKEY64|PERL|RUBYW?|PHP(-CGI)?|PWSH|BUN|DENO|TCLSH\d*|WISH\d*|LUAJIT|LUA\d*)\.EXE$", O);

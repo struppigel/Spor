@@ -187,7 +187,7 @@ namespace Spor
             return sp > 0 ? s.Substring(sp + 1).Trim() : "";
         }
 
-        public static string Bytes(long n) =>
-            n >= 1L << 30 ? $"{n / (double)(1L << 30):0.0} GB" : n >= 1L << 20 ? $"{n / (double)(1L << 20):0.0} MB" : n >= 1024 ? $"{n / 1024.0:0} KB" : n + " B";
+        /// <summary>Exact size in bytes, not rounded, so logs can be compared.</summary>
+        public static string Bytes(long n) => n + " bytes";
     }
 }

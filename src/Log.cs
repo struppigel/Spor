@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace Spor
@@ -51,7 +52,8 @@ namespace Spor
             return s;
         }
 
-        public static string T(DateTime? t) => t.HasValue ? t.Value.ToString(TimeFmt) : "-";
+        /// <summary>Always "yyyy-MM-dd HH:mm:ss" with ":" and the Gregorian calendar, whatever the PC's culture.</summary>
+        public static string T(DateTime? t) => t.HasValue ? t.Value.ToString(TimeFmt, CultureInfo.InvariantCulture) : "-";
 
         /// <summary>"(prefix item, item, ...)" as one comment line.</summary>
         public void Wrap(string prefix, IEnumerable<string> items) => Comment(prefix + string.Join(", ", items));

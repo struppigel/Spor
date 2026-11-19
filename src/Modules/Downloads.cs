@@ -39,7 +39,7 @@ namespace Spor.Modules
         void Browsers()
         {
             c.Out.Sub(Rules.Whitelist ? "Browser downloads: executables, scripts, archives, disk images" : "Browser downloads", "Time = download start. Page = the tab the download came from.");
-            var rows = new List<(DateTime T, string Browser, string Path, string Url, string Page, List<string> Fl)>();
+            var rows = new List<(DateTime T, string User, string Browser, string Path, string Url, string Page, List<string> Fl)>();
             int total = 0;
             var browsers = new List<string>();
             foreach (var p in c.Profiles)
@@ -94,7 +94,7 @@ namespace Spor.Modules
                                 var fl = new List<string>();
                                 var danger = Convert.ToInt64(r.TryGetValue("danger_type", out var dt) ? dt ?? 0L : 0L);
                                 if (danger == 6 || danger == 16) fl.Add("!kept-despite-warning");   // USER_VALIDATED / DEEP_SCANNED_OPENED_DANGEROUS
-                                rows.Add((t.Value, c.U(p.User) + name, path, url, page, fl));
+                                rows.Add((t.Value, p.User, name, path, url, page, fl));
                             }
                         }
                         catch (Exception e) { c.Err.Add($"{name} history ({h}): {e.Message}"); }
@@ -125,22 +125,23 @@ namespace Spor.Modules
                                 string path; try { path = new Uri(content).LocalPath; } catch { path = content; }
                                 if (!Show(path)) continue;
                                 places.TryGetValue(Convert.ToInt64(r["place_id"] ?? 0L), out var url);
-                                rows.Add((t, c.U(p.User) + ffName + " " + Path.GetFileName(prof), path, url, null, new List<string>()));
+                                rows.Add((t, p.User, ffName + " " + Path.GetFileName(prof), path, url, null, new List<string>()));
                             }
                         }
                         catch (Exception e) { c.Err.Add($"{ffName} history ({pl}): {e.Message}"); }
                     }
             }
             c.Out.Comment($"{total} downloads in the browser histories; browsers: " + (browsers.Count > 0 ? string.Join(", ", browsers.Distinct()) : "none found"));
-            var dlt = new Table("@time", "[browser", "!status", "<flags", "*file");
-            foreach (var r in rows.OrderByDescending(r => r.T))
+            // The user is a tag of its own ("[anna] [Brave]"), never inside the browser's brackets.
+            var dlt = new Table("@time", "[user", "[browser", "!status", "<flags", "*file");
+            foreach (var r in rows.OrderBy(r => r.T))
             {
                 var fl = Rules.Flags(r.Path).Concat(r.Fl).Distinct().ToList();
                 var f = c.F(r.Path);
-                dlt.Add(Log.T(r.T), r.Browser, f.Status, Rules.FlagCol(fl), f.Path);
+                dlt.Add(Log.T(r.T), c.MultiUser ? r.User : null, r.Browser, f.Status, Rules.FlagCol(fl), f.Path);
                 dlt.More("from", r.Url);
                 if (!string.IsNullOrEmpty(r.Page) && r.Page != r.Url) dlt.More("page", r.Page);
-                c.Event(r.T, "DL", r.Path, $"{r.Browser} from {Host(r.Url)}{(string.IsNullOrEmpty(r.Page) ? "" : ", page " + Host(r.Page))}", r.Fl);
+                c.Event(r.T, "DL", r.Path, $"{c.U(r.User)}{r.Browser} from {Host(r.Url)}{(string.IsNullOrEmpty(r.Page) ? "" : ", page " + Host(r.Page))}", r.Fl);
                 if (Rules.Strong(fl).Count > 0) c.Find(r.T, $"download {c.File(r.Path)}{Rules.FlagText(Rules.Strong(fl))} from {r.Url}");
             }
             dlt.WriteTo(c.Out, $"none in the last {c.Opt.Days} days");
@@ -184,7 +185,7 @@ namespace Spor.Modules
                 }
             }
             var rct = new Table("@last opened", "first opened", "[user", "!status", "<flags", "*file", "=where");
-            foreach (var r in rows.OrderByDescending(r => r.T))
+            foreach (var r in rows.OrderBy(r => r.T))
             {
                 var fl = Rules.Flags(r.L.Target);
                 var extra = string.Join(", ", new[] { r.L.Where, (r.T - r.First).TotalMinutes > 2 ? "first opened " + r.First.ToString("yyyy-MM-dd HH:mm") : null }.Where(x => x != null));
@@ -231,7 +232,7 @@ namespace Spor.Modules
             }
             rows = rows.GroupBy(r => r.Path + "|" + r.T.ToString("yyyyMMddHHmm"), Util.IC).Select(g => g.First()).ToList();
             var wct = new Table("@time", "[user", "!status", "<flags", "*file");
-            foreach (var r in rows.OrderByDescending(r => r.T))
+            foreach (var r in rows.OrderBy(r => r.T))
             {
                 var f = c.F(r.Path);
                 wct.Add(Log.T(r.T), r.User, f.Status, Rules.FlagCol(Rules.Flags(r.Path)), f.Path);
@@ -256,7 +257,7 @@ namespace Spor.Modules
             }
             var imgs = rows.Where(r => r.T.HasValue).GroupBy(r => r.Path, Util.IC).Select(g => (Path: g.Key, Last: g.Max(r => r.T.Value), First: g.Min(r => r.T.Value), N: g.Count())).ToList();
             var it = new Table("@last mounted", "first mounted", "times", "!status", "*image");
-            foreach (var r in imgs.OrderByDescending(r => r.Last))
+            foreach (var r in imgs.OrderBy(r => r.Last))
             {
                 var f = c.F(r.Path, false);
                 it.Add(Log.T(r.Last), Log.T(r.First), r.N.ToString(), f.Status, f.Path);

@@ -29,7 +29,7 @@ Spor started as a set of my PowerShell snippets for malware removal help.
 * Webcam and microphone use, remote access tools (AnyDesk, TeamViewer, ScreenConnect, ...)
 * Data sent per program (SRUM), current connections, DNS cache
 * Local accounts, administrators, hidden accounts, account changes
-* One timeline of all events, newest first, and a summary of flagged items
+* One timeline of all events, oldest first, and a summary of flagged items
 * Signature check of every program file (WinVerifyTrust, Windows catalogs, MSIX package signatures), SHA256 and MD5 hashes, version information
 * Whitelist that hides validly signed files in trusted locations, so the log stays readable. You can turn it off.
 * Log format with one line per item, easy to read and to parse
