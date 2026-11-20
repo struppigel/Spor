@@ -59,6 +59,17 @@ namespace Spor
         /// <summary>RTLO and other bidi override characters (shown as &lt;RLO&gt;).</summary>
         public static readonly Regex Bidi = new Regex("[\u202A-\u202E\u2066-\u2069]", O);
 
+        /// <summary>
+        /// Invisible or blank-looking characters (no-break and other spaces, zero-width characters, soft hyphen, Hangul fillers, the Braille
+        /// blank, BOM, ...): names made of them look empty or like a normal name in Explorer. Shown as &lt;U+XXXX&gt;. Not the bidi
+        /// characters (Bidi, shown as &lt;RLO&gt;).
+        /// </summary>
+        public static readonly Regex Invisible = new Regex(
+            "[\u00A0\u00AD\u034F\u115F\u1160\u17B4\u17B5\u180E\u2000-\u200F\u2028\u2029\u202F\u205F-\u2064\u206A-\u206F\u2800\u3000\u3164\uFEFF\uFFA0\uFFF9-\uFFFB]", O);
+
+        /// <summary>A name hidden with characters: bidi override or invisible characters.</summary>
+        public static bool OddChars(string s) => Bidi.IsMatch(s ?? "") || Invisible.IsMatch(s ?? "");
+
         /// <summary>Strips the per-version part of WinSxS-like folder names so noise keys collapse.</summary>
         public static readonly Regex SxsVersion = new Regex(@"_[\d.]+_(X64|X86|ARM64|NEUTRAL)_+[A-Z0-9]+", O);
 
@@ -279,14 +290,19 @@ namespace Spor
             return sp > 0 ? s.Substring(sp) : "";
         }
 
-        public static string Fix(string s) => Bidi.Replace(s ?? "", "<RLO>");
+        /// <summary>For the log: bidi characters as &lt;RLO&gt;, invisible characters as &lt;U+XXXX&gt; (e.g. &lt;U+00A0&gt; for a no-break space).</summary>
+        public static string Fix(string s) =>
+            Invisible.Replace(Bidi.Replace(s ?? "", "<RLO>"), m => "<U+" + ((int)m.Value[0]).ToString("X4") + ">");
 
-        /// <summary>!RLO, !double-extension, !in-folder-named-like-file, !lolbin. name: also test this file name for LOLBins.</summary>
+        public const string InvisibleFlag = "!invisible-char";
+
+        /// <summary>!RLO, !invisible-char, !double-extension, !in-folder-named-like-file, !lolbin. name: also test this file name for LOLBins.</summary>
         public static List<string> Flags(string p, string name = null)
         {
             var f = new List<string>();
             p = p ?? "";
             if (Bidi.IsMatch(p)) f.Add("!RLO");
+            if (Invisible.IsMatch(p)) f.Add(InvisibleFlag);
             if (Dbl.IsMatch(p)) f.Add("!double-extension");
             if (Disg.IsMatch(p)) f.Add("!in-folder-named-like-file");
             if (Lol.IsMatch(p) || (name != null && Lol.IsMatch("\\" + name))) f.Add("!lolbin");
@@ -339,7 +355,15 @@ namespace Spor
             "!padded = new file inflated with one repeated byte against scanner and sandbox size limits: a program (its overlay) or data next to a new program",
             "!runtime-loader = new launcher of a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua) with loader signs in its folder: padded or encrypted random-named data, a hidden file next to its scripts, a program it started, or a !motw-removed file near a run",
             "!known-malware = matches a pattern of a known malware family (Autodetect, resources/autodetect.txt); the line names the family",
-            "!renamed-program = hint: a signed program under a random-looking or lure name that is not its original name (in SUMMARY only with a strong flag nearby)"
+            "!renamed-program = hint: a signed program under a random-looking or lure name that is not its original name (in SUMMARY only with a strong flag nearby)",
+            "!invisible-char = invisible or blank-looking character in the name (no-break space, zero-width, Hangul filler, Braille blank, ...), shown as <U+XXXX>",
+            "!usb-worm-lnk = shortcut on a drive that starts a script host, cmd, rundll32 or a file in a hidden folder, has no normal target, or is named like the drive or a hidden folder (USB worm)",
+            "!disguised-icon = shortcut to a program or script that shows a folder, document or drive icon",
+            "!autorun = autorun.inf that starts something, or a MountPoints2 shell command",
+            "!hidden-system = hidden and system item on a removable drive (not a Windows folder), e.g. a fake RECYCLER folder",
+            "!clsid-folder = folder named x.{GUID} or with a desktop.ini that sets a CLSID: Explorer shows it as something else",
+            "!ads = alternate data stream (other than Zone.Identifier) on a file of a drive",
+            "!explorer-hiding = Explorer settings tampered so hidden files cannot be shown (SHOWALL CheckedValue, NoFolderOptions)"
         };
     }
 }

@@ -133,7 +133,7 @@ namespace Spor.Modules
             var m = Rules.DrivePath.Match(p);
             if (!m.Success) return 2;
             var d = m.Groups[1].Value; var rel = m.Groups[2].Value;
-            if (Rules.Bidi.IsMatch(rel) || Rules.Dbl.IsMatch(rel) || Rules.Disg.IsMatch(rel)) return 2;
+            if (Rules.OddChars(rel) || Rules.Dbl.IsMatch(rel) || Rules.Disg.IsMatch(rel)) return 2;
             if (!Rules.Whitelist) return 2;
             if (!d.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase) || Rules.Risky.IsMatch(rel)) return 2;
             bool unsignedExe = check && Exe.IsMatch(p) && !c.SignedOk(p);   // only executables: Amcache also lists thousands of DLLs

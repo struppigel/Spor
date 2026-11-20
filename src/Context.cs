@@ -18,7 +18,10 @@ namespace Spor
         public bool NoHash;
         public bool NoOpen;
         public string Out;
-        public HashSet<string> Modules;   // null = all
+        public string Profile = "default";   // Scanner.Profiles: which modules run when Modules is null
+        public HashSet<string> Modules;   // null = the profile's modules
+        public int UsbMax = 2000;         // USB DRIVES: items listed per drive
+        public int UsbDepth = 8;          // USB DRIVES: folder levels below a removable drive's root
         public int PerDir = 4;            // entries per folder before "+N more"
         public int Max = 20;              // remote access: entries per log; webcam: programs
         public int HistoryMax = 40;       // ClickFix: suspicious PowerShell history lines
@@ -93,6 +96,13 @@ namespace Spor
         public readonly List<(string Parent, string Child, string CommandLine, DateTime? T)> Launches = new List<(string, string, string, DateTime?)>();
         /// <summary>Process starts recorded by Security 4688 and Sysmon 1 (PID, start, image), to name exited parents in RUNNING PROCESSES.</summary>
         public readonly List<(int Pid, DateTime T, string Image)> ProcessStarts = new List<(int, DateTime, string)>();
+
+        /// <summary>
+        /// Removable and USB volumes (USB DRIVES): volume serial (8 hex digits, as in Prefetch's \VOLUME{...-XXXXXXXX}) -> label, and drive
+        /// letters ("E:") -> label. Correlate names the USB drive on timeline lines of files on them.
+        /// </summary>
+        public readonly Dictionary<string, string> UsbVolumes = new Dictionary<string, string>(Util.IC);
+        public readonly Dictionary<string, string> UsbLetters = new Dictionary<string, string>(Util.IC);
 
         /// <summary>Script-runtime launchers (Correlate): never hidden by the signer whitelist, like interpreters.</summary>
         public readonly HashSet<string> RuntimeLaunchers = new HashSet<string>(Util.IC);

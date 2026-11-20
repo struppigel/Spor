@@ -141,6 +141,7 @@ If the same file was in folders that only differ in numbers (version folders, da
 | `!lolbin` | a Windows tool that malware likes to use (powershell, mshta, rundll32, regsvr32, cmd, certutil, …) | **Not on its own.** These are normal on many PCs. Look at what it ran: the arguments of a persistence entry, the PowerShell history, the files around it in the timeline. The SUMMARY lists all LOLBins in one line. |
 | `!double-extension` | `invoice.pdf.exe` | High |
 | `!RLO` | right-to-left override in the name, shown as `<RLO>` | High |
+| `!invisible-char` | an invisible or blank-looking character in the name, shown as `<U+00A0>` etc. | High for programs and for folders on USB drives: USB worms hide the user's files and their copy in a folder named like that. Some games and installers use no-break spaces in names; read the line. |
 | `!in-folder-named-like-file` | `x.exe\evil.dll`, `app.exe.local\x.dll` | High, DLL hijacking |
 | `!renamed-lolbin` | a Windows tool under another name (original name from Amcache) | High |
 | `!suspicious` | a command that downloads or runs code (Run dialog, address bar, PowerShell history) | High, typical for **ClickFix** (fake CAPTCHA: "press Win+R, Ctrl+V, Enter") |
@@ -162,6 +163,13 @@ If the same file was in folders that only differ in numbers (version folders, da
 | `!runtime-loader` | a new program that ships a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua), with loader signs in its folder | High. The code is in the data files listed as `script:` lines, not in the program. |
 | `!known-malware` | the item matches a pattern of a known malware family (Autodetect); the line names the family | High. The patterns are curated from confirmed cases; still read the line: a row can be wrong. |
 | `!renamed-program` | **hint**: a signed program under a random-looking or lure name that is not its original name | **Not on its own.** It goes to SUMMARY only with a strong flag on the same file or in the same folder, e.g. as the host of a `!sideload` DLL. |
+| `!usb-worm-lnk` | a shortcut on a USB drive that starts cmd/wscript/rundll32/..., points into a hidden folder, or is named like the drive or a hidden folder | High. The `worm signs:` line under it says why. |
+| `!disguised-icon` | a shortcut to a program or script shows a folder, document or drive icon | High |
+| `!autorun` | autorun.inf that starts something, or a MountPoints2 shell command | High |
+| `!hidden-system` | a hidden and system item on a USB drive | High for folders and programs. Explorer does not show these even with "show hidden files". |
+| `!clsid-folder` | a folder that Explorer shows as something else (`x.{GUID}`, or a desktop.ini with a CLSID) | High on USB drives |
+| `!ads` | an unusual alternate data stream on a file of a USB drive or a drive root | Medium. Read the stream name and size in the line. |
+| `!explorer-hiding` | Explorer was changed so hidden files cannot be shown | High |
 
 ---
 
@@ -257,6 +265,15 @@ Webcam and microphone use per program, and traces of AnyDesk, TeamViewer, Screen
 
 ### ACCOUNTS
 Local accounts, last sign-in, members of Administrators and account changes. Look for new accounts, unknown administrators and hidden accounts.
+
+### USB DRIVES
+Only with the **USB worm** or **All** profile. A typical USB worm infection looks like this on the stick:
+
+- a hidden, often hidden+system, folder whose name you cannot see (`E:\<U+00A0>\`), holding the user's files and the worm's copy
+- a shortcut in the root named like the stick or the folder, with a folder icon (`!disguised-icon`), that starts the worm (`cmd /c start ...`, `wscript`, `rundll32`) and then opens the hidden folder so the user sees their files (`!usb-worm-lnk`)
+- sometimes `autorun.inf` (`!autorun`), a fake `RECYCLER` folder (`!hidden-system`), or a folder that Explorer shows as something else (`!clsid-folder`)
+
+Read the **Shortcuts** sub-section for the command line, and FILES for the hashes of the worm's copy and of everything else on the stick. On the PC, look for the worm's copy in PERSISTENCE and RUNNING PROCESSES, and for runs from USB volumes in the timeline (`on USB drive <label>`). "MountPoints2" and "USB storage devices" tell you which sticks were plugged in and when, so you know which other sticks to clean.
 
 ### FILES and AMCACHE FILES
 One line per file: hash, signature status, signer, certificate thumbprint, version information and the SHA1 that Amcache recorded. If the Amcache SHA1 differs from the file now, the file was replaced after Windows recorded it.

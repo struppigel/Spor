@@ -98,6 +98,38 @@ namespace Spor
         {
             try { RuntimeLaunchers(c); }
             catch (Exception e) { c.Err.Add("script-runtime check: " + e.Message); }
+            try { UsbDrives(c); }
+            catch (Exception e) { c.Err.Add("USB drive check: " + e.Message); }
+        }
+
+        static readonly Regex VolumePath = new Regex(@"^\\VOLUME\{[0-9a-f]+-([0-9a-f]{8})\}", Util.RX);
+
+        /// <summary>
+        /// (pure) "on USB drive LABEL (serial X)" for a file on a removable or USB volume that USB DRIVES saw (now mounted: its letter;
+        /// not mounted: Prefetch's \VOLUME{...-SERIAL}), else null.
+        /// </summary>
+        internal static string UsbDriveOf(string path, IDictionary<string, string> volumes, IDictionary<string, string> letters)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            var m = VolumePath.Match(path);
+            var serial = m.Success ? m.Groups[1].Value.ToUpperInvariant() : null;   // Prefetch writes it in either case; serials are kept upper case
+            if (serial != null && volumes.TryGetValue(serial, out var label))
+                return "on USB drive " + (string.IsNullOrEmpty(label) ? "" : Rules.Fix(label) + " ") + "(serial " + serial + ")";
+            if (path.Length >= 2 && path[1] == ':' && letters.TryGetValue(path.Substring(0, 2), out label))
+                return "on USB drive " + path.Substring(0, 2).ToUpperInvariant() + (string.IsNullOrEmpty(label) ? "" : " " + Rules.Fix(label));
+            return null;
+        }
+
+        /// <summary>Timeline lines of files on USB drives say so (runs from a USB stick are how worms start).</summary>
+        static void UsbDrives(Ctx c)
+        {
+            if (c.UsbVolumes.Count == 0 && c.UsbLetters.Count == 0) return;
+            foreach (var e in c.Events)
+            {
+                var d = UsbDriveOf(e.Path, c.UsbVolumes, c.UsbLetters);
+                if (d == null || (e.Extra ?? "").IndexOf("on USB drive", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                e.Extra = string.IsNullOrEmpty(e.Extra) ? d : e.Extra + "; " + d;
+            }
         }
 
         static bool Under(string path, string dir) => path != null && path.StartsWith(dir + "\\", StringComparison.OrdinalIgnoreCase);

@@ -18,8 +18,10 @@ namespace Spor
         readonly Button scan, open;
         readonly ProgressBar bar;
         readonly Label status;
+        readonly ComboBox profile;
+        const string Custom = "Custom";
         string logPath;
-        bool running;
+        bool running, applying;
 
         static readonly (string Id, string Text)[] ModuleTexts =
             Scanner.All.Select(m => (m.Id, Scanner.Pretty(m))).ToArray();
@@ -50,8 +52,22 @@ namespace Spor
                 AutoSize = true, Margin = new Padding(0, 0, 0, 4)
             });
 
-            // modules in a grid, filled column by column (3 columns)
+            // profile: ticks its modules; ticking boxes by hand shows the matching profile, else "Custom"
             Add(Head("What to scan"));
+            var pr = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(8, 0, 0, 6), WrapContents = false };
+            pr.Controls.Add(new Label { Text = "Profile:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 6, 3) });
+            profile = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+            foreach (var p in Scanner.Profiles) profile.Items.Add(p.Name);
+            profile.Items.Add(Custom);
+            pr.Controls.Add(profile);
+            pr.Controls.Add(new Label
+            {
+                Text = "Default: malware traces.  USB worm: drives, shortcuts, autorun.inf, USB history.  All: both.",
+                AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(12, 6, 3, 3), ForeColor = SystemColors.GrayText
+            });
+            Add(pr);
+
+            // modules in a grid, filled column by column (3 columns)
             const int cols = 3;
             int rows = (ModuleTexts.Length + cols - 1) / cols;
             var grid = new TableLayoutPanel { ColumnCount = cols, RowCount = rows, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(8, 0, 0, 0) };
@@ -60,10 +76,13 @@ namespace Spor
             for (int i = 0; i < ModuleTexts.Length; i++)
             {
                 var (id, text) = ModuleTexts[i];
-                var cb = new CheckBox { Text = text, Checked = true, AutoSize = true, Margin = new Padding(0, 1, 24, 1) };
+                var cb = new CheckBox { Text = text, AutoSize = true, Margin = new Padding(0, 1, 24, 1) };
+                cb.CheckedChanged += (s, e) => { if (!applying) ShowProfile(); };
                 mods[id] = cb; grid.Controls.Add(cb, i / rows, i % rows);
             }
             Add(grid);
+            profile.SelectedIndexChanged += (s, e) => ApplyProfile();
+            profile.SelectedIndex = 0;   // Default
 
             // options in one row
             Add(Head("Options"));
@@ -108,16 +127,45 @@ namespace Spor
         }
 
 
+        /// <summary>Ticks the modules of the chosen profile ("Custom" changes nothing).</summary>
+        void ApplyProfile()
+        {
+            if (profile.SelectedIndex < 0 || profile.SelectedIndex >= Scanner.Profiles.Length) return;
+            var sel = Scanner.ProfileModules(Scanner.Profiles[profile.SelectedIndex].Id);
+            applying = true;
+            try { foreach (var kv in mods) kv.Value.Checked = sel.Contains(kv.Key); }
+            finally { applying = false; }
+        }
+
+        /// <summary>The profile whose modules are ticked, or "Custom".</summary>
+        void ShowProfile()
+        {
+            var id = MatchingProfile();
+            int i = Array.FindIndex(Scanner.Profiles, p => p.Id == id);
+            applying = true;
+            try { profile.SelectedIndex = i >= 0 ? i : profile.Items.IndexOf(Custom); }
+            finally { applying = false; }
+        }
+
+        /// <summary>The id of the profile with exactly the ticked modules, or null.</summary>
+        string MatchingProfile()
+        {
+            var sel = new HashSet<string>(mods.Where(kv => kv.Value.Checked).Select(kv => kv.Key), StringComparer.OrdinalIgnoreCase);
+            return Scanner.Profiles.Where(p => sel.SetEquals(p.Modules)).Select(p => p.Id).FirstOrDefault();
+        }
+
         void StartScan()
         {
             var sel = mods.Where(kv => kv.Value.Checked).Select(kv => kv.Key).ToList();
             if (sel.Count == 0) { MessageBox.Show(this, "Select at least one thing to scan.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            var prof = MatchingProfile();
             var o = new Options
             {
                 Days = (int)days.Value,
                 Whitelist = whitelist.Checked,
                 NoHash = !hash.Checked,
-                Modules = sel.Count == ModuleTexts.Length ? null : new HashSet<string>(sel, StringComparer.OrdinalIgnoreCase)
+                Profile = prof ?? "default",
+                Modules = prof != null ? null : new HashSet<string>(sel, StringComparer.OrdinalIgnoreCase)
             };
             SetRunning(true);
             var sw = Stopwatch.StartNew();
@@ -146,7 +194,7 @@ namespace Spor
         {
             running = r;
             scan.Enabled = !r; open.Enabled = !r && logPath != null;
-            whitelist.Enabled = hash.Enabled = days.Enabled = !r;
+            whitelist.Enabled = hash.Enabled = days.Enabled = profile.Enabled = !r;
             foreach (var cb in mods.Values) cb.Enabled = !r;
             UseWaitCursor = r;
             if (r) { bar.Value = 0; status.Text = "Starting ..."; }

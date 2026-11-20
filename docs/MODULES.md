@@ -3,6 +3,16 @@
 Every module writes its own section in the log. Everything with a time also goes into the timeline.
 You can pick modules on the command line with `-modules`, e.g. `-modules prefetch,files,persistence`.
 
+## Profiles
+
+A profile is a set of modules. In the window, choose it in the "Profile" list (ticking boxes by hand makes it "Custom"); on the command line, use `-profile NAME`. `-modules` replaces the profile.
+
+| Profile   | Modules                                                                 | For |
+|-----------|-------------------------------------------------------------------------|-----|
+| `default` | all modules except `usb`                                                | malware traces on the PC |
+| `usb`     | `prefetch`, `exec`, `files`, `persistence`, `processes`, `usb`          | USB worms: the drives, the worm's copy on the PC, its autostart and process, programs run from USB volumes |
+| `all`     | all modules                                                             | both |
+
 ## Overview
 
 | Module        | Section in the log           | Sources                                                                 |
@@ -21,6 +31,7 @@ You can pick modules on the command line with `-modules`, e.g. `-modules prefetc
 | `remote`      | REMOTE ACCESS                | capability store, remote access tool logs and configs                   |
 | `network`     | NETWORK                      | SRUM, connections, DNS cache                                            |
 | `accounts`    | ACCOUNTS                     | local accounts, Security log                                            |
+| `usb`         | USB DRIVES                   | drive contents, autorun.inf, shortcuts, Explorer settings, MountPoints2, USBSTOR, setupapi.dev.log, Partition/Diagnostic and Kernel-PnP events, Recent shortcuts |
 
 ## prefetch
 
@@ -109,6 +120,22 @@ Traces of remote access tools: AnyDesk, TeamViewer, ScreenConnect, Splashtop, Ra
 
 Local accounts (admin or not, enabled, password set, last sign-in, hidden from the sign-in screen), the members of Administrators, and account changes from the Security log, e.g. an account was created or added to a group.
 
+## usb
+
+Not in the default profile; run it with the `usb` or `all` profile. For USB worms, which hide the user's files in a hidden folder (often named with a no-break space or another invisible character) and put a shortcut with a folder icon in their place.
+
+* **Drives**: every drive with type, bus (USB hard disks report as fixed drives; the bus tells them apart), vendor and product, label, file system, volume serial and size
+* **Contents**: removable and USB drives are listed in full (up to 2000 items and 8 folder levels per drive), other drives their root and the root folders that are hidden, system or oddly named (not Windows' own, such as `$Recycle.Bin` or `ProgramData`). Each item with its attributes in words, created and modified times and its alternate data streams. Invisible characters are shown as `<U+XXXX>`, also spaces at the start or end of a name and dots at its end. Every file goes to FILES (hash, signature, version). New flagged files go to the timeline (`NEW`), other flagged items to SUMMARY.
+* **autorun.inf** on every drive root: each `[section] key=value` line, and the files that `open`, `shellexecute`, `shell\<verb>\command` and `icon` name (hashed). ANSI files keep their no-break spaces. A folder named autorun.inf is shown as an autorun "vaccine".
+* **Shortcuts** (.lnk, .url) found in the listing: target with status, arguments, icon (path,index, with "folder icon" / "document icon" / "drive icon"), working folder, window state, description, the PC the shortcut was made on (tracker block), the target's volume, and where the target was read: link info, environment block, item list (shell items, as crafted worm shortcuts have it) or relative path. Files named in the arguments are hashed.
+* **Explorer settings**: per user Hidden, HideFileExt, ShowSuperHidden; the Explorer policies NoDriveTypeAutoRun, NoAutorun, NoFolderOptions, HonorAutorunSetting; `SHOWALL\CheckedValue`
+* **MountPoints2**: per user, the volumes Explorer saw (USB ones always, others in the time window) with the device from MountedDevices and any `Shell\<verb>\command`
+* **USB storage devices**: USBSTOR with friendly name, serial, first installed (device properties or setupapi.dev.log), last connected and removed (device properties when readable, else the key time), labels from Windows Portable Devices and ReadyBoost (EMDMgmt), drive letter from MountedDevices
+* **Connects** in the time window from Partition/Diagnostic event 1006 (vendor, model, serial, size; size 0 = removed), else Kernel-PnP 410. Timeline: `USB`.
+* **Files opened from removable drives**: Recent and Office Recent shortcuts whose target was on a removable drive, with the volume serial and label
+
+The volume serials and drive letters of USB drives (now mounted, from ReadyBoost, from Recent shortcuts) are used after all modules: timeline lines of files on them get `on USB drive <label> (serial <serial>)`, also Prefetch paths of volumes that are not mounted (`\VOLUME{...-SERIAL}`).
+
 ## Script-runtime launchers (all modules)
 
 After the modules ran, Spor looks at every program on the timeline outside Windows and Program Files: does it ship a script runtime (Ren'Py/Python, AutoIt, Node.js, Electron, Java, Lua)? Malware ships a legitimate runtime and keeps its code in data files, so the launcher's signature says nothing. Such a launcher is never hidden by the signer whitelist (except Electron apps), its first timeline line says `script runtime <kind>` and lists the script containers and hidden files as `script:` lines. A new launcher folder with loader signs gets `!runtime-loader` (see LOG-FORMAT.md).
@@ -127,7 +154,8 @@ What each flag means: LOG-FORMAT.md. Flags from the file name are set wherever a
 
 | Flag | Set by |
 |---|---|
-| `!lolbin`, `!double-extension`, `!in-folder-named-like-file`, `!RLO`, `!log-syntax-in-name` | every module, from the file name |
+| `!lolbin`, `!double-extension`, `!in-folder-named-like-file`, `!RLO`, `!invisible-char`, `!log-syntax-in-name` | every module, from the file name |
+| `!usb-worm-lnk`, `!disguised-icon`, `!autorun`, `!hidden-system`, `!clsid-folder`, `!ads`, `!explorer-hiding` | `usb` |
 | `!renamed-lolbin`, `!unsigned`, `!outside-driver-folders` | `amcache` |
 | `!timestomped` | `files`, `timestomp` |
 | `!motw-removed`, `!padded` | `files` |

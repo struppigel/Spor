@@ -101,6 +101,26 @@ namespace Spor
                 IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out long ft) == 0 ? Util.FtTime(ft) : null;
         }
 
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+        static extern int RegQueryValueExW(SafeRegistryHandle key, string name, IntPtr reserved, out uint type, byte[] data, ref int size);
+
+        /// <summary>
+        /// The bytes of a registry value whatever its type (device properties use types like 0xFFFF0010 that .NET does not read);
+        /// null if missing or unreadable. name "" = the default value.
+        /// </summary>
+        public static byte[] RawValue(RegistryKey k, string name)
+        {
+            if (k == null) return null;
+            try
+            {
+                int size = 0;
+                if (RegQueryValueExW(k.Handle, name, IntPtr.Zero, out _, null, ref size) != 0 || size <= 0 || size > 1 << 20) return null;
+                var b = new byte[size];
+                return RegQueryValueExW(k.Handle, name, IntPtr.Zero, out _, b, ref size) == 0 ? b : null;
+            }
+            catch { return null; }
+        }
+
         /// <summary>"C:" -> "\Device\HarddiskVolume3"</summary>
         public static string DosDevice(string drive)
         {
@@ -112,6 +132,76 @@ namespace Spor
         public static string VolumeSerial(string root)
         {
             return GetVolumeInformation(root, null, 0, out uint serial, out _, out _, null, 0) ? serial.ToString("X8") : null;
+        }
+
+        /// <summary>The volume label (null if none or unreadable).</summary>
+        public static string VolumeLabel(string root)
+        {
+            var sb = new StringBuilder(261);
+            return GetVolumeInformation(root, sb, sb.Capacity, out _, out _, out _, null, 0) && sb.Length > 0 ? sb.ToString() : null;
+        }
+
+        /// <summary>
+        /// The storage device of a drive ("E:"): bus 7 = USB, 0x11 = NVMe, 0x0B = SATA, ... (STORAGE_BUS_TYPE; -1 if unknown), vendor and
+        /// product. USB hard disks report as fixed drives, the bus tells them apart.
+        /// </summary>
+        public static (int Bus, string Vendor, string Product) Storage(string drive)
+        {
+            try
+            {
+                using (var h = CreateFileW(@"\\.\" + drive.TrimEnd('\\'), 0, 3, IntPtr.Zero, 3, 0, IntPtr.Zero))
+                {
+                    if (h.IsInvalid) return (-1, null, null);
+                    // STORAGE_PROPERTY_QUERY: PropertyId 0 (StorageDeviceProperty), QueryType 0 (PropertyStandardQuery), 1 byte extra
+                    var q = Marshal.AllocHGlobal(12);
+                    try
+                    {
+                        Marshal.WriteInt64(q, 0); Marshal.WriteInt32(q, 8, 0);
+                        var b = new byte[1024];
+                        if (!DeviceIoControl(h, 0x2D1400 /* IOCTL_STORAGE_QUERY_PROPERTY */, q, 12, b, b.Length, out int n, IntPtr.Zero) || n < 32) return (-1, null, null);
+                        string S(int at)
+                        {
+                            int off = BitConverter.ToInt32(b, at);
+                            if (off <= 0 || off >= n) return null;
+                            int e = off; while (e < n && b[e] != 0) e++;
+                            var s = Encoding.ASCII.GetString(b, off, e - off).Trim();
+                            return s.Length > 0 ? s : null;
+                        }
+                        // STORAGE_DEVICE_DESCRIPTOR: ..., VendorIdOffset 12, ProductIdOffset 16, ..., BusType 28
+                        return (BitConverter.ToInt32(b, 28), S(12), S(16));
+                    }
+                    finally { Marshal.FreeHGlobal(q); }
+                }
+            }
+            catch { return (-1, null, null); }
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct WIN32_FIND_STREAM_DATA { public long StreamSize; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)] public string cStreamName; }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern IntPtr FindFirstStreamW(string name, int level, out WIN32_FIND_STREAM_DATA data, int flags);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool FindNextStreamW(IntPtr h, out WIN32_FIND_STREAM_DATA data);
+        [DllImport("kernel32.dll")] static extern bool FindClose(IntPtr h);
+
+        /// <summary>The alternate data streams of a file or folder (name without ":$DATA", size); empty if none or unreadable.</summary>
+        public static System.Collections.Generic.List<(string Name, long Size)> Streams(string path)
+        {
+            var res = new System.Collections.Generic.List<(string, long)>();
+            var h = FindFirstStreamW(path.Length >= 250 && !path.StartsWith(@"\\?\") ? @"\\?\" + path : path, 0, out var d, 0);
+            if (h == new IntPtr(-1)) return res;
+            try
+            {
+                do
+                {
+                    var n = d.cStreamName ?? "";
+                    if (n.EndsWith(":$DATA")) n = n.Substring(0, n.Length - 6);
+                    n = n.TrimStart(':');
+                    if (n.Length > 0) res.Add((n, d.StreamSize));   // "::$DATA" is the file's own content
+                } while (res.Count < 100 && FindNextStreamW(h, out d));
+            }
+            finally { FindClose(h); }
+            return res;
         }
 
         public static string LongPath(string p)

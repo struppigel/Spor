@@ -26,8 +26,33 @@ namespace Spor
         public static readonly IModule[] All =
         {
             new Prefetch(), new Amcache(), new ExecEvidence(), new Files(), new Timestomp(), new Downloads(), new Software(), new Persistence(),
-            new Processes(), new Security(), new ClickFix(), new RemoteAccess(), new Network(), new Accounts()
+            new Processes(), new Security(), new ClickFix(), new RemoteAccess(), new Network(), new Accounts(), new Usb()
         };
+
+        /// <summary>
+        /// Scan profiles: which modules run. Default = everything except the USB drive listing; USB worm = the drive listing and the modules
+        /// that show a worm's installed copy (persistence, processes, programs run, new files, Prefetch for runs from USB volumes); All = all.
+        /// </summary>
+        public static readonly (string Id, string Name, string[] Modules)[] Profiles =
+        {
+            ("default", "Default", All.Where(m => m.Id != "usb").Select(m => m.Id).ToArray()),
+            ("usb", "USB worm", new[] { "prefetch", "exec", "files", "persistence", "processes", "usb" }),
+            ("all", "All", All.Select(m => m.Id).ToArray()),
+        };
+
+        /// <summary>The modules of a profile (case-insensitive id); null for an unknown profile.</summary>
+        public static HashSet<string> ProfileModules(string id)
+        {
+            var p = Profiles.FirstOrDefault(x => x.Id.Equals(id ?? "", StringComparison.OrdinalIgnoreCase));
+            return p.Id == null ? null : new HashSet<string>(p.Modules, StringComparer.OrdinalIgnoreCase);
+        }
+
+        /// <summary>(pure) The modules a scan runs, in module order: the -modules list if given, else the profile's.</summary>
+        internal static List<IModule> Selected(Options o)
+        {
+            var sel = o.Modules ?? ProfileModules(o.Profile) ?? ProfileModules("default");
+            return All.Where(m => sel.Contains(m.Id)).ToList();
+        }
 
         /// <summary>Timeline source tags, in the order they are listed on a line.</summary>
         static readonly (string Tag, string Meaning)[] Tags =
@@ -64,10 +89,12 @@ namespace Spor
             ("ADR", "Explorer address bar"),
             ("PSH", "PowerShell history written"),
             ("RMM", "remote access tool"),
+            ("USB", "USB storage device connected or disconnected"),
         };
 
         /// <summary>"EXECUTION EVIDENCE" -> "Execution evidence", "CLICKFIX" -> "ClickFix".</summary>
-        public static string Pretty(IModule m) => m.Id == "clickfix" ? "ClickFix" : m.Name.Substring(0, 1) + m.Name.Substring(1).ToLowerInvariant();
+        public static string Pretty(IModule m) =>
+            m.Id == "clickfix" ? "ClickFix" : m.Id == "usb" ? "USB drives" : m.Name.Substring(0, 1) + m.Name.Substring(1).ToLowerInvariant();
 
         public static string Version
         {
@@ -83,7 +110,7 @@ namespace Spor
             Rules.Whitelist = o.Whitelist;
             Signature.Reset();   // a new scan in the same window must not reuse old results
             Rules.ExtraNoise = o.ExtraNoise ?? "";
-            var mods = All.Where(m => o.Modules == null || o.Modules.Contains(m.Id)).ToList();
+            var mods = Selected(o);
             var total = Stopwatch.StartNew();
             var sections = new List<Log>();
             var times = new List<string>();
@@ -177,7 +204,7 @@ namespace Spor
             log.W($"Users:     {string.Join(", ", c.Profiles.Select(p => p.User))}");
             log.W($"Options:   last {o.Days} days, whitelist {(Rules.Whitelist ? "on" : "OFF (everything shown)")}{(Rules.ExtraNoise.Length > 0 ? ", extra noise " + Rules.ExtraNoise : "")}, " +
                   (o.NoHash ? "no hashes" : o.Algo + " hashes of files up to " + o.MaxMB + " MB") +
-                  (o.Modules != null ? ", only " + string.Join(", ", o.Modules) : "") +
+                  (o.Modules != null ? ", only " + string.Join(", ", Selected(o).Select(m => m.Id)) : ", profile " + (ProfileModules(o.Profile) != null ? o.Profile.ToLowerInvariant() : "default")) +
                   (Autodetect.Patterns.Source != "built in" ? ", autodetect patterns from " + Autodetect.Patterns.Source : ""));
             log.W("Times:     UTC");
             log.W("Format:    one item per line: time [sources] item [status] => details <==== flags (parts left out when empty);");

@@ -15,13 +15,15 @@ namespace Spor
 
 Without options Spor opens its window. With options it scans without a window:
 
-  -scan            scan with the defaults
+  -scan            scan with the defaults (profile default)
   -days N          time window for Amcache, execution evidence, ShimCache (default 30)
   -nowhitelist     show everything: no trusted folders, no known-noise folders, no Windows servicing,
                    no inbox/Microsoft driver filtering (flags like !lolbin work the same either way)
   -noise REGEX     your own known-noise regex, added to each module's list (e.g. \\STEAMAPPS\\COMMON\\)
-  -modules LIST    comma-separated subset (default: all): prefetch, amcache, exec, files, timestomp, downloads, software,
-                   persistence, processes, defender, clickfix, remote, network, accounts
+  -profile NAME    which modules run: default (all except usb), usb (USB worm: prefetch, exec, files, persistence,
+                   processes, usb), all
+  -modules LIST    comma-separated modules instead of a profile: prefetch, amcache, exec, files, timestomp, downloads,
+                   software, persistence, processes, defender, clickfix, remote, network, accounts, usb
   -algo NAME       hash algorithm: SHA256 (default), SHA1 (to compare with Amcache), MD5
   -maxmb N         don't hash files over N MB (default 500)
   -nohash          don't hash files (signatures are still checked)
@@ -61,6 +63,7 @@ Without options Spor opens its window. With options it scans without a window:
                         case "days": o.Days = int.Parse(Val()); break;
                         case "nowhitelist": case "all": o.Whitelist = false; break;
                         case "noise": o.ExtraNoise = Val(); new System.Text.RegularExpressions.Regex(o.ExtraNoise); break;
+                        case "profile": o.Profile = Val().ToLowerInvariant(); if (Scanner.ProfileModules(o.Profile) == null) throw new ArgumentException("unknown profile " + o.Profile); break;
                         case "modules": o.Modules = new HashSet<string>(Val().Split(',').Select(x => x.Trim()), StringComparer.OrdinalIgnoreCase); break;
                         case "algo": o.Algo = Val().ToUpperInvariant(); if (!new[] { "SHA256", "SHA1", "MD5" }.Contains(o.Algo)) throw new ArgumentException("unknown hash algorithm " + o.Algo); break;
                         case "maxmb": o.MaxMB = int.Parse(Val()); break;

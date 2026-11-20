@@ -144,7 +144,7 @@ namespace Spor.Modules
             }
         }
 
-        static bool Sus(string s) => Rules.Disg.IsMatch(s) || Rules.Dbl.IsMatch(s) || Rules.Bidi.IsMatch(s);
+        static bool Sus(string s) => Rules.Disg.IsMatch(s) || Rules.Dbl.IsMatch(s) || Rules.OddChars(s);
 
         string Real(string s)
         {
@@ -174,7 +174,7 @@ namespace Spor.Modules
             var m = Vol.Match(f);
             if (!m.Success) return 0;
             var v = m.Groups[1].Value; var rel = m.Groups[2].Value;
-            if (Rules.Bidi.IsMatch(rel) || (Rules.Dbl.IsMatch(rel) && !(rel.EndsWith(".LNK", StringComparison.OrdinalIgnoreCase) && LnkNormal.IsMatch(rel)))) return 2;
+            if (Rules.OddChars(rel) || (Rules.Dbl.IsMatch(rel) && !(rel.EndsWith(".LNK", StringComparison.OrdinalIgnoreCase) && LnkNormal.IsMatch(rel)))) return 2;
             if (Task.IsMatch(rel) || TmpRoot.IsMatch(rel) || Installer.IsMatch(rel)) return 2;
             if (!Ext.IsMatch(rel)) return 0;
             if (Rules.Disg.IsMatch(rel) || Inject.IsMatch(rel)) return 2;

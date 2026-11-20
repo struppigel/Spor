@@ -12,7 +12,7 @@ Spor started as a set of my PowerShell snippets for malware removal help.
 
 1. Download `Spor.exe`
 2. Run it and allow it to run as administrator
-3. Click **Scan** and wait. This takes a few minutes.
+3. Choose a profile if the helper asked for one (**Default**, **USB worm** or **All**), click **Scan** and wait. This takes a few minutes.
 4. The log `Spor.txt` opens in Notepad when the scan is done. It is saved next to `Spor.exe`
 
 ## Features
@@ -33,6 +33,7 @@ Spor started as a set of my PowerShell snippets for malware removal help.
 * Data sent per program (SRUM), current connections, DNS cache (also victim-ID host names and abused TLDs)
 * Local accounts, administrators, hidden accounts, account changes
 * One timeline of all events, oldest first, and a summary of flagged items
+* USB worm profile: the contents of USB drives with hidden and invisible-named items (shown as `<U+00A0>`, ...) and their attributes, autorun.inf, shortcuts with target, arguments and icon (folder icons on programs are flagged), Explorer settings that hide files, MountPoints2, USB device history and connects, files opened from USB drives
 * Autodetect: known malware families (RenLoader, PavinLoader, CountLoader, ...) from a curated pattern database, named in the summary
 * Signature check of every program file (WinVerifyTrust, Windows catalogs, MSIX package signatures), SHA256 and MD5 hashes, version information
 * Whitelist that hides validly signed files in trusted locations, so the log stays readable. You can turn it off.
@@ -62,9 +63,11 @@ The NETWORK section reads the connections and the DNS cache that already exist o
 Without options, Spor opens its window. With options, it scans without a window, e.g. `Spor.exe -scan -noopen -out C:\logs\Spor.txt`:
 
 ```
-Spor.exe [-scan] [-days 30] [-nowhitelist] [-noise REGEX] [-modules files,downloads,...]
+Spor.exe [-scan] [-profile default|usb|all] [-days 30] [-nowhitelist] [-noise REGEX] [-modules files,downloads,...]
          [-algo SHA256|SHA1|MD5] [-maxmb 500] [-nohash] [-out FILE] [-noopen]
 ```
+
+Profiles: `default` runs every module except `usb`, `usb` runs the USB worm scan (drives, shortcuts, autorun.inf, USB history, plus prefetch, exec, files, persistence, processes), `all` runs everything. `-modules` replaces the profile. Details: [docs/MODULES.md](docs/MODULES.md).
 
 Spor asks for admin rights (UAC). It writes `Spor.txt` next to the exe, or to the Desktop if that folder isn't writable.
 
@@ -103,7 +106,7 @@ src/Sqlite.cs            read-only SQLite reader for browser history
 src/Ese.cs               ESE databases through esent.dll (SRUM, WebCache)
 src/Helpers.cs           Zone.Identifier, .lnk parser, event log queries, command lines
 src/Util.cs              text files, folder walk, formatting
-src/Modules/*.cs         one class per module
+src/Modules/*.cs         one class per module (Usb.cs: the USB worm scan)
 ```
 
 ## Author

@@ -86,73 +86,239 @@ namespace Spor
         }
     }
 
-    /// <summary>Windows shortcut (.lnk): target, where the target was (local drive type / network), target times.</summary>
+    /// <summary>
+    /// Windows shortcut (.lnk, MS-SHLLINK): target, where the target was (local drive type / network), target times, arguments, icon,
+    /// working folder, window state, the volume of the target and the machine that made the shortcut. Malformed parts are skipped.
+    /// </summary>
     class Lnk
     {
         public string Target, Args, Net;
         public int DriveType = -1;   // 2 removable, 3 fixed, 4 network, 5 CD-ROM (also a mounted ISO)
         public DateTime? TargetCreated, TargetWritten;
         public long Size;
+        public string Description, RelPath, WorkDir, IconLocation;
+        public int IconIndex;
+        public int ShowCmd = 1;      // 1 normal, 3 maximized, 7 minimized (not activated)
+        public string VolumeSerial;  // 8 hex digits, of the target's volume (LinkInfo)
+        public string VolumeLabel;
+        public string EnvTarget;     // EnvironmentVariableDataBlock: target with %variables%
+        public string EnvIcon;       // IconEnvironmentDataBlock: icon with %variables%
+        public string Machine;       // TrackerDataBlock: NetBIOS name of the PC the shortcut was made on
+        public string IdListTarget;  // the target from the shell item list (LinkTargetIDList)
+        /// <summary>Where the target came from: "link info", "relative path", "environment block" or "item list".</summary>
+        public string TargetFrom;
 
         public string Where => DriveType == 5 ? "on a CD/DVD or mounted ISO" : DriveType == 2 ? "on a removable drive" : DriveType == 4 || Net != null ? "on a network share" : null;
 
+        /// <summary>The icon as Windows uses it: the expanded-variables block if there is one, else the icon location; with ",index".</summary>
+        public string Icon
+        {
+            get
+            {
+                var i = !string.IsNullOrEmpty(EnvIcon) ? EnvIcon : IconLocation;
+                return string.IsNullOrEmpty(i) ? null : i + "," + IconIndex;
+            }
+        }
+
+        static ushort U16(byte[] b, int o) => o >= 0 && o + 2 <= b.Length ? BitConverter.ToUInt16(b, o) : (ushort)0;
+        static int I32(byte[] b, int o) => o >= 0 && o + 4 <= b.Length ? BitConverter.ToInt32(b, o) : 0;
+        static uint U32(byte[] b, int o) => o >= 0 && o + 4 <= b.Length ? BitConverter.ToUInt32(b, o) : 0;
+
         public static Lnk Parse(byte[] b)
         {
-            if (b.Length < 76 || BitConverter.ToUInt32(b, 0) != 0x4C) return null;
+            if (b == null || b.Length < 76 || BitConverter.ToUInt32(b, 0) != 0x4C) return null;
             var l = new Lnk();
             uint flags = BitConverter.ToUInt32(b, 20);
             l.TargetCreated = Util.FtTime(BitConverter.ToInt64(b, 28));
             l.TargetWritten = Util.FtTime(BitConverter.ToInt64(b, 44));
             l.Size = BitConverter.ToUInt32(b, 52);
+            l.IconIndex = BitConverter.ToInt32(b, 56);
+            l.ShowCmd = BitConverter.ToInt32(b, 60);
             bool uni = (flags & 0x80) != 0;
             int o = 76;
-            if ((flags & 1) != 0) o += 2 + BitConverter.ToUInt16(b, o);
+            if ((flags & 1) != 0)
+            {
+                int n = U16(b, o);
+                try { l.IdListTarget = IdList(b, o + 2, Math.Min(b.Length, o + 2 + n)); } catch { }
+                o += 2 + n;
+            }
             if ((flags & 2) != 0 && o + 28 <= b.Length)
             {
-                int li = o; int size = BitConverter.ToInt32(b, li), hs = BitConverter.ToInt32(b, li + 4), lf = BitConverter.ToInt32(b, li + 8);
-                string suffix = Cstr(b, li + BitConverter.ToInt32(b, li + 24), false);
-                if (hs >= 0x24) { var su = Cstr(b, li + BitConverter.ToInt32(b, li + 32), true); if (!string.IsNullOrEmpty(su)) suffix = su; }
+                int li = o; int size = I32(b, li), hs = I32(b, li + 4), lf = I32(b, li + 8);
+                string suffix = Cstr(b, li + I32(b, li + 24), false);
+                if (hs >= 0x24) { var su = Cstr(b, li + I32(b, li + 32), true); if (!string.IsNullOrEmpty(su)) suffix = su; }
                 if ((lf & 1) != 0)
                 {
-                    int vol = li + BitConverter.ToInt32(b, li + 12);
-                    if (vol + 8 <= b.Length) l.DriveType = BitConverter.ToInt32(b, vol + 4);
-                    var bp = hs >= 0x24 ? Cstr(b, li + BitConverter.ToInt32(b, li + 28), true) : null;
-                    if (string.IsNullOrEmpty(bp)) bp = Cstr(b, li + BitConverter.ToInt32(b, li + 16), false);
+                    int vol = li + I32(b, li + 12);
+                    if (vol + 16 <= b.Length)
+                    {
+                        l.DriveType = I32(b, vol + 4);
+                        l.VolumeSerial = U32(b, vol + 8).ToString("X8");
+                        int lo = I32(b, vol + 12);
+                        var label = lo == 0x14 ? Cstr(b, vol + I32(b, vol + 16), true) : Cstr(b, vol + lo, false);
+                        if (!string.IsNullOrEmpty(label)) l.VolumeLabel = label;
+                    }
+                    var bp = hs >= 0x24 ? Cstr(b, li + I32(b, li + 28), true) : null;
+                    if (string.IsNullOrEmpty(bp)) bp = Cstr(b, li + I32(b, li + 16), false);
                     l.Target = Join(bp, suffix);
                 }
                 if ((lf & 2) != 0)
                 {
-                    int cnr = li + BitConverter.ToInt32(b, li + 20);
-                    if (cnr + 12 <= b.Length) l.Net = Cstr(b, cnr + BitConverter.ToInt32(b, cnr + 8), false);
+                    int cnr = li + I32(b, li + 20);
+                    if (cnr + 12 <= b.Length) l.Net = Cstr(b, cnr + I32(b, cnr + 8), false);
                     if (l.Target == null) l.Target = Join(l.Net, suffix);
                 }
-                o = li + size;
+                if (!string.IsNullOrEmpty(l.Target)) l.TargetFrom = "link info";
+                o = li + Math.Max(size, 0);
             }
-            // string data: name, relative path, working dir, arguments, icon
+            // string data: name (description), relative path, working dir, arguments, icon
             var sd = new string[5];
             for (int i = 0, bit = 4; i < 5; i++, bit <<= 1)
             {
                 if ((flags & bit) == 0 || o + 2 > b.Length) continue;
-                int n = BitConverter.ToUInt16(b, o); o += 2;
+                int n = U16(b, o); o += 2;
                 int bytes = uni ? n * 2 : n;
-                if (o + bytes > b.Length) break;
+                if (o + bytes > b.Length) { o = b.Length; break; }
                 sd[i] = uni ? Encoding.Unicode.GetString(b, o, bytes) : Encoding.Default.GetString(b, o, bytes);
                 o += bytes;
             }
-            l.Args = sd[3];
-            if (l.Target == null && sd[1] != null) l.Target = sd[1];
+            l.Description = sd[0]; l.RelPath = sd[1]; l.WorkDir = sd[2]; l.Args = sd[3]; l.IconLocation = sd[4];
+            // extra data blocks: size, signature, data; a size below 4 ends the list
+            for (int guard = 0; guard < 64 && o + 8 <= b.Length; guard++)
+            {
+                int size = I32(b, o); uint sig = U32(b, o + 4);
+                if (size < 8 || o + size > b.Length) break;
+                switch (sig)
+                {
+                    case 0xA0000001:   // EnvironmentVariableDataBlock: ANSI (260 bytes), then Unicode (520 bytes)
+                    case 0xA0000007:   // IconEnvironmentDataBlock: same layout
+                        if (size >= 0x314)
+                        {
+                            var s = Fixed(b, o + 268, 520, true);
+                            if (string.IsNullOrEmpty(s)) s = Fixed(b, o + 8, 260, false);
+                            if (!string.IsNullOrEmpty(s)) { if (sig == 0xA0000001) l.EnvTarget = s; else l.EnvIcon = s; }
+                        }
+                        break;
+                    case 0xA0000003:   // TrackerDataBlock: length, version, MachineID (16 bytes ANSI), droids
+                        if (size >= 0x20)
+                        {
+                            var m = Fixed(b, o + 16, 16, false);
+                            if (!string.IsNullOrEmpty(m)) l.Machine = m;
+                        }
+                        break;
+                }
+                o += size;
+            }
+            // an empty link info path ("") is no target either: the other places still count
+            if (string.IsNullOrEmpty(l.Target) && !string.IsNullOrEmpty(l.EnvTarget)) { l.Target = l.EnvTarget; l.TargetFrom = "environment block"; }
+            if (string.IsNullOrEmpty(l.Target) && !string.IsNullOrEmpty(l.IdListTarget)) { l.Target = l.IdListTarget; l.TargetFrom = "item list"; }
+            if (string.IsNullOrEmpty(l.Target) && !string.IsNullOrEmpty(sd[1])) { l.Target = sd[1]; l.TargetFrom = "relative path"; }
             return l;
         }
 
+        static readonly Guid MyComputer = new Guid("20D04FE0-3AEA-1069-A2D8-08002B30309D");
+
+        /// <summary>
+        /// (pure) The path in a shell item list: My Computer, a drive ("E:\"), then file entries (their long name from the 0xBEEF0004
+        /// extension block, else the short name). Null when the list does not start like that (a control panel item, a URI, ...).
+        /// </summary>
+        internal static string IdList(byte[] b, int o, int end)
+        {
+            string path = null;
+            bool root = false;
+            for (int guard = 0; guard < 64 && o + 2 <= end; guard++)
+            {
+                int size = U16(b, o);
+                if (size == 0) break;
+                if (size < 3 || o + size > end) return null;
+                int type = b[o + 2];
+                if (!root && path == null)
+                {
+                    if (type == 0x1F && size >= 20 && new Guid(Sub(b, o + 4, 16)) == MyComputer) { root = true; o += size; continue; }
+                    if ((type & 0x70) == 0x20) { root = true; }   // a list that starts at the drive
+                    else return null;
+                }
+                if ((type & 0x70) == 0x20 && path == null)
+                {
+                    var drive = Cstr(b, o + 3, false, o + size);
+                    if (string.IsNullOrEmpty(drive) || !Regex.IsMatch(drive, @"^[A-Za-z]:\\?$")) return null;
+                    path = drive.Substring(0, 2);
+                }
+                else if ((type & 0x70) == 0x30 && path != null)
+                {
+                    var name = FileEntryName(b, o, size);
+                    if (string.IsNullOrEmpty(name)) return null;
+                    path += "\\" + name;
+                }
+                else if (path != null) return path;   // something else after the path: what we have
+                o += size;
+            }
+            return path;
+        }
+
+        /// <summary>A file entry shell item's name: the long name of its 0xBEEF0004 block, else the primary (8.3 or full) name.</summary>
+        static string FileEntryName(byte[] b, int o, int size)
+        {
+            int type = b[o + 2], end = o + size;
+            bool uniName = (type & 0x04) != 0;
+            int p = o + 14;   // size 2, type 1, unknown 1, file size 4, modified 4, attributes 2
+            var primary = Cstr(b, p, uniName, end);
+            if (primary == null) return null;
+            int afterName = p + (uniName ? (primary.Length + 1) * 2 : primary.Length + 1);
+            if ((afterName - o) % 2 == 1) afterName++;   // the extension block is 2-byte aligned
+            // extension block: size 2, version 2, signature 4 (0xBEEF0004), ...
+            if (afterName + 8 <= end && U32(b, afterName + 4) == 0xBEEF0004)
+            {
+                int ext = afterName, ver = U16(b, ext + 2);
+                int n = 18;                // size, version, signature, created, accessed, identifier
+                if (ver >= 7) n += 18;     // unknown, file reference, unknown
+                if (ver >= 3) n += 2;      // long string size
+                if (ver >= 9) n += 4;
+                if (ver >= 8) n += 4;
+                var lng = Cstr(b, ext + n, true, Math.Min(end, ext + U16(b, ext)));
+                if (!string.IsNullOrEmpty(lng) && lng.IndexOf('\0') < 0) return lng;
+            }
+            return primary;
+        }
+
+        static byte[] Sub(byte[] b, int o, int n) { var r = new byte[n]; Buffer.BlockCopy(b, o, r, 0, n); return r; }
+
+        /// <summary>A NUL-terminated string in a fixed-size field.</summary>
+        static string Fixed(byte[] b, int o, int bytes, bool uni) => o + bytes <= b.Length ? Cstr(b, o, uni, o + bytes) : null;
+
         static string Join(string a, string b) => string.IsNullOrEmpty(b) ? a : string.IsNullOrEmpty(a) ? b : a.TrimEnd('\\') + "\\" + b;
 
-        static string Cstr(byte[] b, int o, bool uni)
+        static string Cstr(byte[] b, int o, bool uni, int end = -1)
         {
-            if (o <= 0 || o >= b.Length) return null;
+            if (end < 0 || end > b.Length) end = b.Length;
+            if (o <= 0 || o >= end) return null;
             int e = o;
-            if (uni) { while (e + 1 < b.Length && (b[e] != 0 || b[e + 1] != 0)) e += 2; return Encoding.Unicode.GetString(b, o, e - o); }
-            while (e < b.Length && b[e] != 0) e++;
+            if (uni) { while (e + 1 < end && (b[e] != 0 || b[e + 1] != 0)) e += 2; return Encoding.Unicode.GetString(b, o, Math.Min(e, end) - o & ~1); }
+            while (e < end && b[e] != 0) e++;
             return Encoding.Default.GetString(b, o, e - o);
+        }
+    }
+
+    /// <summary>An Internet shortcut (.url): the URL and the icon it shows.</summary>
+    sealed class UrlFile
+    {
+        public string Url, IconFile;
+        public int IconIndex;
+
+        /// <summary>(pure) The [InternetShortcut] values URL, IconFile, IconIndex.</summary>
+        public static UrlFile Parse(string text)
+        {
+            var u = new UrlFile();
+            foreach (var line in Regex.Split(text ?? "", "\r?\n"))
+            {
+                int i = line.IndexOf('=');
+                if (i <= 0) continue;
+                var k = line.Substring(0, i).Trim(); var v = Util.Clip(line.Substring(i + 1));
+                if (k.Equals("URL", StringComparison.OrdinalIgnoreCase)) u.Url = v;
+                else if (k.Equals("IconFile", StringComparison.OrdinalIgnoreCase)) u.IconFile = v;
+                else if (k.Equals("IconIndex", StringComparison.OrdinalIgnoreCase) && int.TryParse(v, out var n)) u.IconIndex = n;
+            }
+            return u;
         }
     }
 
