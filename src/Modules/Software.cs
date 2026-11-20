@@ -144,6 +144,13 @@ namespace Spor.Modules
                                 if (name.Length == 0) continue;   // hidden components without a name
                                 var lw = Native.LastWrite(k);
                                 var idate = InstallDate(S(k, "InstallDate"));
+                                // Autodetect sees every entry, also older ones: "name | version | publisher", the folder and the icon program
+                                var swItem = $"installed program {name} {S(k, "DisplayVersion")}".TrimEnd() + (S(k, "Publisher").Length > 0 ? $" ({S(k, "Publisher")})" : "") + $", key {prefix}{n}";
+                                c.Observe("software", $"{name} | {S(k, "DisplayVersion")} | {S(k, "Publisher")}", lw ?? idate, swItem);
+                                var loc = S(k, "InstallLocation").Trim('"').TrimEnd('\\');
+                                if (Rules.DrivePath.IsMatch(loc)) c.Observe("path", loc + "\\", lw ?? idate, swItem);
+                                var ico = Regex.Replace(S(k, "DisplayIcon"), @",-?\d+$", "").Trim('"');
+                                if (Rules.DrivePath.IsMatch(ico)) c.Observe("path", ico, lw ?? idate);
                                 bool recent = (lw.HasValue && lw.Value >= c.Since) || (idate.HasValue && idate.Value >= c.Since.Date);
                                 if (!recent) continue;
                                 // the program that represents the entry: DisplayIcon (exe) or the uninstaller

@@ -49,6 +49,9 @@ namespace Spor.Modules
                 // unsigned modules from outside Windows and Program Files (the first module is the program itself)
                 var badMods = (mods ?? new List<string>()).Skip(1).Select(m => c.RealCase(c.Long(m))).Distinct(Util.IC)
                     .Where(m => Rules.DrivePath.IsMatch(m) && !Rules.InTrustedLocation(m) && Signature.Applies(m) && File.Exists(m) && !c.SignedOk(m)).ToList();
+                c.Observe("path", path, p.Created);
+                c.Observe("cmd", p.CommandLine, p.Created, $"running process {path} (pid {p.Pid}), command line {Rules.Fix(Util.Clip(p.CommandLine))}");
+                foreach (var m in badMods) c.Observe("path", m, p.Created);
                 var chain = Chain(p, byPid);
                 if (chain.Count > 0 && chain[0].Proc != null && !string.IsNullOrEmpty(chain[0].Proc.Path))   // the direct parent only
                     c.Launches.Add((c.RealCase(c.Long(chain[0].Proc.Path)), path, p.CommandLine, p.Created));
@@ -67,7 +70,7 @@ namespace Spor.Modules
                     if (Rules.TrustedSigners.Contains(who)) { hidden[who] = (hidden.TryGetValue(who, out var n) ? n : 0) + 1; continue; }
                 }
                 var f = c.F(path);
-                t.Add(Log.T(p.Created), p.Pid.ToString(), f.Path, f.Status, ChainText(chain, wmi), Rules.Fix(Util.Clip(p.CommandLine)), Rules.FlagCol(flags));
+                t.Add(Log.T(p.Created), p.Pid.ToString(), f.Path, f.Status, ChainText(chain, wmi, p.Created, c.ProcessStarts), Rules.Fix(Util.Clip(p.CommandLine)), Rules.FlagCol(flags));
                 foreach (var h in hits) { t.More("module", Sideload.ModuleLine(c, h)); Sideload.Events(c, h); }
                 foreach (var m in badMods.Where(m => !hits.Any(h => h.Dll.Path.Equals(m, StringComparison.OrdinalIgnoreCase))))
                     t.More("module", c.File(m));
@@ -75,12 +78,12 @@ namespace Spor.Modules
                 var details = $"running, pid {p.Pid}" + (chain.Count > 0 && chain[0].Proc != null ? ", parent " + chain[0].Proc.Leaf : "");
                 c.Event(p.Created, "PROC", path, details, extra.Count > 0 ? extra : null);
                 if (Rules.Strong(extra).Count > 0 && (!p.Created.HasValue || p.Created < c.Since))
-                    c.Find(p.Created, $"running process {f.Path} (pid {p.Pid}), {ChainText(chain, wmi)}{Rules.FlagText(Rules.Strong(extra))}");
+                    c.Find(p.Created, $"running process {f.Path} (pid {p.Pid}), {ChainText(chain, wmi, p.Created, c.ProcessStarts)}{Rules.FlagText(Rules.Strong(extra))}");
             }
             c.Out.Comment($"{checkedCount} processes checked" + (wmi ? "" : " (WMI not available: no parents and command lines)") +
                           (noAccess > 0 ? $"; {noAccess} listed ones without access to their modules (protected processes)" : "") + ".");
-            c.Out.Comment("started = process start (UTC); parent = the parent chain, nearest first (exited = the parent is gone);");
-            c.Out.Comment("module: = an unsigned module from outside Windows and Program Files loaded in the process.");
+            c.Out.Comment("started = process start (UTC); parent = the parent chain, nearest first (exited = gone; \"was X\" from 4688/Sysmon);" +
+                          " module: = an unsigned module from outside Windows and Program Files.");
             if (hidden.Count > 0)
                 c.Out.Comment($"Hidden: {hidden.Values.Sum()} programs installed per user, validly signed by well-known publishers (-nowhitelist lists them): " +
                               string.Join(", ", hidden.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")));
@@ -143,12 +146,33 @@ namespace Spor.Modules
             return res;
         }
 
-        /// <summary>"parent cmd.exe (4312) &lt; forfiles.exe (4100) &lt; pid 2200 (exited)". No status words in brackets (parsers).</summary>
-        internal static string ChainText(List<(int Pid, Proc Proc)> chain, bool known = true)
+        /// <summary>
+        /// "parent cmd.exe (4312) &lt; forfiles.exe (4100) &lt; pid 2200 (exited)". No status words in brackets (parsers).
+        /// An exited parent is named ("pid 2200 (exited, was Setup.exe)") only from a 4688/Sysmon record of that PID (starts): the newest one
+        /// that started before its child (started = the process's own start; Windows reuses PIDs). Never guessed from run times.
+        /// </summary>
+        internal static string ChainText(List<(int Pid, Proc Proc)> chain, bool known = true, DateTime? started = null,
+                                         IList<(int Pid, DateTime T, string Image)> starts = null)
         {
             if (!known) return "parent unknown";
             if (chain.Count == 0) return "parent none";
-            return "parent " + string.Join(" < ", chain.Select(a => a.Proc == null ? $"pid {a.Pid} (exited)" : $"{a.Proc.Leaf} ({a.Pid})"));
+            string Exited(int i)
+            {
+                var childStart = i == 0 ? started : chain[i - 1].Proc?.Created;
+                var was = ExitedImage(starts, chain[i].Pid, childStart);
+                return $"pid {chain[i].Pid} (exited" + (was != null ? ", was " + Util.Leaf(was) : "") + ")";
+            }
+            return "parent " + string.Join(" < ", chain.Select((a, i) => a.Proc == null ? Exited(i) : $"{a.Proc.Leaf} ({a.Pid})"));
+        }
+
+        /// <summary>The image of an exited PID: the newest 4688/Sysmon start of that PID at or before its child's start. Null if none or the child's start is unknown.</summary>
+        internal static string ExitedImage(IList<(int Pid, DateTime T, string Image)> starts, int pid, DateTime? childStart)
+        {
+            if (starts == null || !childStart.HasValue) return null;
+            // event times and process start times differ by milliseconds: a second of slack
+            var limit = childStart.Value.AddSeconds(1);
+            var hit = starts.Where(s => s.Pid == pid && s.T <= limit && !string.IsNullOrEmpty(s.Image)).OrderByDescending(s => s.T).FirstOrDefault();
+            return hit.Image;
         }
     }
 }

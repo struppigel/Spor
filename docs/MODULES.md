@@ -113,6 +113,14 @@ Local accounts (admin or not, enabled, password set, last sign-in, hidden from t
 
 After the modules ran, Spor looks at every program on the timeline outside Windows and Program Files: does it ship a script runtime (Ren'Py/Python, AutoIt, Node.js, Electron, Java, Lua)? Malware ships a legitimate runtime and keeps its code in data files, so the launcher's signature says nothing. Such a launcher is never hidden by the signer whitelist (except Electron apps), its first timeline line says `script runtime <kind>` and lists the script containers and hidden files as `script:` lines. A new launcher folder with loader signs gets `!runtime-loader` (see LOG-FORMAT.md).
 
+## Autodetect (all modules)
+
+After the modules ran, Spor matches what they collected against `resources/autodetect.txt`, a curated database of **known malware families** (RenLoader, PavinLoader, CountLoader, Vidar, TamperedChef, ...) built from FenrisHub's malware rules and rewritten for what Spor sees. This is the only family-specific part of Spor: all other rules stay generic. Each hit goes to SUMMARY as `[Autodetect] <item> => <family>: <note> <==== !known-malware`.
+
+What is matched (no extra file or registry reads): file paths (timeline, persistence targets, running programs and their unsigned modules, Startup items, install folders), task names, Run value names, service names, command lines (tasks, Run entries, services, running processes, Run dialog, PowerShell history), installed programs (`name | version | publisher`, all Uninstall entries, not only recent ones), signers and version-resource companies of the files Spor checked, and DNS cache names. Persistence entries hidden by the whitelist are matched too. One pass after all modules: an Aho-Corasick automaton over the literals finds the candidate rows, a regex runs only when its key is in the value (100 ms timeout). The time is in the end line (`autodetect N s`).
+
+Rows: `kind <TAB> match <TAB> family <TAB> note <TAB> example <TAB> FenrisHub rule ids`. `match` is `=text` (the whole value), `*text` (part of it) or `/regex/ key=text`. Every row must match its example (tests). To try new rows without a new build, put `Spor.autodetect.txt` next to `Spor.exe`: it replaces the built-in database (the header's Options line says so).
+
 ## Flags by module
 
 What each flag means: LOG-FORMAT.md. Flags from the file name are set wherever a file is shown.
@@ -127,6 +135,7 @@ What each flag means: LOG-FORMAT.md. Flags from the file name are set wherever a
 | `!renamed-program` (hint) | `files`, `persistence`, `processes` |
 | `!proxy-exec` | `processes`, `exec` (process creation events) |
 | `!runtime-loader` | after all modules (script-runtime launchers) |
+| `!known-malware` | after all modules (Autodetect) |
 | `!kept-despite-warning` | `downloads` |
 | `!from-web` | `software` |
 | `!com-hijack` | `persistence` |

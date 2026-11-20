@@ -129,6 +129,9 @@ namespace Spor.Modules
                         {
                             var cmd = Convert.ToString(key.GetValue(n)) ?? "";
                             var pf = ProgF(cmd, out var prog, out var fl);
+                            var runItem = $"Run entry {Rules.Fix(n)} = {Log.Item(pf.Path, pf.Status)}";
+                            c.Observe("run", n, t, runItem); c.Observe("cmd", cmd, t, runItem);
+                            if (Rules.DrivePath.IsMatch(prog ?? "")) c.Observe("path", prog, t);
                             progs.Add(n);
                             // value: the value name as stored (it can contain backslashes, so it cannot be cut from the entry reliably)
                             rt.Add(Log.T(t), kind, pf.Status, Rules.FlagCol(fl), k.Name + "\\" + Rules.Fix(n), pf.Path, Rules.Fix(Cmd.Args(cmd)), Rules.Fix(n));
@@ -161,10 +164,14 @@ namespace Spor.Modules
                             var cmd = !string.IsNullOrEmpty(dll) && Regex.IsMatch(ip, @"svchost\.exe", Util.RX) ? dll : ip;
                             var pf = ProgF(cmd, out var prog, out var fl);
                             var disp = Log.Item(pf.Path, pf.Status);
+                            // Autodetect sees every service, also the ones the whitelist hides (malware dressed as a Windows service)
+                            var t = Native.LastWrite(k);
+                            var svItem = $"service {Rules.Fix(n)}: {disp}";
+                            c.Observe("service", n, t, svItem); c.Observe("cmd", ip, t, svItem);
+                            if (Rules.DrivePath.IsMatch(prog ?? "")) c.Observe("path", prog, t);
                             if (Rules.Whitelist && Trusted(prog, cmd == dll ? null : Cmd.Args(ip)) && Rules.Strong(fl).Count == 0) continue;
                             var start = Convert.ToInt32(k.GetValue("Start") ?? -1);
                             var st = start == 0 ? "boot" : start == 1 ? "system" : start == 2 ? "auto" : start == 3 ? "manual" : start == 4 ? "disabled" : "?";
-                            var t = Native.LastWrite(k);
                             var type = Convert.ToInt32(k.GetValue("Type") ?? 0);
                             var kind = (type & 0xF) != 0 ? "driver" : "service";   // 1 kernel driver, 2 file system driver, 8 recognizer; 0x10/0x20 services
                             // svchost-hosted: the DLL is what FRST lists and links; sub-line with its status (it is in FILES through ProgF)
@@ -194,6 +201,9 @@ namespace Spor.Modules
                 var kind = Regex.IsMatch(Ev.P(e, 2) ?? "", "driver", Util.RX) ? "driver" : "service";
                 var pf = ProgF(ip, out var prog, out var fl);
                 var disp = Log.Item(pf.Path, pf.Status);
+                var instItem = $"service installed: {Rules.Fix(name)}: {disp}";
+                c.Observe("service", name, t, instItem); c.Observe("cmd", ip, t, instItem);
+                if (Rules.DrivePath.IsMatch(prog ?? "")) c.Observe("path", prog, t);
                 // svchost-hosted: the event has no DLL; the service key (if it is still there) has it, and the DLL decides
                 string dllLine = null; string dprog = null; List<string> dfl = null;
                 if (Regex.IsMatch(prog ?? "", @"\\svchost\.exe$", Util.RX) && SvcDll(name) is string dll)
@@ -269,6 +279,14 @@ namespace Spor.Modules
                         if (where != "HKLM") fl.Add("!com-hijack");
                         acts.Add((prog, Log.Item(pf.Path, pf.Status) + " (COM handler " + ch.InnerText + ", " + where + ")" + Rules.FlagText(fl), fl, pf.Path + " (COM handler, " + where + ")", pf.Status, ""));
                     }
+                    // Autodetect sees every task, also the ones the whitelist hides
+                    var taskItem = $"task {Rules.Fix(name)}: {(acts.Count > 0 ? acts[0].Line : "(no action)")}";
+                    c.Observe("task", name, fi.CreationTimeUtc, taskItem);
+                    foreach (var a in acts)
+                    {
+                        if (Rules.DrivePath.IsMatch(a.Prog)) c.Observe("path", a.Prog, fi.CreationTimeUtc);
+                        c.Observe("cmd", (a.Prog + " " + a.Args).Trim(), fi.CreationTimeUtc, taskItem);
+                    }
                     bool ms = name.StartsWith(@"\Microsoft\", StringComparison.OrdinalIgnoreCase);
                     // hidden only if every action runs a trusted program (location + valid signature, not a LOLBin) with harmless arguments;
                     // older than the time window: any task name, else only \Microsoft\ tasks
@@ -323,6 +341,7 @@ namespace Spor.Modules
                     var what = e.Id == 106 ? "registered" : e.Id == 140 ? "updated" : "DELETED";
                     var text = $"task {Rules.Fix(Ev.P(e, 0))} {what}{(Ev.P(e, 1).Length > 0 ? " by " + Ev.P(e, 1) : "")}";
                     tet.Add(Log.T(t), "task", e.Id.ToString(), what, Rules.Fix(Ev.P(e, 0)), Ev.P(e, 1));
+                    c.Observe("task", Ev.P(e, 0), t, text);
                     c.Event(t, "TSK", null, text: text);
                     if (e.Id == 141) c.Find(t, text);
                 }
@@ -349,9 +368,12 @@ namespace Spor.Modules
                         try { var l = Lnk.Parse(c.ReadLocked(f.FullName)); if (l?.Target != null) target = (l.Target.Contains(" ") ? "\"" + l.Target + "\"" : l.Target) + (string.IsNullOrEmpty(l.Args) ? "" : " " + l.Args); } catch { }
                     var sf = c.F(f.FullName);
                     stt.Add(Log.T(f.CreationTimeUtc), "startup", sf.Status, Rules.FlagCol(Rules.Flags(f.FullName)), sf.Path);
+                    c.Observe("path", f.FullName, f.CreationTimeUtc);
                     if (target != null)
                     {
                         var pf = ProgF(target, out var prog, out var fl);
+                        c.Observe("cmd", target, f.CreationTimeUtc, "Startup item " + line + " -> " + Log.Item(pf.Path, pf.Status));
+                        if (Rules.DrivePath.IsMatch(prog ?? "")) c.Observe("path", prog, f.CreationTimeUtc);
                         var ta = Cmd.Args(target);
                         stt.More("target", Log.Item(pf.Path, pf.Status, ta.Length > 0 ? "arguments " + Rules.Fix(ta) : null, Rules.FlagCol(fl)));
                         foreach (var m in Modules(prog)) stt.More("module", m);
@@ -414,6 +436,7 @@ namespace Spor.Modules
                         // Windows' own subscriptions: the names AND what the consumer does must match (malware reuses the names)
                         bool own = defaults.Contains(Nm(fr)) && defaults.Contains(Nm(cr)) &&
                                    (cw == "NTEventLogEventConsumer" || Regex.IsMatch(cw, @"^runs cscript KernCap\.vbs$", Util.RX));
+                        c.Observe("cmd", cw, null, $"WMI subscription {Nm(fr)} -> {Nm(cr)}: {cw}");
                         if (Rules.Whitelist && own) continue;
                         wt.Add("wmi", Nm(fr), Nm(cr), cw, fq);
                         c.Find($"WMI subscription {Nm(fr)} -> {Nm(cr)}: {cw}");

@@ -33,6 +33,7 @@ Spor started as a set of my PowerShell snippets for malware removal help.
 * Data sent per program (SRUM), current connections, DNS cache (also victim-ID host names and abused TLDs)
 * Local accounts, administrators, hidden accounts, account changes
 * One timeline of all events, oldest first, and a summary of flagged items
+* Autodetect: known malware families (RenLoader, PavinLoader, CountLoader, ...) from a curated pattern database, named in the summary
 * Signature check of every program file (WinVerifyTrust, Windows catalogs, MSIX package signatures), SHA256 and MD5 hashes, version information
 * Whitelist that hides validly signed files in trusted locations, so the log stays readable. You can turn it off.
 * Log format with one line per item, easy to read and to parse
@@ -89,6 +90,7 @@ src/Scanner.cs           module runner, log header, timeline, summary, FILES
 src/Context.cs           options, user profiles and hives, hashing, trust rule
 src/Rules.cs             shared whitelist and flag rules
 src/Correlate.cs         checks across modules after the scan (script-runtime launchers)
+src/Autodetect.cs        known-malware patterns (resources/autodetect.txt) over everything the modules collected
 src/Pe.cs                read-only PE parser (imports, exports, PDB path, overlay)
 src/Sideload.cs          DLL side-loading rule
 src/Names.cs             random-looking and lure names, renamed programs

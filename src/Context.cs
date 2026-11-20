@@ -69,6 +69,8 @@ namespace Spor
         public readonly List<Profile> Profiles = new List<Profile>();
         public readonly List<TEvent> Events = new List<TEvent>();
         public readonly List<(DateTime? T, string Module, string Text)> Findings = new List<(DateTime?, string, string)>();
+        /// <summary>Values for Autodetect (see Observe).</summary>
+        public readonly List<(string Kind, string Value, DateTime? T, string Item)> Observed = new List<(string, string, DateTime?, string)>();
         public readonly Dictionary<string, string> Sha256 = new Dictionary<string, string>(Util.IC);   // display path -> hash
         public readonly Dictionary<string, string> AmSha1 = new Dictionary<string, string>(Util.IC);   // display path or name -> Amcache SHA1
         public readonly Dictionary<string, string> Signer = new Dictionary<string, string>(Util.IC);    // display path -> signature status, signer, thumbprint
@@ -87,6 +89,8 @@ namespace Spor
         /// (its direct parent) with this command line.
         /// </summary>
         public readonly List<(string Parent, string Child, string CommandLine, DateTime? T)> Launches = new List<(string, string, string, DateTime?)>();
+        /// <summary>Process starts recorded by Security 4688 and Sysmon 1 (PID, start, image), to name exited parents in RUNNING PROCESSES.</summary>
+        public readonly List<(int Pid, DateTime T, string Image)> ProcessStarts = new List<(int, DateTime, string)>();
 
         /// <summary>Script-runtime launchers (Correlate): never hidden by the signer whitelist, like interpreters.</summary>
         public readonly HashSet<string> RuntimeLaunchers = new HashSet<string>(Util.IC);
@@ -148,6 +152,16 @@ namespace Spor
         {
             if (t.HasValue && t.Value >= Since)
                 Events.Add(new TEvent { T = t.Value, Src = src, Path = path, Text = text, Extra = extra, Flags = flags, NoHash = noHash, More = more });
+        }
+
+        /// <summary>
+        /// A value for Autodetect (known-malware patterns): kind = path, task, run, service, cmd, software, company or domain; item = how a
+        /// hit is shown in the SUMMARY (null: the kind and the value). Costs one list entry; matching runs once after all modules.
+        /// Timeline paths and the signer / company of checked files are taken by Autodetect itself.
+        /// </summary>
+        public void Observe(string kind, string value, DateTime? t = null, string item = null)
+        {
+            if (!string.IsNullOrWhiteSpace(value)) Observed.Add((kind, value, t, item));
         }
 
         public void Find(string text) => Findings.Add((null, Module, text));

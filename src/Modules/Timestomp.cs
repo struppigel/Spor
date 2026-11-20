@@ -52,13 +52,9 @@ namespace Spor.Modules
         public void Execute(Ctx ctx)
         {
             c = ctx;
-            c.Out.Comment("Files whose timestamps were set (\"basic info change\" in the NTFS change journal) in the last " + c.Opt.Days + " days, scored:");
-            c.Out.Comment("+4 creation time more than a day before the journal's create event (not counted for NTFS tunneling: safe-save over an old file);");
-            c.Out.Comment("+3 creation time round (whole seconds, as SetFileTime tools write), +1 creation time only millisecond-precise;");
-            c.Out.Comment("+1 modification time round (archives and installers do this too); +1 both times more than 7 days before the change, with another signal.");
-            c.Out.Comment("Not a signal: a creation time newer than the modification time. Copying, downloading, extracting and moving to another drive keep the");
-            c.Out.Comment("modification time and set a new creation time; a rename or a move on the same drive keeps both.");
-            c.Out.Comment("Listed from score " + MinScore + "." + (Rules.Whitelist ? " Only executables, scripts, shortcuts, archives and disk images; validly signed executables in Windows and Program Files are skipped." : ""));
+            c.Out.Comment($"Files whose timestamps were set in the last {c.Opt.Days} days (NTFS change journal), listed from score {MinScore}: +4 creation time before the real creation,");
+            c.Out.Comment("+3 round creation time, +1 millisecond-only creation time, +1 round modification time, +1 both times over 7 days old" +
+                          (Rules.Whitelist ? "; only programs, scripts, shortcuts, archives and disk images." : "."));
             var t = new Table("@info changed", "score", "!status", "created", "modified", "*file");
             var found = new List<(DateTime Changed, int Score, string Path, string Status, DateTime Created, DateTime Modified, List<string> Signals)>();
             foreach (var d in DriveInfo.GetDrives())
@@ -137,9 +133,9 @@ namespace Spor.Modules
                     if (next <= usn) break;
                     usn = next;
                 }
-                c.Out.Comment($"{drive} change journal: {records} records{(earliest.HasValue ? " back to " + Log.T(earliest) : "")}, {infoChange.Count} files with changed timestamps ({sw.Elapsed.TotalSeconds:N1} s)");
+                var journal = $"{drive} change journal: {records} records{(earliest.HasValue ? " back to " + Log.T(earliest) : "")}, {infoChange.Count} files with changed timestamps";
                 if (earliest.HasValue && earliest > c.Since.AddDays(2))
-                    c.Out.Comment($"{drive} ATTENTION: the journal only covers {(DateTime.UtcNow - earliest.Value).TotalHours:N1} hours (it is a ring buffer and this PC overwrites it fast): older timestomping is not visible here");
+                    journal += $"; ATTENTION: it only covers {(DateTime.UtcNow - earliest.Value).TotalHours:N1} hours (ring buffer), older timestomping is not visible";
                 bool Tunneled(long id) => named.TryGetValue(id, out var l) && l.Any(x => vacated.TryGetValue(x.Key, out var v) && v.Any(t => t <= x.T.AddSeconds(1) && t >= x.T.AddSeconds(-16)));
                 int tunneled = 0, skippedType = 0;
 
@@ -171,10 +167,13 @@ namespace Spor.Modules
                     if (Rules.Whitelist && FrstSqlite(path, kv.Value)) { frst++; continue; }
                     found.Add((kv.Value, score, c.F(path).Path, c.F(path).Status, ct, mt, sig));
                 }
-                if (gone > 0) c.Out.Comment($"{drive} {gone} files with changed timestamps are deleted since");
-                if (skippedType > 0 && Rules.Whitelist) c.Out.Comment($"{drive} {skippedType} files with changed timestamps not scored: documents, pictures and other data files, or signed executables in Windows / Program Files");
-                if (frst > 0) c.Out.Comment($"{drive} {frst} SQLite DLLs in FRST's folder (C:\\FRST\\bin) not counted: FRST writes them with their original 2019 times when it runs");
-                if (tunneled > 0) c.Out.Comment($"{drive} {tunneled} files got an older creation time through NTFS tunneling (saved by writing a new file over the old name): normal, not counted");
+                // one line per drive: what was read and what was left out
+                var left = new List<string>();
+                if (gone > 0) left.Add($"{gone} deleted since");
+                if (skippedType > 0 && Rules.Whitelist) left.Add($"{skippedType} data files or signed programs in Windows / Program Files");
+                if (frst > 0) left.Add($"{frst} FRST SQLite DLLs (C:\\FRST\\bin)");
+                if (tunneled > 0) left.Add($"{tunneled} NTFS tunneling (safe-save, normal)");
+                c.Out.Comment(journal + (left.Count > 0 ? "; not scored: " + string.Join(", ", left) : "") + $" ({sw.Elapsed.TotalSeconds:N1} s)");
             }
         }
 

@@ -160,6 +160,7 @@ If the same file was in folders that only differ in numbers (version folders, da
 | `!proxy-exec` | a running program outside Windows and Program Files was started through `forfiles /c`, `cmd /c call`, `pcalua -a`, `conhost --headless`, … | High, used to hide the real parent |
 | `!padded` | a new file is hundreds of MB of one repeated byte | High for programs and for data next to a new program: made too big for scanners and sandboxes. |
 | `!runtime-loader` | a new program that ships a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua), with loader signs in its folder | High. The code is in the data files listed as `script:` lines, not in the program. |
+| `!known-malware` | the item matches a pattern of a known malware family (Autodetect); the line names the family | High. The patterns are curated from confirmed cases; still read the line: a row can be wrong. |
 | `!renamed-program` | **hint**: a signed program under a random-looking or lure name that is not its original name | **Not on its own.** It goes to SUMMARY only with a strong flag on the same file or in the same folder, e.g. as the host of a `!sideload` DLL. |
 
 ---
@@ -181,7 +182,7 @@ Ask for a run with the whitelist off (uncheck *Whitelist*, or `-nowhitelist`) if
 ## 8. Section by section
 
 ### SUMMARY
-Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Persistence]`, `[Defender]`, …), oldest first. Every line is a starting point, not a verdict.
+Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Persistence]`, `[Defender]`, …), oldest first. `[Autodetect]` lines name a known malware family (`!known-malware`). Every line is a starting point, not a verdict.
 The time is when something happened, except for these: ShimCache lines show the file's modification time, Amcache lines when Windows wrote the entry, Run keys and services when the key was last changed, tasks and Startup items when the file was created, and log or config files when they were last written. Such a time can be much older or newer than the infection: a dropped copy of MSBuild.exe keeps the modification time of the original.
 
 ### TIMELINE
@@ -213,7 +214,7 @@ Programs, scripts and archives created in the time window in Downloads, Desktop,
 This section also lists programs and scripts that look old but whose NTFS change time is recent. A single file like that is flagged (`STP … times set back <==== !timestomped`). A batch of 3 or more such files in one folder within a minute is one line without a flag, because installers and updaters copy files with their original times.
 
 ### TIMESTOMPING
-Files whose timestamps were set, from the NTFS change journal. The journal is a ring buffer, on a busy PC it may only cover a few hours. The log says how far back it goes. Every file has a score and the signals. Round times on programs and scripts in user folders are the interesting ones.
+Files whose timestamps were set, from the NTFS change journal. The journal is a ring buffer, on a busy PC it may only cover a few hours. The log says how far back it goes. Every file has a score and the signals. Round times on programs and scripts in user folders are the interesting ones. A creation time newer than the modification time is not a signal: copying, downloading, extracting and moving to another drive keep the modification time and set a new creation time.
 
 ### DOWNLOADS AND OPENED FILES
 Browser downloads with the URL and the page, files opened in Explorer, mounted disk images and archives opened with WinRAR or 7-Zip. Malware often comes as ISO or IMG to avoid the "downloaded from the internet" warning.
@@ -228,7 +229,7 @@ Store and MSIX apps are listed with the operation (Add, Register, Remove or FAIL
 A removal right before you got the log can mean that the user or the malware already uninstalled something.
 
 ### RUNNING PROCESSES
-Programs running now from outside Windows and Program Files, unsigned ones, LOLBins and interpreters with suspicious arguments, and processes with an unsigned module from outside Windows and Program Files (`module:` lines). `parent a.exe (pid) < b.exe (pid)` is the parent chain, nearest first; `pid N (exited)` means that parent is gone. A program started through a proxy-execution launcher is `!proxy-exec`; side-loaded DLLs are `module:` lines with `!sideload`.
+Programs running now from outside Windows and Program Files, unsigned ones, LOLBins and interpreters with suspicious arguments, and processes with an unsigned module from outside Windows and Program Files (`module:` lines). `parent a.exe (pid) < b.exe (pid)` is the parent chain, nearest first; `pid N (exited)` means that parent is gone; `(exited, was X.exe)` names it from a process creation event (4688/Sysmon). A program started through a proxy-execution launcher is `!proxy-exec`; side-loaded DLLs are `module:` lines with `!sideload`.
 
 ### PERSISTENCE
 Run keys (all entries), services and tasks outside trusted locations, recently installed services (event 7045), Task Scheduler events (also **deleted** tasks), Startup folders and WMI subscriptions.

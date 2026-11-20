@@ -107,10 +107,17 @@ namespace Spor
                 progress?.Invoke("Writing the log", mods.Count, mods.Count);
                 c.Err.Clear();
                 Correlate.Run(c);   // checks across modules (script-runtime launchers); its errors go to the header
-                startErr.AddRange(c.Err);
+                startErr.AddRange(c.Err); c.Err.Clear();
 
-                Header(c, log, startErr);
                 var timeline = Timeline(c, out var rows);
+                // known malware (curated patterns) over everything collected; after the timeline, so the files' signers are known
+                var asw = Stopwatch.StartNew();
+                c.Module = "Autodetect";
+                try { Autodetect.Run(c); }
+                catch (Exception e) { c.Err.Add($"Autodetect FAILED: {e.GetType().Name}: {e.Message}"); }
+                times.Add($"autodetect {asw.Elapsed.TotalSeconds:N1} s");
+                startErr.AddRange(c.Err); c.Err.Clear();
+                Header(c, log, startErr);
                 Summary(c, log, rows);
                 Append(log, timeline);
                 foreach (var s in sections) Append(log, s);
@@ -165,7 +172,8 @@ namespace Spor
             log.W($"Users:     {string.Join(", ", c.Profiles.Select(p => p.User))}");
             log.W($"Options:   last {o.Days} days, whitelist {(Rules.Whitelist ? "on" : "OFF (everything shown)")}{(Rules.ExtraNoise.Length > 0 ? ", extra noise " + Rules.ExtraNoise : "")}, " +
                   (o.NoHash ? "no hashes" : o.Algo + " hashes of files up to " + o.MaxMB + " MB") +
-                  (o.Modules != null ? ", only " + string.Join(", ", o.Modules) : ""));
+                  (o.Modules != null ? ", only " + string.Join(", ", o.Modules) : "") +
+                  (Autodetect.Patterns.Source != "built in" ? ", autodetect patterns from " + Autodetect.Patterns.Source : ""));
             log.W("Times:     UTC");
             log.W("Format:    one item per line: time [sources] item [status] => details <==== flags (parts left out when empty);");
             log.W("           (lines in brackets) are comments, \"(line: ...)\" names the parts; indented \"key: value\" lines belong to the item above.");
@@ -286,11 +294,12 @@ namespace Spor
             log.Heading($"TIMELINE - last {c.Opt.Days} days, oldest first");
             log.Comment("Sources [PF AM ...], status [gone ...] and flags <==== !...: see LEGEND at the end of the log.");
             log.Comment("A file seen by several sources within 2 minutes is one line. A file seen many times: the first and the last time.");
-            if (defUpdates > 0)
-                log.Comment($"Hidden: {defUpdates} runs of Defender update packages (Windows\\SoftwareDistribution\\Download\\Install\\AM_Delta_Patch_*.exe; -nowhitelist lists them).");
+            var hiddenParts = new List<string>();
+            if (defUpdates > 0) hiddenParts.Add($"{defUpdates} runs of Defender update packages (AM_Delta_Patch_*.exe)");
             if (signedHidden.Count > 0)
-                log.Comment($"Hidden: {signedHidden.Values.Sum()} runs of files validly signed by well-known publishers, without flags (-nowhitelist lists them): " +
-                            string.Join(", ", signedHidden.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")));
+                hiddenParts.Add($"{signedHidden.Values.Sum()} runs of files validly signed by well-known publishers, without flags: " +
+                                string.Join(", ", signedHidden.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")));
+            if (hiddenParts.Count > 0) log.Comment("Hidden (-nowhitelist lists them): " + string.Join("; ", hiddenParts) + ".");
             var t = new Table("@time", "[sources", "*file or event", "!status", "=details", "<flags");
             foreach (var r in rows) { t.Add(Log.T(r.T), r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(r.Flags)); foreach (var p in r.Paths) t.More("path", p); if (r.More != null) foreach (var m in r.More) t.More(m.Key, m.Value); }
             t.WriteTo(log);
@@ -333,9 +342,8 @@ namespace Spor
             {
                 log.W();
                 log.Heading($"FILES - {c.Opt.Algo}, signature and version of the files as they are on disk now");
-                log.Comment("One line per file. signature: valid / invalid / revoked / expired / unsigned; signer \"(catalog)\" = signed through a Windows catalog;");
-                log.Comment("thumbprint = certificate SHA1; file version, description, product, company, original name = version resource;");
-                log.Comment("amcache sha1 = the file when Windows recorded it (differs from the file now if it was replaced).");
+                log.Comment("One line per file. signature: valid / invalid / revoked / expired / unsigned, \"(catalog)\" = signed through a Windows catalog; thumbprint = certificate SHA1;");
+                log.Comment("version: file version, description, product, company, original name; amcache sha1 = the file when Windows recorded it (differs if replaced since);");
                 log.Comment("md5 = MD5 of the file now; size = bytes; created, modified = file times in LOCAL time of this PC (as FRST shows them), not UTC.");
                 var t = new Table("*file", ">" + c.Opt.Algo.ToLowerInvariant(), "signature", "=version", "amcache sha1", "md5", "size", "created", "modified");
                 foreach (var k in files)

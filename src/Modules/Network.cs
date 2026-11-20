@@ -213,6 +213,7 @@ namespace Spor.Modules
             }
             catch (Exception ex) { c.Out.None("cannot read the DNS cache: " + ex.Message); return; }
             names = names.Where(n => !string.IsNullOrEmpty(n)).Select(n => n.TrimEnd('.').ToLowerInvariant()).Distinct().OrderBy(n => n).ToList();
+            foreach (var n in names) c.Observe("domain", n, null, "DNS cache " + n);
             var dt = new Table("[category", "*name");
             foreach (var (cat, match) in Domains)
             {

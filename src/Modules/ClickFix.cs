@@ -53,6 +53,7 @@ namespace Spor.Modules
                             if (v.Length == 0) continue;
                             v = Regex.Replace(v, @"\\1$", ""); n++;
                             bool sus = Sus.IsMatch(v);
+                            c.Observe("cmd", v, n == 1 ? t : null, "Run dialog " + c.U(h.User) + v);
                             rt.Add(n == 1 ? Log.T(t) : "-", h.User, n.ToString(), sus ? "!suspicious" : "-", v);
                             if (n == 1) c.Event(t, "RUN", null, text: c.U(h.User) + "Run dialog: " + v, flags: sus ? new List<string> { "!suspicious" } : null);
                             if (sus) c.Find(n == 1 ? t : null, "Run dialog " + c.U(h.User) + v, n == 1 ? "typed" : null);
@@ -107,6 +108,8 @@ namespace Spor.Modules
                         var lines = Util.AllLines(f); any = true;
                         var hits = Enumerable.Range(0, lines.Count).Where(i => PsSus.IsMatch(lines[i])).ToList();
                         var t = File.GetLastWriteTimeUtc(f);
+                        for (int i = 0; i < lines.Count; i++)
+                            c.Observe("cmd", lines[i], t, $"PowerShell history {c.U(p.User)}{Path.GetFileName(f)} line {i + 1}: {Rules.Fix(Util.Clip(lines[i]))}");
                         c.Out.Sub($"PowerShell console history: {c.U(p.User)}{Path.GetFileName(f)}",
                             $"{f}: {lines.Count} lines, {hits.Count} suspicious, last written {Log.T(t)} UTC.\n" +
                             "All suspicious lines, then the last " + tail + " lines. PowerShell never saves lines with password/token/apikey/secret,\n" +

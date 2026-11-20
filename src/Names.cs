@@ -101,6 +101,10 @@ namespace Spor
             return IsRandom(file) || (IsLure(file) && !IsLure(orig));
         }
 
+        /// <summary>"original name X" from the version resource, else the PDB file name without ".pdb" ("original name EventEmitter (from the PDB path)").</summary>
+        public static string OriginalNameText(string original, string internalName, string pdb) =>
+            "original name " + (original ?? internalName ?? Path.GetFileNameWithoutExtension(pdb.Replace('/', '\\')) + " (from the PDB path)");
+
         /// <summary>
         /// The hint for a program on disk: validly signed, outside Windows and Program Files, renamed (see RenamedProgram). Null if not.
         /// Detail for its line: "original name X" (from the version resource or the PDB path).
@@ -117,7 +121,7 @@ namespace Spor
                     var (orig, intern) = Signature.Names(path);
                     var pdb = orig == null && intern == null ? Pe.Read(path).Pdb : null;
                     if (RenamedProgram(Path.GetFileName(path), orig, intern, pdb))
-                        d = "original name " + (orig ?? intern ?? Path.GetFileName(pdb.Replace('/', '\\')) + " (from the PDB path)");
+                        d = OriginalNameText(orig, intern, pdb);
                 }
             }
             catch { }

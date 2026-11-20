@@ -288,6 +288,7 @@ namespace Spor
             "!proxy-exec = started through a Windows program that launches programs for others (forfiles /c, pcalua -a, conhost --headless, cmd /c call, ...), from outside Windows and Program Files",
             "!padded = new file inflated with one repeated byte against scanner and sandbox size limits: a program (its overlay) or data next to a new program",
             "!runtime-loader = new launcher of a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua) with loader signs in its folder: padded or encrypted random-named data, a hidden file next to its scripts, a program it started, or a !motw-removed file near a run",
+            "!known-malware = matches a pattern of a known malware family (Autodetect, resources/autodetect.txt); the line names the family",
             "!renamed-program = hint: a signed program under a random-looking or lure name that is not its original name (in SUMMARY only with a strong flag nearby)"
         };
     }

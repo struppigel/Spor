@@ -187,10 +187,12 @@ namespace Spor.Modules
             // ---- details ----
             var o = c.Opt;
             c.Out.Comment(creations);
-            c.Out.Comment($"Entries read: PCA {npca}, UserAssist {nua}, BAM {nbam}, ShimCache {nshim}, Compatibility Assistant {ncas}.");
-            c.Out.Comment($"Programs run in the last {o.Days} days{(Rules.Whitelist ? " outside trusted locations" : "")} are in the timeline (PCA, UA, BAM), and ShimCache files modified then (SC).");
-            if (oldLol > 0) c.Out.Comment($"Hidden: {oldLol} ShimCache entries of validly signed LOLBins in trusted locations (Windows updates; ShimCache proves no run; -nowhitelist lists them).");
-            if (shimNote.Length > 0) c.Out.Comment(shimNote.Trim());
+            c.Out.Comment($"Read PCA {npca}, UserAssist {nua}, BAM {nbam}, ShimCache {nshim}, Compatibility Assistant {ncas}; programs run in the last {o.Days} days" +
+                          $"{(Rules.Whitelist ? " outside trusted locations" : "")} are in the timeline (PCA, UA, BAM), ShimCache files modified then too (SC).");
+            var notes = new List<string>();
+            if (oldLol > 0) notes.Add($"Hidden: {oldLol} ShimCache entries of validly signed LOLBins in trusted locations (Windows updates; -nowhitelist lists them).");
+            if (shimNote.Length > 0) notes.Add(shimNote.Trim());
+            if (notes.Count > 0) c.Out.Comment(string.Join(" ", notes));
             c.Out.Sub("Compatibility Assistant: programs that ran at some point and are gone now", "No times are stored. Per folder the first " + o.PerDir + " one per line, then the other file names on one line.");
             var cr = cas.Where(x => Regex.IsMatch(x.P, @"^[a-z]:\\", Util.RX) && !File.Exists(x.P))
                         .Select(x => new Row { P = x.P, User = x.User, F = Rules.Flags(x.P) }).ToList();
@@ -207,6 +209,16 @@ namespace Spor.Modules
         }
 
         sealed class Creation { public DateTime T; public string Src, Pid, ParentPid, Image, Parent, Cmd, ParentCmd; }
+
+        /// <summary>A PID from an event: 4688 writes hex ("0x1d4"), Sysmon decimal. Null if neither.</summary>
+        internal static int? Pid(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return null;
+            s = s.Trim();
+            if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                return int.TryParse(s.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out var h) ? h : (int?)null;
+            return int.TryParse(s, out var d) ? d : (int?)null;
+        }
 
         const int MaxCreations = 20000;
         const string SysmonLog = "Microsoft-Windows-Sysmon/Operational";
@@ -261,6 +273,8 @@ namespace Spor.Modules
             Creation ParentOf(Creation x) =>
                 x.ParentPid != null && byPid.TryGetValue(x.Src + "|" + x.ParentPid, out var cands) ? cands.LastOrDefault(p => p.T <= x.T && p != x) : null;
             int kept = 0;
+            foreach (var x in list.Where(x => !string.IsNullOrEmpty(x.Image)))
+                if (Pid(x.Pid) is int pid) c.ProcessStarts.Add((pid, x.T, c.Long(x.Image)));
             foreach (var x in list.Where(x => !string.IsNullOrEmpty(x.Image) && x.T >= c.Since))
             {
                 var image = c.Long(x.Image);

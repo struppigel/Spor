@@ -70,6 +70,35 @@ namespace Spor.Tests
             Assert.Equal("parent pid 40 (exited)", Processes.ChainText(Processes.Chain(host, new Dictionary<int, Processes.Proc>())));
         }
 
+        static DateTime At(int minute) => new DateTime(2026, 11, 20, 3, minute, 0, DateTimeKind.Utc);
+
+        [Fact]
+        public void AnExitedParentIsNamedOnlyFromAProcessStartRecord()
+        {
+            // forfiles (30) is running, its parent 20 exited; 4688 recorded PID 20 twice: Setup.exe before forfiles, notepad.exe after (reused)
+            var host = P(50, 40, Temp, 5);
+            var all = new Dictionary<int, Processes.Proc> { [40] = P(40, 30, @"C:\Windows\System32\cmd.exe", 4), [30] = P(30, 20, @"C:\Windows\System32\forfiles.exe", 3) };
+            var starts = new List<(int, DateTime, string)>
+            {
+                (20, At(1), @"C:\Users\anna\Downloads\old.exe"),
+                (20, At(2), @"C:\Users\anna\Downloads\x\Setup.exe"),
+                (20, At(9), @"C:\Windows\System32\notepad.exe"),
+            };
+            var chain = Processes.Chain(host, all);
+            Assert.Equal("parent cmd.exe (40) < forfiles.exe (30) < pid 20 (exited, was Setup.exe)", Processes.ChainText(chain, true, host.Created, starts));
+            // no record, or no start time to compare with: not guessed
+            Assert.Equal("parent cmd.exe (40) < forfiles.exe (30) < pid 20 (exited)", Processes.ChainText(chain, true, host.Created, new List<(int, DateTime, string)>()));
+            Assert.Equal("parent pid 40 (exited)", Processes.ChainText(Processes.Chain(host, new Dictionary<int, Processes.Proc>()), true, null, starts));
+            // only records that started before the child count
+            Assert.Null(Processes.ExitedImage(starts, 20, At(0)));
+        }
+
+        [Theory]
+        [InlineData("0x1d4", 468)]
+        [InlineData("0X10", 16)]
+        [InlineData("3748", 3748)]
+        public void EventPidsAreHexOrDecimal(string s, int pid) => Assert.Equal(pid, ExecEvidence.Pid(s));
+
         [Fact]
         public void ChainTextHasNoStatusWords()
         {

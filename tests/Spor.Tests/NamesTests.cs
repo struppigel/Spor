@@ -43,6 +43,14 @@ namespace Spor.Tests
             Assert.True(Names.RenamedProgram("ehyISWlPN.exe", null, null, @"D:\src\EventEmitter.pdb"));
         }
 
+        [Theory]
+        [InlineData(null, null, @"D:\src\EventEmitter.pdb", "original name EventEmitter (from the PDB path)")]
+        [InlineData(null, null, "D:/build/obj/Release/tool.pdb", "original name tool (from the PDB path)")]
+        [InlineData("putty.exe", "PuTTY", null, "original name putty.exe")]
+        [InlineData(null, "PuTTY", null, "original name PuTTY")]
+        public void OriginalNameTextDropsPdbExtension(string original, string internalName, string pdb, string expected) =>
+            Assert.Equal(expected, Names.OriginalNameText(original, internalName, pdb));
+
         [Fact]
         public void LureNameNotTheOriginal()
         {
