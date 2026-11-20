@@ -137,7 +137,7 @@ The `INS` lines in the timeline have the same details as the SOFTWARE line they 
 | `!double-extension` | e.g. `invoice.pdf.exe`, also padded with spaces |
 | `!in-folder-named-like-file` | e.g. `ab.exe\evil.dll`, `app.exe.local\x.dll` |
 | `!RLO` | bidi override characters in the path, shown as `<RLO>` |
-| `!invisible-char` | invisible or blank-looking characters in the path (no-break space, zero-width, Hangul filler U+3164, Braille blank U+2800, ...), shown as `<U+XXXX>`. In USB DRIVES also a name that starts or ends with a space or ends with a dot. USB worms hide their copy in a folder named like that. |
+| `!invisible-char` | an invisible character in the path, shown as `<U+XXXX>`. Every module flags only characters that are never part of normal names: zero-width space, word joiner and invisible operators, Hangul fillers (U+3164, U+115F, U+1160, U+FFA0), the Braille blank U+2800, BOM, Khmer / Mongolian invisible vowels and separators. USB DRIVES flags every invisible character, also the no-break space, ideographic space and zero-width (non-)joiner (normal in Persian, Japanese and web-page-titled names elsewhere), and a name that starts or ends with a space or ends with a dot. USB worms hide their copy in a folder named like that. Every module shows all of them as `<U+XXXX>`. |
 | `!unsigned`, `!outside-driver-folders` | drivers (Amcache) |
 | `!suspicious` | ClickFix entries that download or run code |
 | `!kept-despite-warning` | the browser warned about a download and the user kept it |

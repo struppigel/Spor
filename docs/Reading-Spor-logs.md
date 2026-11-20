@@ -141,7 +141,7 @@ If the same file was in folders that only differ in numbers (version folders, da
 | `!lolbin` | a Windows tool that malware likes to use (powershell, mshta, rundll32, regsvr32, cmd, certutil, …) | **Not on its own.** These are normal on many PCs. Look at what it ran: the arguments of a persistence entry, the PowerShell history, the files around it in the timeline. The SUMMARY lists all LOLBins in one line. |
 | `!double-extension` | `invoice.pdf.exe` | High |
 | `!RLO` | right-to-left override in the name, shown as `<RLO>` | High |
-| `!invisible-char` | an invisible or blank-looking character in the name, shown as `<U+00A0>` etc. | High for programs and for folders on USB drives: USB worms hide the user's files and their copy in a folder named like that. Some games and installers use no-break spaces in names; read the line. |
+| `!invisible-char` | an invisible character in the name, shown as `<U+00A0>` etc. Outside USB DRIVES only characters never used in names (zero-width space, Hangul filler, Braille blank, ...); on USB drives any, also a no-break space | High for programs and for folders on USB drives: USB worms hide the user's files and their copy in a folder named like that. A no-break space or ideographic space outside USB drives is shown as `<U+00A0>` / `<U+3000>` but not flagged: Persian, Japanese and web-page-titled names use them. |
 | `!in-folder-named-like-file` | `x.exe\evil.dll`, `app.exe.local\x.dll` | High, DLL hijacking |
 | `!renamed-lolbin` | a Windows tool under another name (original name from Amcache) | High |
 | `!suspicious` | a command that downloads or runs code (Run dialog, address bar, PowerShell history) | High, typical for **ClickFix** (fake CAPTCHA: "press Win+R, Ctrl+V, Enter") |

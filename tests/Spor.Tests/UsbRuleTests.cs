@@ -136,14 +136,29 @@ namespace Spor.Tests
             Assert.Null(Usb.Emd("something else"));
         }
 
+        static readonly System.DateTime Connected = new System.DateTime(2026, 11, 20, 10, 0, 0);
+
         [Fact]
-        public void UsbDriveOnTimelineLines()
+        public void UsbDriveBySerialAlways()
         {
             var vols = new Dictionary<string, string> { ["499602D2"] = "STICK" };
-            var letters = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase) { ["E:"] = "STICK" };
-            Assert.Equal("on USB drive STICK (serial 499602D2)", Correlate.UsbDriveOf(@"\VOLUME{01d9a1b2c3d4e5f6-499602d2}\_\X.EXE", vols, letters));
-            Assert.Equal("on USB drive E: STICK", Correlate.UsbDriveOf(@"e:\_\x.exe", vols, letters));
-            Assert.Null(Correlate.UsbDriveOf(@"C:\x.exe", vols, letters));
+            var letters = new Dictionary<string, (string, System.DateTime?)>(System.StringComparer.OrdinalIgnoreCase);
+            Assert.Equal("on USB drive STICK (serial 499602D2)",
+                         Correlate.UsbDriveOf(@"\VOLUME{01d9a1b2c3d4e5f6-499602d2}\_\X.EXE", Connected.AddDays(-30), vols, letters));
+            Assert.Null(Correlate.UsbDriveOf(@"C:\x.exe", Connected, vols, letters));
+        }
+
+        /// <summary>By letter only after the last connect of the device that has the letter now: before, E: may have been another drive.</summary>
+        [Fact]
+        public void UsbDriveByLetterAfterConnect()
+        {
+            var vols = new Dictionary<string, string>();
+            var letters = new Dictionary<string, (string, System.DateTime?)>(System.StringComparer.OrdinalIgnoreCase) { ["E:"] = ("STICK", Connected) };
+            Assert.Equal("on USB drive E: STICK", Correlate.UsbDriveOf(@"e:\_\x.exe", Connected.AddHours(1), vols, letters));
+            Assert.Equal("on USB drive E: STICK", Correlate.UsbDriveOf(@"e:\_\x.exe", Connected.AddMinutes(-1), vols, letters));   // key time lag
+            Assert.Null(Correlate.UsbDriveOf(@"e:\setup.exe", Connected.AddDays(-21), vols, letters));
+            letters["E:"] = ("STICK", null);
+            Assert.Null(Correlate.UsbDriveOf(@"e:\_\x.exe", Connected.AddHours(1), vols, letters));   // connect time unknown
         }
     }
 }

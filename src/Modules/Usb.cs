@@ -72,22 +72,56 @@ namespace Spor.Modules
 
         // ---------------------------------------------------------------- drives
 
+        /// <summary>Seconds a network drive may take to answer (a disconnected share would stall the scan).</summary>
+        const int NetworkWait = 15;
+
+        /// <summary>
+        /// f() on a worker thread; default and timedOut when it takes longer than `seconds` (it is then left running). An exception of f
+        /// is thrown here, as if f had run on this thread.
+        /// </summary>
+        static T Timed<T>(Func<T> f, int seconds, out bool timedOut)
+        {
+            var task = System.Threading.Tasks.Task.Run(f);
+            try { timedOut = !task.Wait(TimeSpan.FromSeconds(seconds)); }
+            catch (AggregateException e) { throw e.GetBaseException(); }
+            return timedOut ? default(T) : task.Result;
+        }
+
+        /// <summary>Drive letters of network drives ("Z:"): their files are listed, not hashed.</summary>
+        readonly HashSet<string> networkLetters = new HashSet<string>(Util.IC);
+
+        /// <summary>A file on a network drive or share: not hashed (reading it goes over the network).</summary>
+        bool OnNetwork(string p) => !string.IsNullOrEmpty(p) && (p.StartsWith(@"\\") || (p.Length >= 2 && networkLetters.Contains(p.Substring(0, 2))));
+
+        /// <summary>The status of a file (hashed for FILES), or null for a file on a network drive.</summary>
+        string Status(string p) => OnNetwork(p) ? null : c.F(p).Status;
+
+        /// <summary>A file as a sub-line value with its USB flags: "path [status] &lt;==== flags" (not hashed on a network drive).</summary>
+        string FileValue(string p) => OnNetwork(p) ? Log.Item(Shown(p), null, null, Rules.FlagCol(UsbFlags(p))) : c.FF(p, true, UsbFlags(p));
+
         List<Drive> Drives()
         {
             var res = new List<Drive>();
-            c.Out.Sub("Drives", "deep = removable or USB drive: listed in full (hidden, system and invisible-named items too); other drives: the root and hidden root folders.");
+            c.Out.Sub("Drives", "deep = removable or USB drive: listed in full (hidden, system and invisible-named items too); network drives: the root, not hashed;\n" +
+                                "other drives: the root and hidden root folders.");
             var t = new Table("*drive", "type", "bus", "device", "label", "file system", "serial", "size", "=listing");
             foreach (var di in DriveInfo.GetDrives())
             {
                 var d = new Drive { Letter = di.Name.TrimEnd('\\'), Root = di.Name, Type = di.DriveType };
-                bool ready = false;
-                try { ready = di.IsReady; } catch { }
-                if (ready)
+                bool ready = false, timedOut = false;
+                // a disconnected network drive can block IsReady and the volume queries for a long time
+                var info = Timed(() =>
                 {
-                    try { d.Fs = di.DriveFormat; d.Size = di.TotalSize; } catch { }
-                    d.Label = Native.VolumeLabel(d.Root);
-                    d.Serial = Native.VolumeSerial(d.Root);
-                }
+                    bool r = false;
+                    try { r = di.IsReady; } catch { }
+                    if (!r) return (Ready: false, Fs: (string)null, Size: 0L, Label: (string)null, Serial: (string)null);
+                    string fs = null; long size = 0;
+                    try { fs = di.DriveFormat; size = di.TotalSize; } catch { }
+                    return (Ready: true, Fs: fs, Size: size, Label: Native.VolumeLabel(d.Root), Serial: Native.VolumeSerial(d.Root));
+                }, d.Type == DriveType.Network ? NetworkWait : 120, out timedOut);
+                ready = info.Ready;
+                if (ready) { d.Fs = info.Fs; d.Size = info.Size; d.Label = info.Label; d.Serial = info.Serial; }
+                if (d.Type == DriveType.Network) networkLetters.Add(d.Letter);
                 if (d.Type == DriveType.Removable || d.Type == DriveType.Fixed)
                 {
                     var s = Native.Storage(d.Letter);
@@ -97,11 +131,12 @@ namespace Spor.Modules
                 if (d.Deep)
                 {
                     if (d.Serial != null) c.UsbVolumes[d.Serial] = d.Label ?? "";
-                    c.UsbLetters[d.Letter] = d.Label ?? "";
+                    c.UsbLetters[d.Letter] = (d.Label ?? "", null);   // the time it was connected: History()
                 }
                 t.Add(d.Letter, d.Type.ToString().ToLowerInvariant(), BusName(d.Bus), string.Join(" ", new[] { d.Vendor, d.Product }.Where(x => x != null)),
                       d.Label != null ? Rules.Fix(d.Label) : null, d.Fs, d.Serial, d.Size > 0 ? d.Size + " bytes" : null,
-                      !ready ? "not ready (no medium)" : d.Deep ? "deep" : d.Type == DriveType.CDRom ? "root" : "root and hidden root folders");
+                      timedOut ? $"not reachable (no answer in {NetworkWait} s)" : !ready ? "not ready (no medium)" : d.Deep ? "deep"
+                      : d.Type == DriveType.Network ? "root, not hashed" : d.Type == DriveType.CDRom ? "root" : "root and hidden root folders");
                 if (ready && d.Type != DriveType.NoRootDirectory && d.Type != DriveType.Unknown) res.Add(d);
             }
             t.WriteTo(c.Out);
@@ -143,7 +178,7 @@ namespace Spor.Modules
         List<Item> Contents(Drive d)
         {
             var items = new List<Item>();
-            bool capped = false;
+            bool capped = false, network = d.Type == DriveType.Network, unreachable = false;
             int dirs = 0, denied = 0;
             var st = new Stack<(string Dir, int Depth)>();
             st.Push((d.Root.TrimEnd('\\'), 0));
@@ -152,8 +187,19 @@ namespace Spor.Modules
                 var (dir, depth) = st.Pop();
                 dirs++;
                 FileSystemInfo[] fs;
-                // the \\?\ form lists names that end with a space or a dot too (Win32 path rules would strip them)
-                try { fs = new DirectoryInfo(@"\\?\" + dir + "\\").GetFileSystemInfos(); }
+                // the \\?\ form lists names that end with a space or a dot too (Win32 path rules would strip them);
+                // a network drive gets a time limit
+                try
+                {
+                    var path = @"\\?\" + dir + "\\";
+                    if (!network) fs = new DirectoryInfo(path).GetFileSystemInfos();
+                    else
+                    {
+                        fs = Timed(() => new DirectoryInfo(path).GetFileSystemInfos(), NetworkWait, out var to);
+                        if (to) { unreachable = true; continue; }
+                        if (fs == null) throw new IOException();
+                    }
+                }
                 catch { denied++; continue; }
                 var sub = new List<string>();
                 foreach (var f in fs.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
@@ -163,7 +209,7 @@ namespace Spor.Modules
                     try { it.Attr = f.Attributes; it.Created = f.CreationTimeUtc; it.Modified = f.LastWriteTimeUtc; } catch { }
                     it.Dir = (it.Attr & FileAttributes.Directory) != 0;
                     if (!it.Dir) try { it.Size = ((FileInfo)f).Length; } catch { }
-                    try { it.Streams = Native.Streams(@"\\?\" + it.Path); } catch { }
+                    if (!network) try { it.Streams = Native.Streams(@"\\?\" + it.Path); } catch { }
                     items.Add(it);
                     if (it.Dir && (it.Attr & FileAttributes.ReparsePoint) == 0 && depth < c.Opt.UsbDepth && Enter(d, it)) sub.Add(it.Path);
                 }
@@ -177,13 +223,14 @@ namespace Spor.Modules
 
             c.Out.Sub($"Contents of {d.Letter}\\" + (d.Label != null ? " (" + Rules.Fix(d.Label) + ")" : ""),
                       d.Deep ? "Everything on the drive, folders end with \\. Times UTC; hash, signature and version of the files: FILES."
-                             : "The root of the drive, and the contents of hidden, system or invisible-named root folders (not Windows' own). Times UTC; hashes: FILES.");
+                      : network ? "Network drive: the root, folders end with \\. Times UTC. Files are not hashed and their streams not read (that would go over the network)."
+                      : "The root of the drive, and the contents of hidden, system or invisible-named root folders (not Windows' own). Times UTC; hashes: FILES.");
             var t = new Table("*item", "!status", "=attributes", "created", "modified", "size", "streams", "=details", "<flags");
             foreach (var it in items)
             {
                 string status = null;
                 bool hashable = !it.Dir && !(d.Letter.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase) && it.Depth == 0 && SystemRootFile.IsMatch(it.Name));
-                if (hashable && !EdgeName(it.Name)) status = c.F(it.Path).Status;
+                if (hashable && !EdgeName(it.Name)) status = Status(it.Path);
                 else if (hashable) status = "name ends with a space or dot: Windows programs cannot open it";
                 var streams = it.Streams.Count > 0 ? string.Join(", ", it.Streams.Select(s => Rules.Fix(s.Name) + " " + s.Size + " bytes")) : null;
                 t.Add(Shown(it.Path) + (it.Dir ? "\\" : ""), status, AttrText(it.Attr), Log.T(it.Created), Log.T(it.Modified), it.Dir ? null : it.Size + " bytes",
@@ -192,7 +239,7 @@ namespace Spor.Modules
                 if (strong.Count > 0)
                 {
                     // a new file goes to the timeline (and from there to the SUMMARY); folders and older files straight to the SUMMARY
-                    if (!it.Dir && !EdgeName(it.Name) && it.Created >= c.Since)
+                    if (!it.Dir && !EdgeName(it.Name) && !network && it.Created >= c.Since)
                         c.Event(it.Created, "NEW", it.Path, string.Join("; ", new[] { "on " + DriveText(d), AttrText(it.Attr) }.Concat(it.Details)),
                                 it.Flags.Where(f => !Rules.Flags(it.Path).Contains(f)).ToList());
                     else
@@ -201,9 +248,10 @@ namespace Spor.Modules
             }
             t.WriteTo(c.Out, "empty");
             if (capped) c.Out.Comment($"Stopped at {c.Opt.UsbMax} items; the rest of the drive is not listed.");
+            if (unreachable) c.Out.Comment($"The drive did not answer in {NetworkWait} s; not listed.");
             if (denied > 0) c.Out.Comment($"{denied} of {dirs} folders could not be read (access denied).");
             c.Out.Comment($"{items.Count} items in {dirs} folders, {items.Count(i => (i.Attr & FileAttributes.Hidden) != 0)} hidden, " +
-                          $"{items.Count(i => Rules.OddChars(i.Name) || EdgeName(i.Name))} with invisible characters or a space/dot at the end of the name.");
+                          $"{items.Count(i => Unseen(i.Name) || EdgeName(i.Name))} with invisible characters or a space/dot at the end of the name.");
             AddHiddenNames(d, hiddenNames);
             return items;
         }
@@ -220,13 +268,26 @@ namespace Spor.Modules
             if (it.Depth > 0) return true;   // inside a root folder that was entered
             if (d.Type == DriveType.Network || d.Type == DriveType.CDRom) return false;
             if (KnownRootFolder.IsMatch(it.Name)) return false;
-            return (it.Attr & (FileAttributes.Hidden | FileAttributes.System)) != 0 || Rules.OddChars(it.Name) || EdgeName(it.Name);
+            return (it.Attr & (FileAttributes.Hidden | FileAttributes.System)) != 0 || Unseen(it.Name) || EdgeName(it.Name);
+        }
+
+        /// <summary>Any character that cannot be seen: bidi overrides and every invisible character (also a no-break space).</summary>
+        static bool Unseen(string s) => Rules.Bidi.IsMatch(s ?? "") || Rules.Invisible.IsMatch(s ?? "");
+
+        /// <summary>
+        /// (pure) The flags of a path on a drive: Rules.Flags, and !invisible-char for any invisible character (Rules.Flags flags only those
+        /// never used in names; on a USB drive a no-break space in a folder name is a worm's) or a space / dot at the edge of a name.
+        /// </summary>
+        internal static List<string> UsbFlags(string path)
+        {
+            var f = Rules.Flags(path);
+            if (!f.Contains(Rules.InvisibleFlag) && (Rules.Invisible.IsMatch(path ?? "") || Shown(path) != Rules.Fix(path))) f.Add(Rules.InvisibleFlag);
+            return f;
         }
 
         void Classify(Drive d, Item it, List<Item> all)
         {
-            it.Flags.AddRange(Rules.Flags(it.Path));
-            if (EdgeName(it.Name) && !it.Flags.Contains(Rules.InvisibleFlag)) it.Flags.Add(Rules.InvisibleFlag);
+            it.Flags.AddRange(UsbFlags(it.Path));
             bool hs = (it.Attr & FileAttributes.Hidden) != 0 && (it.Attr & FileAttributes.System) != 0;
             if (d.Deep && hs && !WindowsHiddenSystem.IsMatch(it.Name)) it.Flags.Add(HiddenSystemFlag);
             if (it.Dir && ClsidName(it.Name)) { it.Flags.Add(ClsidFlag); it.Details.Add("Explorer shows this folder as a shell object (CLSID in the name)"); }
@@ -400,7 +461,7 @@ namespace Spor.Modules
                 var starts = string.Join(", ", cmds.Select(x => Rules.Fix(x.Command)).Distinct(Util.IC));
                 var fl = new List<string>();
                 if (cmds.Count > 0) fl.Add(AutorunFlag);
-                t.Add(Shown(it.Path), c.F(it.Path).Status, AttrText(it.Attr) + (cmds.Count > 0 ? "; starts " + starts : ""), Rules.FlagCol(fl));
+                t.Add(Shown(it.Path), Status(it.Path), AttrText(it.Attr) + (cmds.Count > 0 ? "; starts " + starts : ""), Rules.FlagCol(fl));
                 // "inf: [autorun] open=x.exe": the file as written (keys like shell\open\command cannot be sub-line keys);
                 // "target:" the files it starts, "icon file:" its icon: hashed, and found by log parsers like other targets
                 foreach (var e in inf) t.More("inf", (e.Section.Length > 0 ? "[" + e.Section + "] " : "") + e.Key + (e.Value.Length > 0 ? "=" + Rules.Fix(e.Value) : ""));
@@ -410,7 +471,7 @@ namespace Spor.Modules
                 {
                     bool icon = e.Key.Equals("icon", StringComparison.OrdinalIgnoreCase);
                     var f = AutorunFile(d.Root, icon ? Regex.Replace(e.Value, @",\s*-?\d+$", "") : e.Value);
-                    if (f != null && files.Add((icon ? "i|" : "t|") + f)) t.More(icon ? "icon file" : "target", c.FF(f));
+                    if (f != null && files.Add((icon ? "i|" : "t|") + f)) t.More(icon ? "icon file" : "target", FileValue(f));
                 }
                 if (fl.Count > 0) c.Find(it.Modified, Log.Item(Shown(it.Path), null, "starts " + starts, Rules.FlagCol(fl)), "file modified");
             }
@@ -535,7 +596,7 @@ namespace Spor.Modules
             var t = new Table("*shortcut", ">target", "!status", "args", "icon", "workdir", "window", "description", "made on", "volume", "target from", "<flags");
             foreach (var (d, it) in shortcuts)
             {
-                var fl = new List<string>(Rules.Flags(it.Path));
+                var fl = new List<string>(UsbFlags(it.Path));
                 if (it.Name.EndsWith(".url", StringComparison.OrdinalIgnoreCase))
                 {
                     UrlFile u = null;
@@ -545,7 +606,7 @@ namespace Spor.Modules
                     var fileTarget = Regex.Match(u.Url ?? "", @"^file:/+([a-z]:[\\/].*)$", Util.RX);
                     var tgt = fileTarget.Success ? Uri.UnescapeDataString(fileTarget.Groups[1].Value).Replace('/', '\\') : u.Url;
                     if (kindU != null && Runnable(tgt)) fl.Add(IconFlag);
-                    t.Add(Shown(it.Path), Rules.Fix(tgt), fileTarget.Success ? c.F(tgt).Status : null, null,
+                    t.Add(Shown(it.Path), Rules.Fix(tgt), fileTarget.Success ? Status(tgt) : null, null,
                           u.IconFile != null ? Rules.Fix(u.IconFile) + "," + u.IconIndex + (kindU != null ? " (" + kindU + ")" : "") : null,
                           null, null, null, null, null, "url file", Rules.FlagCol(fl));
                     Report(it, fl, tgt);
@@ -564,7 +625,7 @@ namespace Spor.Modules
                 if (!string.IsNullOrEmpty(l.Target))
                 {
                     var exp = Environment.ExpandEnvironmentVariables(l.Target);
-                    if (Rules.DrivePath.IsMatch(exp)) status = c.F(exp).Status;
+                    if (Rules.DrivePath.IsMatch(exp)) status = Status(exp);
                 }
                 t.Add(Shown(it.Path), l.Target != null ? Rules.Fix(l.Target) : null, status, l.Args != null ? Rules.Fix(l.Args) : null,
                       l.Icon != null ? Rules.Fix(l.Icon) + (kind != null ? " (" + kind + ")" : "") : null, l.WorkDir != null ? Rules.Fix(l.WorkDir) : null,
@@ -577,7 +638,7 @@ namespace Spor.Modules
                 if (l.RelPath != null) t.More("relative path", Rules.Fix(l.RelPath));
                 // files the arguments name (the worm's hidden copy, often a path relative to the drive): hashed for FILES
                 foreach (var f in ArgumentFiles(l.Args, Util.Folder(it.Path), l.WorkDir, d.Root, p => { try { return new FileInfo(@"\\?\" + p).Exists; } catch { return false; } }))
-                    t.More("argument file", c.FF(f));
+                    t.More("argument file", FileValue(f));
                 Report(it, fl, l.Target);
             }
             t.WriteTo(c.Out, "no shortcuts on the drives");
@@ -585,7 +646,7 @@ namespace Spor.Modules
 
         void Report(Item it, List<string> fl, string target)
         {
-            var strong = Rules.Strong(fl).Where(f => !Rules.Flags(it.Path).Contains(f)).ToList();
+            var strong = Rules.Strong(fl).Where(f => !UsbFlags(it.Path).Contains(f)).ToList();
             if (strong.Count == 0) return;
             c.Find(it.Created, Log.Item(Shown(it.Path), null, Rules.Fix(target ?? "?"), Rules.FlagCol(strong)), "created");
         }
@@ -837,6 +898,11 @@ namespace Spor.Modules
                                         var last = arrival ?? kw;
                                         labels.TryGetValue(serial, out var lab);
                                         letters.TryGetValue(serial, out var let);
+                                        // a drive letter this device has now: timeline lines of that letter after this connect are on it
+                                        if (let != null && last.HasValue)
+                                            foreach (var l in let.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries))
+                                                if (c.UsbLetters.TryGetValue(l, out var cur) && (cur.Since == null || last > cur.Since))
+                                                    c.UsbLetters[l] = (cur.Label, last);
                                         rows.Add((last, new[] { Log.T(last), string.IsNullOrEmpty(name) ? UsbName(dn) : name + " (" + UsbName(dn) + ")", serial, Log.T(first),
                                                                Log.T(removal), lab != null ? Rules.Fix(lab) : null, let, arrival.HasValue ? Log.T(kw) : null }));
                                         if (first >= c.Since) c.Event(first, "USB", null, text: $"USB storage device first installed: {name ?? UsbName(dn)} (serial {serial})" + (lab != null ? ", label " + Rules.Fix(lab) : ""));

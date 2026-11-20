@@ -37,7 +37,6 @@ namespace Spor
             StartPosition = FormStartPosition.CenterScreen;
             AutoSize = true;
             AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
             // one column, everything auto-sized from its content (no GroupBox: its auto-size does not grow with long check box texts)
             var root = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(14), Location = new Point(0, 0) };
@@ -54,17 +53,15 @@ namespace Spor
 
             // profile: ticks its modules; ticking boxes by hand shows the matching profile, else "Custom"
             Add(Head("What to scan"));
+            // "Profile: [list]" only: the module grid below sets the window's width
             var pr = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(8, 0, 0, 6), WrapContents = false };
-            pr.Controls.Add(new Label { Text = "Profile:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 6, 3) });
-            profile = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+            pr.Controls.Add(new Label { Text = "Profile:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 6, 0) });   // Left: centred on the list's row
+            profile = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 0, 0) };
             foreach (var p in Scanner.Profiles) profile.Items.Add(p.Name);
             profile.Items.Add(Custom);
+            // wide enough for the longest entry at any font size (a fixed pixel width does not scale with the font)
+            profile.Width = profile.Items.Cast<string>().Max(s => TextRenderer.MeasureText(s, Font).Width) + SystemInformation.VerticalScrollBarWidth + 16;
             pr.Controls.Add(profile);
-            pr.Controls.Add(new Label
-            {
-                Text = "Default: malware traces.  USB worm: drives, shortcuts, autorun.inf, USB history.  All: both.",
-                AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(12, 6, 3, 3), ForeColor = SystemColors.GrayText
-            });
             Add(pr);
 
             // modules in a grid, filled column by column (3 columns)

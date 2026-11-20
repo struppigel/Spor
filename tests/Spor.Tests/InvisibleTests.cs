@@ -15,13 +15,40 @@ namespace Spor.Tests
         [InlineData("C:\\normal name\\x.exe", "C:\\normal name\\x.exe")]
         public void Fix(string raw, string shown) => Assert.Equal(shown, Rules.Fix(raw));
 
+        /// <summary>Everywhere: only characters never used in names. A no-break space, ZWNJ or ideographic space is normal text.</summary>
+        [Theory]
+        [InlineData("C:\\x\\\u3164\\a.exe", true)]
+        [InlineData("C:\\x\\\u2800.exe", true)]
+        [InlineData("C:\\x\\a\u200Bb.exe", true)]
+        [InlineData("C:\\x\\\uFEFFa.exe", true)]
+        [InlineData("C:\\Downloads\\Page\u00A0Title.exe", false)]
+        [InlineData("C:\\Users\\x\\\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645.exe", false)]   // Persian with ZWNJ
+        [InlineData("C:\\x\\\u65E5\u672C\u3000\u8A9E.exe", false)]                                    // ideographic space
+        [InlineData("E:\\files\\x.exe", false)]
+        public void Flag(string path, bool flagged) => Assert.Equal(flagged, Rules.Flags(path).Contains(Rules.InvisibleFlag));
+
         [Fact]
-        public void Flag()
+        public void BidiStaysRlo() => Assert.Contains("!RLO", Rules.Flags("E:\\doc\u202Efdp.exe"));
+
+        [Fact]
+        public void OddCharsOnlyForHidingCharacters()
         {
-            Assert.Contains(Rules.InvisibleFlag, Rules.Flags("E:\\\u00A0\\x.exe"));
-            Assert.DoesNotContain(Rules.InvisibleFlag, Rules.Flags("E:\\files\\x.exe"));
-            Assert.Contains("!RLO", Rules.Flags("E:\\doc\u202Efdp.exe"));
+            Assert.True(Rules.OddChars("a\u3164b"));
+            Assert.True(Rules.OddChars("a\u202Eb"));
+            Assert.False(Rules.OddChars("a\u00A0b"));
         }
+
+        /// <summary>On a drive (USB DRIVES): every invisible character, and blanks or dots at the edge of a name.</summary>
+        [Theory]
+        [InlineData("E:\\\u00A0\\x.exe", true)]
+        [InlineData("E:\\\u3000", true)]
+        [InlineData("E:\\data \\x.exe", true)]
+        [InlineData("E:\\x.\\y", true)]
+        [InlineData("E:\\Photos\\cat.jpg", false)]
+        public void UsbFlag(string path, bool flagged) => Assert.Equal(flagged, Usb.UsbFlags(path).Contains(Rules.InvisibleFlag));
+
+        [Fact]
+        public void ShownEverywhere() => Assert.Equal("C:\\a<U+00A0>b", Rules.Fix("C:\\a\u00A0b"));
 
         [Theory]
         [InlineData("E:\\ ", "E:\\<U+0020>")]

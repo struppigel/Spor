@@ -99,10 +99,12 @@ namespace Spor
 
         /// <summary>
         /// Removable and USB volumes (USB DRIVES): volume serial (8 hex digits, as in Prefetch's \VOLUME{...-XXXXXXXX}) -> label, and drive
-        /// letters ("E:") -> label. Correlate names the USB drive on timeline lines of files on them.
+        /// letters ("E:") -> (label, when the device that has the letter now was last connected; null when unknown). Correlate names the USB
+        /// drive on timeline lines of files on them: by serial always, by letter only after that connect (the letter may have been another
+        /// stick or a DVD before).
         /// </summary>
         public readonly Dictionary<string, string> UsbVolumes = new Dictionary<string, string>(Util.IC);
-        public readonly Dictionary<string, string> UsbLetters = new Dictionary<string, string>(Util.IC);
+        public readonly Dictionary<string, (string Label, DateTime? Since)> UsbLetters = new Dictionary<string, (string, DateTime?)>(Util.IC);
 
         /// <summary>Script-runtime launchers (Correlate): never hidden by the signer whitelist, like interpreters.</summary>
         public readonly HashSet<string> RuntimeLaunchers = new HashSet<string>(Util.IC);
