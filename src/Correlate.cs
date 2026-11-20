@@ -14,8 +14,8 @@ namespace Spor
         public List<string> Padded = new List<string>();          // padded files below it (!padded or a "padded:" detail)
         public List<string> RandomData = new List<string>();      // random-named, high-entropy data files with an unknown extension
         public List<string> DotFiles = new List<string>();        // hidden or dot files next to a script container
-        public List<string> Children = new List<string>();        // programs it started outside its folder
-        public List<string> MotwNearRun = new List<string>();     // !motw-removed files written within 2 minutes of one of its runs
+        public List<(string Path, DateTime? Run)> Children = new List<(string, DateTime?)>();   // programs it started outside its folder, and the run that did (null: none known)
+        public List<(string Path, DateTime Run)> MotwNearRun = new List<(string, DateTime)>();  // !motw-removed files written within 2 minutes of one of its runs, and that run
     }
 
     /// <summary>
@@ -39,12 +39,30 @@ namespace Spor
         {
             var s = new List<string>();
             if (r == null || !r.New) return s;
-            s.AddRange(r.Padded.Select(p => "padded file " + p));
-            s.AddRange(r.RandomData.Select(p => "random-named encrypted-looking data file " + p));
-            s.AddRange(r.DotFiles.Select(p => "hidden file " + p + " next to its scripts"));
-            s.AddRange(r.Children.Select(p => "started " + p));
-            s.AddRange(r.MotwNearRun.Select(p => "!motw-removed file " + p + " written within 2 minutes of a run"));
+            s.AddRange(FolderSigns(r));
+            s.AddRange(r.Children.Select(x => "started " + x.Path).Distinct(Util.IC));
+            s.AddRange(r.MotwNearRun.Select(x => "!motw-removed file " + x.Path + " written within 2 minutes of a run").Distinct(Util.IC));
             return s;
+        }
+
+        /// <summary>The signs in the folder itself: on the launcher's first line.</summary>
+        static IEnumerable<string> FolderSigns(RuntimeFolder r) =>
+            r.Padded.Select(p => "padded file " + p)
+             .Concat(r.RandomData.Select(p => "random-named encrypted-looking data file " + p))
+             .Concat(r.DotFiles.Select(p => "hidden file " + p + " next to its scripts"));
+
+        /// <summary>
+        /// (pure) The signs of each run (programs it started, !motw-removed files written near it), for that run's line: a later run's
+        /// notes do not belong on the first line. Run null: a started program without a known run (on the first line). None for a
+        /// folder that is not new.
+        /// </summary>
+        public static List<(DateTime? Run, List<string> Notes)> RunNotes(RuntimeFolder r)
+        {
+            if (r == null || !r.New) return new List<(DateTime?, List<string>)>();
+            return r.Children.Select(x => (Run: x.Run, Note: "started " + x.Path))
+                    .Concat(r.MotwNearRun.Select(x => (Run: (DateTime?)x.Run, Note:"!motw-removed file " + x.Path + " written within 2 minutes of this run")))
+                    .GroupBy(x => x.Run).OrderBy(g => g.Key ?? DateTime.MinValue)
+                    .Select(g => (g.Key, g.Select(x => x.Note).Distinct(Util.IC).ToList())).ToList();
         }
 
         public static void Run(Ctx c)
@@ -81,7 +99,9 @@ namespace Spor
                                              && !Regex.IsMatch(t.F.Name, @"^(desktop\.ini|thumbs\.db|\.ds_store)$", Util.RX)).ToList();
                 var created = tree.Select(t => t.F.CreationTimeUtc).Concat(new[] { File.GetCreationTimeUtc(exe) });
                 var events = g.ToList();
-                var runs = events.Where(e => RunSources.Contains(e.Src)).Select(e => e.T).ToList();
+                var runs = events.Where(e => RunSources.Contains(e.Src)).ToList();
+                // the run a thing belongs to: the nearest in time
+                TEvent RunNear(DateTime? t) => t.HasValue ? runs.OrderBy(e => Math.Abs((e.T - t.Value).TotalSeconds)).FirstOrDefault() : null;
                 var r = new RuntimeFolder
                 {
                     Launcher = exe,
@@ -95,25 +115,38 @@ namespace Spor
                     // launcher with arguments that start a program (conhost, WerFault, a shell of a CLI tool are no sign)
                     Children = c.Launches.Where(l => l.Parent.Equals(exe, StringComparison.OrdinalIgnoreCase) && !Under(l.Child, dir)
                                                      && (!Rules.InTrustedLocation(l.Child) || Rules.ProxyLaunch(l.Child, l.CommandLine)))
-                                         .Select(l => l.Child).Distinct(Util.IC).ToList(),
-                    MotwNearRun = c.Events.Where(e => e.Path != null && e.Flags != null && e.Flags.Contains("!motw-removed")
-                                                      && runs.Any(t => Math.Abs((e.T - t).TotalSeconds) <= 120))
-                                          .Select(e => c.RealCase(e.Path)).Distinct(Util.IC).ToList(),
+                                         .Select(l => (l.Child, RunNear(l.T)?.T)).Distinct().ToList(),
+                    MotwNearRun = c.Events.Where(e => e.Path != null && e.Flags != null && e.Flags.Contains("!motw-removed"))
+                                          .Select(e => (e.T, Run: RunNear(e.T), Path: c.RealCase(e.Path)))
+                                          .Where(x => x.Run != null && Math.Abs((x.T - x.Run.T).TotalSeconds) <= 120)
+                                          .Select(x => (x.Path, x.Run.T)).Distinct().ToList(),
                 };
                 var signals = electron ? new List<string>() : Signals(r);
+                var notes = signals.Count > 0 ? RunNotes(r) : new List<(DateTime? Run, List<string> Notes)>();
 
                 // the script files on the launcher's first line: hidden ones first, then the biggest containers
                 var shown = hidden.Concat(containers.OrderByDescending(t => t.F.Length)).Distinct().Take(10).ToList();
                 var more = shown.Select(t => ("script", Log.Item(c.F(t.F.FullName, false).Path, null,
                     $"{Log.T(t.F.CreationTimeUtc)}; {t.F.Length} bytes" + ((t.F.Attributes & FileAttributes.Hidden) != 0 || t.F.Name.StartsWith(".") ? "; hidden" : "")))).ToList();
+                // the first line: the folder's signs (and programs it started without a known run); each run's signs go on its own line
+                var firstSigns = signals.Count > 0 ? FolderSigns(r).Concat(notes.Where(n => n.Run == null).SelectMany(n => n.Notes)).ToList() : new List<string>();
                 var extra = $"script runtime {kind}" + (containers.Count + hidden.Count > shown.Count ? $", {containers.Count + hidden.Count} script and hidden files" : "")
-                            + (signals.Count > 0 ? "; " + string.Join("; ", signals) : "");
+                            + (firstSigns.Count > 0 ? "; " + string.Join("; ", firstSigns) : "");
                 var first = events.OrderBy(e => e.T).First();
                 c.Events.Add(new TEvent
                 {
                     T = first.T, Src = first.Src, Path = first.Path, Extra = extra, NoHash = first.NoHash,
                     Flags = signals.Count > 0 ? new List<string> { RuntimeFlag } : null, More = more,
                 });
+                foreach (var n in notes.Where(n => n.Run != null))
+                {
+                    var run = runs.First(e => e.T == n.Run);
+                    c.Events.Add(new TEvent
+                    {
+                        T = run.T, Src = run.Src, Path = run.Path, Extra = string.Join("; ", n.Notes), NoHash = run.NoHash, Pid = run.Pid,
+                        Flags = new List<string> { RuntimeFlag },
+                    });
+                }
             }
         }
 

@@ -195,12 +195,14 @@ namespace Spor
         {
             companiesSeen = new HashSet<string>(Util.IC);
             c.Err.AddRange(Patterns.Errors);
-            // values: what the modules observed, plus every timeline path (also sub-line paths) and the signer/company of checked files
-            var obs = new List<(string Kind, string Value, DateTime? T, string Item)>(c.Observed);
+            // values: what the modules observed, plus every timeline path (also sub-line paths) and the signer/company of checked files;
+            // SRUM times are hourly buckets (Bucket), not exact times
+            var obs = c.Observed.Select(o => (o.Kind, o.Value, o.T, o.Item, Bucket: false)).ToList();
             foreach (var e in c.Events)
             {
-                if (e.Path != null) obs.Add(("path", e.Path, e.T, null));
-                if (e.More != null) foreach (var m in e.More) if (PathOf(m.Value) is string mp) obs.Add(("path", mp, e.T, null));
+                bool bucket = e.Src == "SRU";
+                if (e.Path != null) obs.Add(("path", e.Path, e.T, null, bucket));
+                if (e.More != null) foreach (var m in e.More) if (PathOf(m.Value) is string mp) obs.Add(("path", mp, e.T, null, bucket));
             }
             return Scan(c, obs.Concat(NewCompanies(c)));
         }
@@ -208,22 +210,34 @@ namespace Spor
         /// <summary>After the timeline: signers and companies of the files it checked first (SUMMARY lines only).</summary>
         public static int Companies(Ctx c) => Scan(c, NewCompanies(c).ToList());
 
-        static IEnumerable<(string Kind, string Value, DateTime? T, string Item)> NewCompanies(Ctx c)
+        static IEnumerable<(string Kind, string Value, DateTime? T, string Item, bool Bucket)> NewCompanies(Ctx c)
         {
             foreach (var k in c.Signer.Keys.Concat(c.Version.Keys).Distinct(Util.IC).ToList())
             {
                 if (!companiesSeen.Add(k)) continue;
                 c.Signer.TryGetValue(k, out var sg); c.Version.TryGetValue(k, out var ver);
-                yield return ("company", (sg ?? "") + "; " + (ver ?? ""), null, k);
+                yield return ("company", (sg ?? "") + "; " + (ver ?? ""), null, k, false);
             }
         }
 
-        static int Scan(Ctx c, IEnumerable<(string Kind, string Value, DateTime? T, string Item)> obs)
+        /// <summary>
+        /// (pure) When a hit happened: the earliest exact time of its observations. An hourly bucket (SRUM) counts only when there is
+        /// no exact time: it is only the hour in which SRUM wrote its record.
+        /// </summary>
+        internal static DateTime? When(IEnumerable<(DateTime? T, bool Bucket)> seen)
+        {
+            DateTime? exact = null, bucket = null;
+            foreach (var s in seen)
+                if (s.Bucket) bucket = Min(bucket, s.T); else exact = Min(exact, s.T);
+            return exact ?? bucket;
+        }
+
+        static int Scan(Ctx c, IEnumerable<(string Kind, string Value, DateTime? T, string Item, bool Bucket)> obs)
         {
             var d = Patterns;
             // each distinct value is matched once; every observation of it keeps its own item
             var cache = new Dictionary<(string, string), List<Pattern>>();
-            var hits = new Dictionary<(string Family, string Item), (DateTime? T, List<Pattern> P, string File)>();
+            var hits = new Dictionary<(string Family, string Item), (List<(DateTime?, bool)> Seen, List<Pattern> P, string File)>();
             foreach (var o in obs)
             {
                 if (string.IsNullOrEmpty(o.Value)) continue;
@@ -238,7 +252,9 @@ namespace Spor
                 foreach (var fam in ps.GroupBy(p => p.Family, Util.IC))
                 {
                     var hk = (fam.Key, item);
-                    hits[hk] = hits.TryGetValue(hk, out var h) ? (Max(h.T, o.T), h.P.Concat(fam).Distinct().ToList(), h.File ?? file) : (o.T, fam.ToList(), file);
+                    if (!hits.TryGetValue(hk, out var h)) h = (new List<(DateTime?, bool)>(), new List<Pattern>(), file);
+                    h.Seen.Add((o.T, o.Bucket));   // its time: see When
+                    hits[hk] = (h.Seen, h.P.Concat(fam).Distinct().ToList(), h.File ?? file);
                 }
             }
             foreach (var p in d.Patterns.Where(p => p.Timeout))
@@ -247,7 +263,8 @@ namespace Spor
                 p.Timeout = false;
             }
 
-            foreach (var fam in hits.GroupBy(h => h.Key.Family, Util.IC).OrderBy(g => g.Key, Util.IC))
+            var found = hits.Select(h => (h.Key, Value: (T: When(h.Value.Seen), h.Value.P, h.Value.File)));
+            foreach (var fam in found.GroupBy(h => h.Key.Family, Util.IC).OrderBy(g => g.Key, Util.IC))
             {
                 string Notes((DateTime? T, List<Pattern> P, string File) h) => string.Join("; ", h.P.Select(p => p.Note).Where(n => n.Length > 0).Distinct());
                 // files on the timeline: their line gets the flag; the rest are SUMMARY lines
@@ -283,7 +300,7 @@ namespace Spor
             return any;
         }
 
-        static DateTime? Max(DateTime? a, DateTime? b) => !a.HasValue ? b : !b.HasValue ? a : (a > b ? a : b);
+        static DateTime? Min(DateTime? a, DateTime? b) => !a.HasValue ? b : !b.HasValue ? a : (a < b ? a : b);
     }
 
     /// <summary>Aho-Corasick: all stored literals in a text in one pass (lowercase literals and text).</summary>

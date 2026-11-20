@@ -90,9 +90,36 @@ namespace Spor.Tests
         public void AChildOrALoweredZoneNearARunIsASign()
         {
             var r = Folder(true);
-            r.Children.Add(@"C:\Users\anna\AppData\Local\Temp\x\h.exe");
-            r.MotwNearRun.Add(@"C:\Users\anna\AppData\Local\Temp\x\h.exe");
+            r.Children.Add((@"C:\Users\anna\AppData\Local\Temp\x\h.exe", Run1));
+            r.MotwNearRun.Add((@"C:\Users\anna\AppData\Local\Temp\x\h.exe", Run1));
             Assert.Equal(2, Correlate.Signals(r).Count);
+        }
+
+        static readonly DateTime Run1 = new DateTime(2026, 11, 20, 3, 33, 41, DateTimeKind.Utc), Run2 = new DateTime(2026, 11, 20, 7, 59, 42, DateTimeKind.Utc);
+
+        [Fact]
+        public void EachRunGetsItsOwnNotes()
+        {
+            // the lab run: two runs four hours apart, each wrote its own payload folder and started forfiles
+            var r = Folder(true);
+            const string Forfiles = @"C:\Windows\System32\forfiles.exe", A = @"C:\Users\anna\AppData\Local\Temp\tmp-20656-a\x.exe", B = @"C:\Users\anna\AppData\Local\Temp\tmp-79694-b\x.exe";
+            r.Children.Add((Forfiles, Run1));
+            r.Children.Add((Forfiles, Run2));
+            r.MotwNearRun.Add((A, Run1));
+            r.MotwNearRun.Add((B, Run2));
+            r.Children.Add((@"C:\Users\anna\AppData\Local\Temp\y.exe", null));   // no run known: the first line
+            var notes = Correlate.RunNotes(r);
+            Assert.Equal(new DateTime?[] { null, Run1, Run2 }, notes.Select(n => n.Run));
+            Assert.Equal(new[] { @"started C:\Users\anna\AppData\Local\Temp\y.exe" }, notes[0].Notes);
+            Assert.Equal(new[] { "started " + Forfiles, "!motw-removed file " + A + " written within 2 minutes of this run" }, notes[1].Notes);
+            Assert.Equal(new[] { "started " + Forfiles, "!motw-removed file " + B + " written within 2 minutes of this run" }, notes[2].Notes);
+            // the decision still sees them all, once each
+            Assert.Equal(new[] { "started " + Forfiles, @"started C:\Users\anna\AppData\Local\Temp\y.exe",
+                                 "!motw-removed file " + A + " written within 2 minutes of a run", "!motw-removed file " + B + " written within 2 minutes of a run" },
+                         Correlate.Signals(r));
+            // no notes for a folder that is not new
+            r.New = false;
+            Assert.Empty(Correlate.RunNotes(r));
         }
 
         [Fact]

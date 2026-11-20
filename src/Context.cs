@@ -54,6 +54,7 @@ namespace Spor
         public bool NoHash;
         public List<(string Key, string Value)> More;   // indented "key: value" lines under a text event (e.g. Uninstall keys of a grouped install)
         public string Known;    // Autodetect: "known malware <family>: <note>", first in the line's details
+        public int? Pid;        // process events (PROC, 4688, SYSMON): different processes of one program stay apart when flagged
     }
 
     /// <summary>Shared state: options, users and hives, timeline, findings, file display and hashes.</summary>
@@ -149,10 +150,10 @@ namespace Spor
         public string U(string user) => MultiUser && !string.IsNullOrEmpty(user) ? "[" + user + "] " : "";
 
         public void Event(DateTime? t, string src, string path, string extra = null, List<string> flags = null, string text = null, bool noHash = false,
-                          List<(string Key, string Value)> more = null)
+                          List<(string Key, string Value)> more = null, int? pid = null)
         {
             if (t.HasValue && t.Value >= Since)
-                Events.Add(new TEvent { T = t.Value, Src = src, Path = path, Text = text, Extra = extra, Flags = flags, NoHash = noHash, More = more });
+                Events.Add(new TEvent { T = t.Value, Src = src, Path = path, Text = text, Extra = extra, Flags = flags, NoHash = noHash, More = more, Pid = pid });
         }
 
         /// <summary>

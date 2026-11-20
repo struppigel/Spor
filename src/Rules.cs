@@ -114,13 +114,16 @@ namespace Spor
             if (Regex.IsMatch(args, @"\\\\[^\\\s]+\\|https?://|ftp://|\.(ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|bat|cmd|sct|py|pyw|au3|a3x|ahk|jar|scr|cpl|lnk|msi)\b|\s[-/]e(nc|ncodedcommand)?\s|frombase64|-w(indowstyle)?\s+h|iex\b|downloadstring|\bmshta\b", RegexOptions.IgnoreCase))
                 return true;
             // a program or library outside Windows / Program Files (data paths like log files and folders are normal arguments)
-            foreach (Match m in Regex.Matches(args, @"(?<![\w])([a-z]:\\[^""<>|*?\r\n]+?)(?=""|,|\s+[-/]|\s*$)", RegexOptions.IgnoreCase))
+            foreach (Match m in ArgPath.Matches(args))
             {
                 var rel = m.Groups[1].Value.Substring(2);
                 if (!InTrustedLocation(m.Groups[1].Value) && Regex.IsMatch(rel, @"\.(exe|dll|sys|scr|cpl|ocx|com|pif|drv|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|wsc|hta|sct|py|pyw|jar|msi|lnk|au3|a3x|ahk|tmp|dat|bin)$", RegexOptions.IgnoreCase)) return true;
             }
             return Regex.IsMatch(args, @"%(appdata|localappdata|temp|tmp|userprofile|public|programdata)%", RegexOptions.IgnoreCase);
         }
+
+        /// <summary>A drive path in arguments (group 1): up to a quote, a comma, the next option or the end.</summary>
+        static readonly Regex ArgPath = new Regex(@"(?<![\w])([a-z]:\\[^""<>|*?\r\n]+?)(?=""|,|\s+[-/]|\s*$)", RegexOptions.IgnoreCase);
 
         /// <summary>Programs, scripts and shortcuts: the files SmartScreen and the "open file" warning check for Mark of the Web.</summary>
         public static bool ProgramFile(string p) =>
@@ -195,6 +198,20 @@ namespace Spor
         }
 
         /// <summary>
+        /// (pure) The first file or folder outside Windows and Program Files that a proxy-execution launcher (ProxyLaunch) is pointed at:
+        /// forfiles /p &lt;folder in Temp&gt; /c ..., pcalua -a &lt;program in Downloads&gt;, conhost --headless &lt;path&gt;, cmd /c call &lt;program&gt;.
+        /// Null if none. Not the shell (explorer.exe): its path arguments mostly open folders and documents ("show in folder"), and a
+        /// program it starts is !proxy-exec on its own line.
+        /// </summary>
+        public static string ProxyLaunchTarget(string image, string commandLine)
+        {
+            if (!ProxyLaunch(image, commandLine) || image.EndsWith("\\explorer.exe", System.StringComparison.OrdinalIgnoreCase)) return null;
+            foreach (Match m in ArgPath.Matches(LauncherArgs(commandLine, image.Substring(image.LastIndexOf('\\') + 1))))
+                if (!InTrustedLocation(m.Groups[1].Value)) return m.Groups[1].Value;
+            return null;
+        }
+
+        /// <summary>
         /// A folder that many unrelated programs and downloads share: a profile's Downloads, Desktop, Documents, Temp, the roots of
         /// AppData, Public, ProgramData, Windows\Temp, a drive root. Files next to a program there do not belong to it.
         /// </summary>
@@ -203,24 +220,29 @@ namespace Spor
                 @"^[a-z]:(\\users\\[^\\]+\\(downloads|desktop|documents|appdata\\(local|roaming|locallow)(\\temp)?)|\\users\\public(\\(downloads|desktop|documents))?|\\programdata|\\windows\\temp)?$", O);
 
         /// <summary>
-        /// (pure) A process creation event (Security 4688, Sysmon 1) for the timeline: the program or its parent is a LOLBin or interpreter,
-        /// and the command line is suspicious, it is proxy execution, or the program runs from outside Windows and Program Files.
+        /// (pure) A process creation event (Security 4688, Sysmon 1) for the timeline: a proxy-execution launcher pointed at a path outside
+        /// Windows and Program Files (ProxyLaunchTarget); or the program or its parent is a LOLBin or interpreter, and the command line
+        /// is suspicious, it is proxy execution, or the program runs from outside Windows and Program Files.
         /// </summary>
         public static bool ProcessEventKept(string image, string parentImage, string commandLine, bool proxyExec)
         {
             bool Host(string p) => !string.IsNullOrEmpty(p) && (Lol.IsMatch(p) || Interpreter.IsMatch(p));
-            if (string.IsNullOrEmpty(image) || (!Host(image) && !Host(parentImage))) return false;
+            if (string.IsNullOrEmpty(image)) return false;
+            if (ProxyLaunchTarget(image, commandLine) != null) return true;
+            if (!Host(image) && !Host(parentImage)) return false;
             return proxyExec || ArgsSuspicious(LauncherArgs(commandLine, image.Substring(image.LastIndexOf('\\') + 1)))
                    || (DrivePath.IsMatch(image) && !InTrustedLocation(image));
         }
 
         /// <summary>
         /// The arguments of a Windows program's command line: after the quoted program, else after its own name ("wmic process call
-        /// create C:\x.exe": Cmd.Args would cut at the first ".exe" anywhere in the line).
+        /// create C:\x.exe": Cmd.Args would cut at the first ".exe" anywhere in the line). A command line that starts with an option
+        /// has no program part (forfiles starts cmd with "/c call ...").
         /// </summary>
         static string LauncherArgs(string commandLine, string name)
         {
             var s = (commandLine ?? "").TrimStart();
+            if (s.StartsWith("/") || s.StartsWith("-")) return s;
             if (s.StartsWith("\"")) { int e = s.IndexOf('"', 1); return e > 0 ? s.Substring(e + 1) : ""; }
             var stem = System.IO.Path.GetFileNameWithoutExtension(name);
             var m = Regex.Match(s, @"^\S*?" + Regex.Escape(stem) + @"(\.exe)?(?=\s|$)", O);
@@ -285,7 +307,7 @@ namespace Spor
             "!log-syntax-in-name = the path contains \" => \" or a status in brackets, made to look like log text",
             "!motw-removed = a program wrote Zone.Identifier with ZoneId 0-2 (local/intranet/trusted) and no URL on a new program file, which turns off SmartScreen and download warnings",
             "!sideload = unsigned DLL next to a validly signed program that imports it (DLL side-loading); the line names the program and any proxy evidence",
-            "!proxy-exec = started through a Windows program that launches programs for others (forfiles /c, pcalua -a, conhost --headless, cmd /c call, ...), from outside Windows and Program Files",
+            "!proxy-exec = started through a Windows program that launches programs for others (forfiles /c, pcalua -a, conhost --headless, cmd /c call, ...), from outside Windows and Program Files; on the launcher's own 4688/SYSMON line: pointed at a program or script outside them",
             "!padded = new file inflated with one repeated byte against scanner and sandbox size limits: a program (its overlay) or data next to a new program",
             "!runtime-loader = new launcher of a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua) with loader signs in its folder: padded or encrypted random-named data, a hidden file next to its scripts, a program it started, or a !motw-removed file near a run",
             "!known-malware = matches a pattern of a known malware family (Autodetect, resources/autodetect.txt); the line names the family",

@@ -226,8 +226,9 @@ namespace Spor.Modules
         /// <summary>
         /// Process creation events in the time window: Security 4688 (needs process creation auditing; the command line only with its
         /// policy) and Sysmon event 1. Launches by LOLBins or interpreters, or of programs outside trusted locations, go to the timeline
-        /// (4688, SYSMON), with !proxy-exec from the creating processes found in the events themselves. Catches proxy-execution chains
-        /// when Prefetch is off, not written yet, or deleted. Spor turns nothing on. Returns the comment for the section.
+        /// (4688, SYSMON), with !proxy-exec from the creating processes found in the events themselves; a proxy-execution event brings
+        /// its creators (up to 4 levels). Catches proxy-execution chains when Prefetch is off, not written yet, or deleted. Spor turns
+        /// nothing on. Returns the comment for the section.
         /// </summary>
         string ProcessCreations()
         {
@@ -275,14 +276,17 @@ namespace Spor.Modules
             int kept = 0;
             foreach (var x in list.Where(x => !string.IsNullOrEmpty(x.Image)))
                 if (Pid(x.Pid) is int pid) c.ProcessStarts.Add((pid, x.T, c.Long(x.Image)));
-            foreach (var x in list.Where(x => !string.IsNullOrEmpty(x.Image) && x.T >= c.Since))
+            // first pass: proxy execution, from a launcher among the creating processes (up to 4 levels) or by a launcher itself pointed
+            // at a program outside Windows and Program Files (cmd /c call, pcalua -a, ...); the creators of these events are kept too.
+            // A launcher pointed at a folder there (forfiles /p) is kept by ProcessEventKept, unflagged: its program is flagged on its own line.
+            var events = list.Where(x => !string.IsNullOrEmpty(x.Image) && x.T >= c.Since)
+                             .Select(x => (X: x, Image: c.Long(x.Image), Proxy: false)).ToList();
+            var creators = new HashSet<Creation>();
+            for (int k = 0; k < events.Count; k++)
             {
-                var image = c.Long(x.Image);
-                var parent = !string.IsNullOrEmpty(x.Parent) ? c.Long(x.Parent) : ParentOf(x)?.Image;
-                if (!string.IsNullOrEmpty(parent) && Rules.DrivePath.IsMatch(parent) && !Rules.InTrustedLocation(parent))
-                    c.Launches.Add((c.RealCase(parent), c.RealCase(image), x.Cmd, x.T));
-                // proxy execution: a launcher among the creating processes, up to 4 levels
-                bool proxy = false;
+                var (x, image, _) = events[k];
+                var target = Rules.ProxyLaunchTarget(image, x.Cmd);
+                bool proxy = target != null && Rules.ProgramFile(target);
                 var cur = x;
                 for (int i = 0; i < 4 && !proxy; i++)
                 {
@@ -294,14 +298,24 @@ namespace Spor.Modules
                     if (p == null) break;
                     cur = p;
                 }
-                if (!Rules.ProcessEventKept(image, parent, x.Cmd, proxy)) continue;
+                if (!proxy) continue;
+                events[k] = (x, image, true);
+                cur = x;
+                for (int i = 0; i < 4 && (cur = ParentOf(cur)) != null; i++) creators.Add(cur);
+            }
+            foreach (var (x, image, proxy) in events)
+            {
+                var parent = !string.IsNullOrEmpty(x.Parent) ? c.Long(x.Parent) : ParentOf(x)?.Image;
+                if (!string.IsNullOrEmpty(parent) && Rules.DrivePath.IsMatch(parent) && !Rules.InTrustedLocation(parent))
+                    c.Launches.Add((c.RealCase(parent), c.RealCase(image), x.Cmd, x.T));
+                if (!creators.Contains(x) && !Rules.ProcessEventKept(image, parent, x.Cmd, proxy)) continue;
                 kept++;
                 var details = "parent " + (string.IsNullOrEmpty(parent) ? "unknown" : Util.Leaf(parent)) +
                               (string.IsNullOrEmpty(x.Cmd) ? "" : "; command line " + Rules.Fix(Util.Clip(x.Cmd)));
-                c.Event(x.T, x.Src, image, details, proxy ? new List<string> { "!proxy-exec" } : null);
+                c.Event(x.T, x.Src, image, details, proxy ? new List<string> { "!proxy-exec" } : null, pid: Pid(x.Pid));
             }
             return $"Process creation events: Security 4688 {n4688}" + (sysmon ? $", Sysmon 1 {nSysmon}" : "") + (capped ? $" (only the newest {MaxCreations} per log)" : "") +
-                   $"; {kept} launches by LOLBins or interpreters, or of programs outside trusted locations, are in the timeline (4688, SYSMON).";
+                   $"; {kept} launches by LOLBins or interpreters, of programs outside trusted locations, or in a proxy-execution chain, are in the timeline (4688, SYSMON).";
         }
 
         /// <summary>Per folder: flagged rows + the first PerDir others, then a '(+N more)' row.</summary>

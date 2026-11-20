@@ -8,7 +8,7 @@
 
 
 # RenLoader (RenPy / Node.js loaders from fake game and software download sites)
-path	/\\Temp\\tmp-\d{3,6}-[A-Za-z0-9]{12}\\[A-Za-z0-9]{9}\.exe$/ key=\tmp-	RenLoader	payload in a Node.js tmp folder	C:\Users\anna\AppData\Local\Temp\tmp-20656-vmkfjqTWAOFi\ehyISWlPN.exe	7949,8088,8522,9936,10001,10003,10248,10249,10475,10477
+path	/\\Temp\\tmp-\d{3,6}-[A-Za-z0-9]{12}\\[A-Za-z0-9]{9}\.exe$/ key=\tmp-	RenLoader	payload in a tmp-NNNNN-xxxxxxxxxxxx folder (RenLoader dropper)	C:\Users\anna\AppData\Local\Temp\tmp-20656-vmkfjqTWAOFi\ehyISWlPN.exe	7949,8088,8522,9936,10001,10003,10248,10249,10475,10477
 path	/\\Downloads\\tmp-\d{3,6}-[A-Za-z0-9]{12}(\\|$)/ key=\downloads\tmp-	RenLoader	dropper folder in Downloads	C:\Users\anna\Downloads\tmp-39304-wscJmiyovbGx\Setup.exe	22843,26838,27062,27064,27084,27086,27102,27105,27107,27519,27550,27627
 path	/\\Downloads\\[^\\]*_Archive_(free|full|win|win64|x64|get|file|latest)_\d{3,6}(\.(zip|rar|7z))?(\.old)?(\\|$)/ key=_archive_	RenLoader	lure archive from a fake download site	C:\Users\anna\Downloads\Bloodborne_Complete_Edition_v1.09_+_All__Archive_file_883627.zip	14898,15422,15436,15437,15438,15439,15470,18790,19585,20242,20243,26044,26045,26046,26194,26195,26323,26324,26325,26326,27103,27104,27845,27846,28306
 path	*\downloads\free files downloaded	RenLoader	lure archive from a fake download site	C:\Users\anna\Downloads\Free Files Downloaded.zip	5761

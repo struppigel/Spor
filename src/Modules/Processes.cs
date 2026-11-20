@@ -76,7 +76,7 @@ namespace Spor.Modules
                     t.More("module", c.File(m));
                 if (mods == null) { t.More("modules", "no access"); noAccess++; }
                 var details = $"running, pid {p.Pid}" + (chain.Count > 0 && chain[0].Proc != null ? ", parent " + chain[0].Proc.Leaf : "");
-                c.Event(p.Created, "PROC", path, details, extra.Count > 0 ? extra : null);
+                c.Event(p.Created, "PROC", path, details, extra.Count > 0 ? extra : null, pid: p.Pid);
                 if (Rules.Strong(extra).Count > 0 && (!p.Created.HasValue || p.Created < c.Since))
                     c.Find(p.Created, $"running process {f.Path} (pid {p.Pid}), {ChainText(chain, wmi, p.Created, c.ProcessStarts)}{Rules.FlagText(Rules.Strong(extra))}");
             }

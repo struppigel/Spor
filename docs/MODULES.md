@@ -35,7 +35,7 @@ Unsigned drivers and drivers outside the driver folders are flagged.
 ## exec
 
 PCA (Windows 11 22H2 and newer), UserAssist, BAM, ShimCache and the Compatibility Assistant store, for all users.
-Process creation events, when the PC has them: Security event 4688 (process creation auditing) and Sysmon event 1. Launches by LOLBins or interpreters, or of programs outside Windows and Program Files, go to the timeline as `4688` / `SYSMON` with the parent and command line; proxy execution (`forfiles /c`, `cmd /c call`, ...) found through the creating processes gets `!proxy-exec`. Without either, the section says so: then program starts come only from Prefetch, BAM and Amcache. Spor does not turn auditing on.
+Process creation events, when the PC has them: Security event 4688 (process creation auditing) and Sysmon event 1. Launches by LOLBins or interpreters, or of programs outside Windows and Program Files, go to the timeline as `4688` / `SYSMON` with the parent and command line; proxy execution (`forfiles /c`, `cmd /c call`, ...) found through the creating processes gets `!proxy-exec`. A proxy-execution launcher whose arguments name a file or folder outside Windows and Program Files (`forfiles /p <folder in Temp>`, `pcalua -a <program>`, `conhost --headless <path>`, `cmd /c call <program>`) goes to the timeline too, flagged `!proxy-exec` when that is a program or script; so do the creators of every `!proxy-exec` event (up to 4 levels). Without either, the section says so: then program starts come only from Prefetch, BAM and Amcache. Spor does not turn auditing on.
 
 ## files
 

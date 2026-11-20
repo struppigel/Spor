@@ -213,6 +213,61 @@ namespace Spor
             return null;
         }
 
+        /// <summary>A strong flag on the event or in its file name. Not !known-malware: Autodetect puts it on every event of a file.</summary>
+        static bool StrongEvent(TEvent e) =>
+            Rules.Strong(Rules.Flags(e.Path)).Count > 0 || (e.Flags != null && Rules.Strong(e.Flags).Any(f => f != Autodetect.Flag));
+
+        /// <summary>
+        /// (pure) The timeline lines of one file: an event within 2 minutes of the previous one joins its line (one program start, seen by
+        /// several sources). Different processes stay apart when flagged: an event with a strong flag and a PID the line does not have
+        /// starts a new line, and so does an event with another PID after a line with a strong flag.
+        /// </summary>
+        internal static List<List<TEvent>> Lines(IEnumerable<TEvent> events)
+        {
+            var cl = new List<List<TEvent>>();
+            var pids = new HashSet<int>();   // of the current line
+            bool strong = false;
+            foreach (var e in events.OrderBy(e => e.T))
+            {
+                bool s = StrongEvent(e);
+                if (cl.Count == 0 || (e.T - cl[cl.Count - 1].Last().T).TotalSeconds > 120
+                    || (e.Pid is int pid && pids.Count > 0 && !pids.Contains(pid) && (s || strong)))
+                {
+                    cl.Add(new List<TEvent>());
+                    pids.Clear();
+                    strong = false;
+                }
+                cl[cl.Count - 1].Add(e);
+                if (e.Pid is int p) pids.Add(p);
+                strong |= s;
+            }
+            return cl;
+        }
+
+        /// <summary>(pure) A line's time: its latest event; on a line with flagged events (strong flags), the first of them (when it happened).</summary>
+        internal static DateTime LineTime(List<TEvent> line) =>
+            line.Where(e => e.Flags != null && Rules.Strong(e.Flags).Count > 0).Select(e => (DateTime?)e.T).Min() ?? line.Max(e => e.T);
+
+        /// <summary>
+        /// (pure) The details of merged events, in order, split at "; ". A part is left out when an earlier event gave it already, or when
+        /// another event has a part that ends with ", " and it: "parent cmd.exe" (4688) next to "running, pid 5, parent cmd.exe" (PROC).
+        /// Parts of one event are kept as they are (a command line can contain "; ").
+        /// </summary>
+        internal static List<string> MergeDetails(IEnumerable<string> extras)
+        {
+            var ex = extras.Where(s => !string.IsNullOrEmpty(s)).Distinct().Select(s => s.Split(new[] { "; " }, StringSplitOptions.None)).ToList();
+            var res = new List<string>();
+            for (int i = 0; i < ex.Count; i++)
+                foreach (var p in ex[i])
+                {
+                    bool dup = false;
+                    for (int j = 0; j < ex.Count && !dup; j++)
+                        if (j != i) dup = ex[j].Any(q => (j < i && q == p) || q.EndsWith(", " + p, StringComparison.Ordinal));
+                    if (!dup) res.Add(p);
+                }
+            return res;
+        }
+
         static Log Timeline(Ctx c, out List<Row> result)
         {
             var rows = new List<Row>();
@@ -237,14 +292,8 @@ namespace Spor
             foreach (var g in c.Events.Where(e => e.Path != null).GroupBy(e => Shape(e.Path), Util.IC))
             {
                 // same file within 2 minutes = one line (one program start, seen by several sources)
-                var cl = new List<List<TEvent>>();
-                foreach (var e in g.OrderBy(e => e.T))
-                {
-                    if (cl.Count == 0 || (e.T - cl[cl.Count - 1].Last().T).TotalSeconds > 120) cl.Add(new List<TEvent>());
-                    cl[cl.Count - 1].Add(e);
-                }
-                // !known-malware is on every event of the file: it does not keep repeats (first and last time are enough)
-                bool Strong(List<TEvent> x) => x.Any(e => Rules.Strong(Rules.Flags(e.Path)).Count > 0 || (e.Flags != null && Rules.Strong(e.Flags).Any(f => f != Autodetect.Flag)));
+                var cl = Lines(g);
+                bool Strong(List<TEvent> x) => x.Any(StrongEvent);
                 var paths = g.Select(e => e.Path).Distinct(Util.IC).ToList();
                 // the same file again and again (python.exe, an updater): keep the first and the last time in the window,
                 // and every flagged one; the last line says how many are left out
@@ -265,7 +314,7 @@ namespace Spor
                 foreach (var x in cl)
                 {
                     var path = x.OrderByDescending(e => e.T).First().Path;
-                    var ex = x.Where(e => !string.IsNullOrEmpty(e.Extra)).Select(e => e.Extra).Distinct().ToList();
+                    var ex = MergeDetails(x.Select(e => e.Extra));
                     ex.InsertRange(0, x.Where(e => e.Known != null).Select(e => e.Known).Distinct());   // the family first
                     if (TimeMeaning(x.Select(e => e.Src)) is string tm) ex.Add(tm);   // last, so the other details keep their place
                     bool last = x == cl[cl.Count - 1];
@@ -274,7 +323,7 @@ namespace Spor
                     var f = c.F(path, !x.All(e => e.NoHash));
                     var row = new Row
                     {
-                        T = x.Max(e => e.T), Src = string.Join(" ", x.Select(e => e.Src).Distinct().OrderBy(Order)), Status = f.Status, Obj = f.Path,
+                        T = LineTime(x), Src = string.Join(" ", x.Select(e => e.Src).Distinct().OrderBy(Order)), Status = f.Status, Obj = f.Path,
                         Details = string.Join("; ", ex), Flags = Rules.Flags(path).Concat(x.Where(e => e.Flags != null).SelectMany(e => e.Flags)).Distinct().ToList(),
                         // sub-lines of file events too (script files of a runtime launcher, ...)
                         More = x.Where(e => e.More != null).SelectMany(e => e.More).Distinct().ToList(),
@@ -301,6 +350,7 @@ namespace Spor
             log.Heading($"TIMELINE - last {c.Opt.Days} days, oldest first");
             log.Comment("Sources [PF AM ...], status [gone ...] and flags <==== !...: see LEGEND at the end of the log.");
             log.Comment("A file seen by several sources within 2 minutes is one line. A file seen many times: the first and the last time.");
+            log.Comment("Processes of one program with different PIDs get their own lines when one is flagged. A line with flagged events has the time of its first flagged event, others the latest.");
             var hiddenParts = new List<string>();
             if (defUpdates > 0) hiddenParts.Add($"{defUpdates} runs of Defender update packages (AM_Delta_Patch_*.exe)");
             if (signedHidden.Count > 0)

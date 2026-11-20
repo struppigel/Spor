@@ -113,7 +113,7 @@ Not every source means that a file ran. A file that Windows only *recorded* is n
 
 Several execution sources on one line, e.g. `[PF PCA UA BAM]`, are strong evidence. A file that only `[AM]` or `[SC]` saw may never have run.
 
-If several sources see a file within 2 minutes, it is **one** line. A file that was seen many times shows the first and the last time, with `+N more times since …`.
+If several sources see a file within 2 minutes, it is **one** line. A file that was seen many times shows the first and the last time, with `+N more times since …`. Processes of one program with different PIDs stay separate lines when one of them is flagged, and a line with flagged events has the time of the first flagged one.
 If the same file was in folders that only differ in numbers (version folders, dated temp folders), the line says `in N folders that differ only in numbers, all listed below` and every real path follows as an indented `path:` line. **Use these `path:` lines for removal.**
 
 ---

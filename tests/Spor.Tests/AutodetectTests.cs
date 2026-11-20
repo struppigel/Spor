@@ -100,6 +100,19 @@ namespace Spor.Tests
         }
 
         [Fact]
+        public void AHitIsAtItsEarliestExactTime()
+        {
+            // the lab run: file created 03:33:50, process started 03:33:52, SRUM hour bucket 03:54:00
+            DateTime T(int h, int m, int s) => new DateTime(2026, 11, 20, h, m, s, DateTimeKind.Utc);
+            Assert.Equal(T(3, 33, 50), Autodetect.When(new (DateTime?, bool)[] { (T(3, 54, 0), true), (T(3, 33, 52), false), (null, false), (T(3, 33, 50), false) }));
+            // an exact time wins over a SRUM bucket, even an earlier one: the bucket is only the hour SRUM wrote its record
+            Assert.Equal(T(3, 33, 52), Autodetect.When(new (DateTime?, bool)[] { (T(3, 0, 0), true), (T(3, 33, 52), false) }));
+            // only buckets: the earliest one; no time at all: none
+            Assert.Equal(T(3, 54, 0), Autodetect.When(new (DateTime?, bool)[] { (T(4, 54, 0), true), (T(3, 54, 0), true), (null, false) }));
+            Assert.Null(Autodetect.When(new (DateTime?, bool)[] { (null, false) }));
+        }
+
+        [Fact]
         public void AFileHitMarksItsTimelineEvents()
         {
             var at = new DateTime(2026, 11, 20, 3, 33, 52, DateTimeKind.Utc);
