@@ -53,6 +53,7 @@ namespace Spor
         public List<string> Flags;
         public bool NoHash;
         public List<(string Key, string Value)> More;   // indented "key: value" lines under a text event (e.g. Uninstall keys of a grouped install)
+        public string Known;    // Autodetect: "known malware <family>: <note>", first in the line's details
     }
 
     /// <summary>Shared state: options, users and hives, timeline, findings, file display and hashes.</summary>

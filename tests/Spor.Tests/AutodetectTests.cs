@@ -99,6 +99,33 @@ namespace Spor.Tests
             Assert.Empty(Families("task", @"\JovialRun"));   // a name of this lab sample only
         }
 
+        [Fact]
+        public void AFileHitMarksItsTimelineEvents()
+        {
+            var at = new DateTime(2026, 11, 20, 3, 33, 52, DateTimeKind.Utc);
+            var shared = new List<string> { "!motw-removed" };   // modules may pass one list to several events
+            var events = new List<TEvent>
+            {
+                new TEvent { T = at, Src = "PROC", Path = @"C:\Users\richa\AppData\Local\Temp\tmp-20656-vmkfjqTWAOFi\ehyISWlPN.exe", Flags = shared },
+                new TEvent { T = at, Src = "NEW", Path = @"c:\users\richa\appdata\local\temp\TMP-20656-vmkfjqTWAOFi\ehyISWlPN.exe", Extra = "zone 0" },
+                new TEvent { T = at, Src = "NEW", Path = @"C:\Users\richa\AppData\Local\Temp\tmp-20656-vmkfjqTWAOFi\ETWProviders.dll", Flags = shared },
+                new TEvent { T = at, Src = "RUN", Text = "Run dialog: cmd" },
+            };
+            var path = @"C:\Users\richa\AppData\Local\Temp\tmp-20656-vmkfjqTWAOFi\ehyISWlPN.exe";
+            Assert.True(Autodetect.Mark(events, path, "RenLoader", "payload in a Node.js tmp folder"));
+            Assert.True(Autodetect.Mark(events, path, "RenLoader", "payload in a Node.js tmp folder"));   // twice: once only
+            Assert.Equal(new[] { "!motw-removed", Autodetect.Flag }, events[0].Flags);
+            Assert.Equal(new[] { Autodetect.Flag }, events[1].Flags);
+            Assert.Equal("known malware RenLoader: payload in a Node.js tmp folder", events[0].Known);
+            Assert.Equal("known malware RenLoader: payload in a Node.js tmp folder", events[1].Known);
+            Assert.Equal("zone 0", events[1].Extra);
+            // other files and text events untouched, and the shared flag list too
+            Assert.Equal(new[] { "!motw-removed" }, events[2].Flags);
+            Assert.Null(events[2].Known);
+            Assert.Null(events[3].Flags);
+            Assert.False(Autodetect.Mark(events, @"C:\elsewhere\x.exe", "F", ""));
+        }
+
         [Theory]
         [InlineData("path\t=abc\tF", "needs at least 5")]
         [InlineData("nope\t=abc\tF\tn\tabc", "unknown kind")]

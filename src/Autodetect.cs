@@ -182,11 +182,19 @@ namespace Spor
             return s.Substring(0, end).Trim();
         }
 
-        /// <summary>The scan: all observed values against the database, hits to the SUMMARY. Returns the number of hits.</summary>
+        /// <summary>Signer / version keys matched by Run; Companies takes only the ones the timeline added after it.</summary>
+        static HashSet<string> companiesSeen = new HashSet<string>(Util.IC);
+
+        /// <summary>
+        /// The scan, before the timeline: all observed values against the database. A file hit marks its timeline events
+        /// (!known-malware, the family first in the details), so its timeline line carries it into SUMMARY; every other hit
+        /// (tasks, Run entries, services, software, DNS, command lines, signers, files without an event in the window) is an
+        /// [Autodetect] SUMMARY line. Returns the number of hits.
+        /// </summary>
         public static int Run(Ctx c)
         {
-            var d = Patterns;
-            c.Err.AddRange(d.Errors);
+            companiesSeen = new HashSet<string>(Util.IC);
+            c.Err.AddRange(Patterns.Errors);
             // values: what the modules observed, plus every timeline path (also sub-line paths) and the signer/company of checked files
             var obs = new List<(string Kind, string Value, DateTime? T, string Item)>(c.Observed);
             foreach (var e in c.Events)
@@ -194,15 +202,28 @@ namespace Spor
                 if (e.Path != null) obs.Add(("path", e.Path, e.T, null));
                 if (e.More != null) foreach (var m in e.More) if (PathOf(m.Value) is string mp) obs.Add(("path", mp, e.T, null));
             }
-            foreach (var k in c.Signer.Keys.Concat(c.Version.Keys).Distinct(Util.IC))
-            {
-                c.Signer.TryGetValue(k, out var sg); c.Version.TryGetValue(k, out var ver);
-                obs.Add(("company", (sg ?? "") + "; " + (ver ?? ""), null, k));
-            }
+            return Scan(c, obs.Concat(NewCompanies(c)));
+        }
 
+        /// <summary>After the timeline: signers and companies of the files it checked first (SUMMARY lines only).</summary>
+        public static int Companies(Ctx c) => Scan(c, NewCompanies(c).ToList());
+
+        static IEnumerable<(string Kind, string Value, DateTime? T, string Item)> NewCompanies(Ctx c)
+        {
+            foreach (var k in c.Signer.Keys.Concat(c.Version.Keys).Distinct(Util.IC).ToList())
+            {
+                if (!companiesSeen.Add(k)) continue;
+                c.Signer.TryGetValue(k, out var sg); c.Version.TryGetValue(k, out var ver);
+                yield return ("company", (sg ?? "") + "; " + (ver ?? ""), null, k);
+            }
+        }
+
+        static int Scan(Ctx c, IEnumerable<(string Kind, string Value, DateTime? T, string Item)> obs)
+        {
+            var d = Patterns;
             // each distinct value is matched once; every observation of it keeps its own item
             var cache = new Dictionary<(string, string), List<Pattern>>();
-            var hits = new Dictionary<(string Family, string Item), (DateTime? T, List<Pattern> P)>();
+            var hits = new Dictionary<(string Family, string Item), (DateTime? T, List<Pattern> P, string File)>();
             foreach (var o in obs)
             {
                 if (string.IsNullOrEmpty(o.Value)) continue;
@@ -213,27 +234,53 @@ namespace Spor
                 var item = o.Kind == "path" ? c.File(o.Value)
                          : o.Kind == "company" ? c.File(o.Item) + " (signer or company)"
                          : o.Item ?? o.Kind + " " + Rules.Fix(o.Value);
+                var file = o.Kind == "path" ? o.Value : null;
                 foreach (var fam in ps.GroupBy(p => p.Family, Util.IC))
                 {
                     var hk = (fam.Key, item);
-                    hits[hk] = hits.TryGetValue(hk, out var h) ? (Max(h.T, o.T), h.P.Concat(fam).Distinct().ToList()) : (o.T, fam.ToList());
+                    hits[hk] = hits.TryGetValue(hk, out var h) ? (Max(h.T, o.T), h.P.Concat(fam).Distinct().ToList(), h.File ?? file) : (o.T, fam.ToList(), file);
                 }
             }
             foreach (var p in d.Patterns.Where(p => p.Timeout))
+            {
                 c.Err.Add($"autodetect {p}: the regex took more than {RegexTimeout.TotalMilliseconds} ms on a value and was skipped there");
+                p.Timeout = false;
+            }
 
             foreach (var fam in hits.GroupBy(h => h.Key.Family, Util.IC).OrderBy(g => g.Key, Util.IC))
             {
-                var list = fam.OrderBy(h => h.Value.T ?? DateTime.MaxValue).ToList();
-                foreach (var h in list.Take(PerFamily))
+                string Notes((DateTime? T, List<Pattern> P, string File) h) => string.Join("; ", h.P.Select(p => p.Note).Where(n => n.Length > 0).Distinct());
+                // files on the timeline: their line gets the flag; the rest are SUMMARY lines
+                var findings = fam.Where(h => h.Value.File == null || !Mark(c.Events, h.Value.File, fam.Key, Notes(h.Value)))
+                                  .OrderBy(h => h.Value.T ?? DateTime.MaxValue).ToList();
+                foreach (var h in findings.Take(PerFamily))
                 {
-                    var notes = string.Join("; ", h.Value.P.Select(p => p.Note).Where(n => n.Length > 0).Distinct());
+                    var notes = Notes(h.Value);
                     c.Find(h.Value.T, $"{h.Key.Item} => {fam.Key}" + (notes.Length > 0 ? ": " + notes : "") + " <==== " + Flag);
                 }
-                if (list.Count > PerFamily)
-                    c.Find($"{fam.Key}: {list.Count - PerFamily} more items match (see the timeline and sections) <==== {Flag}");
+                if (findings.Count > PerFamily)
+                    c.Find($"{fam.Key}: {findings.Count - PerFamily} more items match (see the sections) <==== {Flag}");
             }
             return hits.Count;
+        }
+
+        /// <summary>
+        /// The timeline events of a file get !known-malware and "known malware family: note" (TEvent.Known). New flag lists, as
+        /// modules may share theirs between events. False if the file has no event (it is then a SUMMARY line).
+        /// </summary>
+        internal static bool Mark(IList<TEvent> events, string path, string family, string note)
+        {
+            var known = $"known malware {family}" + (string.IsNullOrEmpty(note) ? "" : ": " + note);
+            bool any = false;
+            foreach (var e in events)
+            {
+                if (e.Path == null || !e.Path.Equals(path, StringComparison.OrdinalIgnoreCase)) continue;
+                if (e.Flags == null || !e.Flags.Contains(Flag)) e.Flags = (e.Flags ?? new List<string>()).Concat(new[] { Flag }).ToList();
+                if (e.Known == null) e.Known = known;
+                else if (!e.Known.Contains(known)) e.Known += "; " + known;
+                any = true;
+            }
+            return any;
         }
 
         static DateTime? Max(DateTime? a, DateTime? b) => !a.HasValue ? b : !b.HasValue ? a : (a > b ? a : b);

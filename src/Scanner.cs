@@ -109,11 +109,16 @@ namespace Spor
                 Correlate.Run(c);   // checks across modules (script-runtime launchers); its errors go to the header
                 startErr.AddRange(c.Err); c.Err.Clear();
 
-                var timeline = Timeline(c, out var rows);
-                // known malware (curated patterns) over everything collected; after the timeline, so the files' signers are known
+                // known malware (curated patterns) over everything collected; before the timeline, so its file lines get !known-malware.
+                // Signers of files first checked by the timeline: a second pass after it (SUMMARY findings only).
                 var asw = Stopwatch.StartNew();
                 c.Module = "Autodetect";
                 try { Autodetect.Run(c); }
+                catch (Exception e) { c.Err.Add($"Autodetect FAILED: {e.GetType().Name}: {e.Message}"); }
+                asw.Stop();
+                var timeline = Timeline(c, out var rows);
+                asw.Start();
+                try { Autodetect.Companies(c); }
                 catch (Exception e) { c.Err.Add($"Autodetect FAILED: {e.GetType().Name}: {e.Message}"); }
                 times.Add($"autodetect {asw.Elapsed.TotalSeconds:N1} s");
                 startErr.AddRange(c.Err); c.Err.Clear();
@@ -238,7 +243,8 @@ namespace Spor
                     if (cl.Count == 0 || (e.T - cl[cl.Count - 1].Last().T).TotalSeconds > 120) cl.Add(new List<TEvent>());
                     cl[cl.Count - 1].Add(e);
                 }
-                bool Strong(List<TEvent> x) => x.Any(e => Rules.Strong(Rules.Flags(e.Path)).Count > 0 || (e.Flags != null && Rules.Strong(e.Flags).Count > 0));
+                // !known-malware is on every event of the file: it does not keep repeats (first and last time are enough)
+                bool Strong(List<TEvent> x) => x.Any(e => Rules.Strong(Rules.Flags(e.Path)).Count > 0 || (e.Flags != null && Rules.Strong(e.Flags).Any(f => f != Autodetect.Flag)));
                 var paths = g.Select(e => e.Path).Distinct(Util.IC).ToList();
                 // the same file again and again (python.exe, an updater): keep the first and the last time in the window,
                 // and every flagged one; the last line says how many are left out
@@ -260,6 +266,7 @@ namespace Spor
                 {
                     var path = x.OrderByDescending(e => e.T).First().Path;
                     var ex = x.Where(e => !string.IsNullOrEmpty(e.Extra)).Select(e => e.Extra).Distinct().ToList();
+                    ex.InsertRange(0, x.Where(e => e.Known != null).Select(e => e.Known).Distinct());   // the family first
                     if (TimeMeaning(x.Select(e => e.Src)) is string tm) ex.Add(tm);   // last, so the other details keep their place
                     bool last = x == cl[cl.Count - 1];
                     if (dropped > 0 && last)

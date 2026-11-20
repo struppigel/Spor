@@ -182,7 +182,7 @@ Ask for a run with the whitelist off (uncheck *Whitelist*, or `-nowhitelist`) if
 ## 8. Section by section
 
 ### SUMMARY
-Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Persistence]`, `[Defender]`, …), oldest first. `[Autodetect]` lines name a known malware family (`!known-malware`). Every line is a starting point, not a verdict.
+Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Persistence]`, `[Defender]`, …), oldest first. `!known-malware` names a known malware family: on a timeline line (`known malware <family>: ...` in the details) or as an `[Autodetect]` line for hits that are not files on the timeline. Every line is a starting point, not a verdict.
 The time is when something happened, except for these: ShimCache lines show the file's modification time, Amcache lines when Windows wrote the entry, Run keys and services when the key was last changed, tasks and Startup items when the file was created, and log or config files when they were last written. Such a time can be much older or newer than the infection: a dropped copy of MSBuild.exe keeps the modification time of the original.
 
 ### TIMELINE
