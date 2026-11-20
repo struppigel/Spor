@@ -108,6 +108,8 @@ Not every source means that a file ran. A file that Windows only *recorded* is n
 | `CAM` `MIC` | capability store | webcam or microphone used, and until when |
 | `RUN` `ADR` `PSH` | Run dialog, address bar, PowerShell history | commands that were typed or pasted (ClickFix) |
 | `RMM` | remote access tools | activity of AnyDesk, TeamViewer, ScreenConnect, … |
+| `PROC` | process list | **running now**; the time is when it started |
+| `4688` `SYSMON` | Security log, Sysmon | **process created**, with the parent and the command line. Only on PCs with process creation auditing or Sysmon. |
 
 Several execution sources on one line, e.g. `[PF PCA UA BAM]`, are strong evidence. A file that only `[AM]` or `[SC]` saw may never have run.
 
@@ -153,6 +155,12 @@ If the same file was in folders that only differ in numbers (version folders, da
 | `!unsigned`, `!outside-driver-folders` | driver without a valid signature, or loaded from an unusual folder | High for drivers (rootkits) |
 | `!from-web` | a Store or MSIX app was installed from a web page (App Installer link) | High, this is a known way to deliver malware. Check the source URL and the signer. |
 | `!log-syntax-in-name` | the path contains ` => ` or text like `[gone]` | High, the name was made to mislead someone who reads the log |
+| `!motw-removed` | a new program, script or shortcut has a Zone.Identifier with zone 0-2 and no URL | High. Browsers write zone 3 with a URL; a dropper wrote the low zone to turn off SmartScreen and the download warning. |
+| `!sideload` | an unsigned DLL next to a signed program that imports it | High. The DLL line names the program; `proxy DLL, forwards to …` or `exports forwarded: N of M` means the DLL passes the real functions on to the original so the program keeps working. Remove the DLL, the program and the folder; the signed program is only the host. |
+| `!proxy-exec` | a running program outside Windows and Program Files was started through `forfiles /c`, `cmd /c call`, `pcalua -a`, `conhost --headless`, … | High, used to hide the real parent |
+| `!padded` | a new file is hundreds of MB of one repeated byte | High for programs and for data next to a new program: made too big for scanners and sandboxes. |
+| `!runtime-loader` | a new program that ships a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua), with loader signs in its folder | High. The code is in the data files listed as `script:` lines, not in the program. |
+| `!renamed-program` | **hint**: a signed program under a random-looking or lure name that is not its original name | **Not on its own.** It goes to SUMMARY only with a strong flag on the same file or in the same folder, e.g. as the host of a `!sideload` DLL. |
 
 ---
 
@@ -177,6 +185,8 @@ Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Pers
 The time is when something happened, except for these: ShimCache lines show the file's modification time, Amcache lines when Windows wrote the entry, Run keys and services when the key was last changed, tasks and Startup items when the file was created, and log or config files when they were last written. Such a time can be much older or newer than the infection: a dropped copy of MSBuild.exe keeps the modification time of the original.
 
 ### TIMELINE
+A program that ships a script runtime has `script runtime <kind>` in its details and the script files below it as `script:` lines (hidden files first). Malware keeps its code there.
+
 Look for **clusters**: a download (`DL`), the file starts (`PF PCA BAM`), new files (`NEW`) in AppData, ProgramData or Temp, a task or Run key (`TSK`, `AUT`), network use (`SRU`). Typical chains are:
 
 - **Fake installer or cracked software**: `DL` of a zip or exe from a file hoster, `ARC` extraction, `PF` run from Downloads, Desktop or Temp, `NEW` files in `AppData\Roaming\<random>\`, then `TSK` or `AUT` persistence
@@ -198,6 +208,8 @@ Programs that ran (PCA, UserAssist, BAM, ShimCache) are in the timeline. The `Co
 ### NEW FILES
 Programs, scripts and archives created in the time window in Downloads, Desktop, Documents, Temp, AppData, ProgramData and Public, with the download URL if Windows saved one. A folder with many new files is one line with all names (installers). Downloaded files always get their own line.
 
+`zone 0` (or 1, 2) without a URL on a new program is `!motw-removed`. In folders in Temp, Downloads and the top of AppData, signed programs are checked for **DLL side-loading**: the unsigned DLL gets `!sideload`, the program `side-loads <dll>`. New files over 50 MB are checked for padding (`padded: N MB of byte 0x00`).
+
 This section also lists programs and scripts that look old but whose NTFS change time is recent. A single file like that is flagged (`STP … times set back <==== !timestomped`). A batch of 3 or more such files in one folder within a minute is one line without a flag, because installers and updaters copy files with their original times.
 
 ### TIMESTOMPING
@@ -215,9 +227,12 @@ Store and MSIX apps are listed with the operation (Add, Register, Remove or FAIL
 
 A removal right before you got the log can mean that the user or the malware already uninstalled something.
 
+### RUNNING PROCESSES
+Programs running now from outside Windows and Program Files, unsigned ones, LOLBins and interpreters with suspicious arguments, and processes with an unsigned module from outside Windows and Program Files (`module:` lines). `parent a.exe (pid) < b.exe (pid)` is the parent chain, nearest first; `pid N (exited)` means that parent is gone. A program started through a proxy-execution launcher is `!proxy-exec`; side-loaded DLLs are `module:` lines with `!sideload`.
+
 ### PERSISTENCE
 Run keys (all entries), services and tasks outside trusted locations, recently installed services (event 7045), Task Scheduler events (also **deleted** tasks), Startup folders and WMI subscriptions.
-Look for programs in AppData, ProgramData or Temp, random names, hidden tasks (`info: hidden`), and arguments that run scripts or encoded PowerShell. Services hosted by svchost.exe have an indented `dll:` line with the DLL that actually runs.
+Look for programs in AppData, ProgramData or Temp, random names, hidden tasks (`info: hidden`), and arguments that run scripts or encoded PowerShell. Services hosted by svchost.exe have an indented `dll:` line with the DLL that actually runs. A `module:` line is an unsigned DLL the program side-loads (`!sideload`).
 
 **Not covered yet:** Winlogon `Shell` and `Userinit`, Image File Execution Options, AppInit_DLLs, Active Setup, LSA packages, print monitors and browser extensions. Check those with other tools.
 
@@ -236,6 +251,8 @@ Webcam and microphone use per program, and traces of AnyDesk, TeamViewer, Screen
 - SRUM: data sent and received per program in the time window. A lot of `sent` data for an unknown program can mean stolen data.
 - Connections now: programs outside trusted locations, LOLBins and unsigned programs.
 - DNS cache: recent lookups of remote access, tunnel, paste and file sharing, bot API (Telegram, Discord webhooks) and IP lookup services. Many of them are normal, so combine them with the timeline.
+- `victim ID in name`: a host name whose first part is a MAC address, a GUID or a long hash (`0800272a1b3c.example.click`). Beacons do this so every victim resolves its own name. Also in SUMMARY.
+- `abused TLD`: names under .click, .top, .xyz and other cheap TLDs. Common for campaigns, but also for normal sites: only a hint.
 
 ### ACCOUNTS
 Local accounts, last sign-in, members of Administrators and account changes. Look for new accounts, unknown administrators and hidden accounts.
@@ -258,6 +275,8 @@ Expect these and don't report them as malware without more evidence:
 - `Defender detection history deleted` now and then
 - Disk images mounted by virtual machines (WSL, Docker, Hyper-V)
 - Defender detections of files that the user analyses on purpose, e.g. if they are malware researchers or use security tools
+- Games and tools that ship a script runtime (Ren'Py and Python games, Electron apps, Java tools) with `script runtime` in the timeline, without `!runtime-loader`
+- RUNNING PROCESSES lines for developer tools and per-user programs of smaller publishers
 
 ---
 

@@ -19,7 +19,10 @@ Spor started as a set of my PowerShell snippets for malware removal help.
 
 * Program runs from Prefetch, Amcache, PCA, UserAssist, BAM, ShimCache and the Compatibility Assistant
 * Files loaded by programs, read from Prefetch
-* New executables, scripts and archives, with the download URL and referrer from `Zone.Identifier`
+* New executables, scripts and archives, with the download URL and referrer from `Zone.Identifier`; Mark-of-the-Web removal, padded files
+* DLL side-loading (unsigned DLL imported by a signed program next to it, with proxy-DLL evidence) and renamed signed programs
+* Running processes with parent chains and unsigned modules, proxy execution (forfiles, cmd /c call, pcalua, ...), process creation events (4688, Sysmon)
+* Script-runtime launchers (Ren'Py/Python, AutoIt, Node.js, Java, Lua) with their script files, and loader signs around them
 * Browser downloads, files opened in Explorer, mounted ISO/IMG/VHD files, WinRAR and 7-Zip history
 * Timestomping detection from the NTFS change journal
 * Software installed, updated or removed: Uninstall keys, Windows Installer events, Store/MSIX apps
@@ -27,7 +30,7 @@ Spor started as a set of my PowerShell snippets for malware removal help.
 * Defender detections, exclusions, setting changes and cloud lookups, cleared event logs
 * ClickFix traces: Run dialog, Explorer address bar, PowerShell history
 * Webcam and microphone use, remote access tools (AnyDesk, TeamViewer, ScreenConnect, ...)
-* Data sent per program (SRUM), current connections, DNS cache
+* Data sent per program (SRUM), current connections, DNS cache (also victim-ID host names and abused TLDs)
 * Local accounts, administrators, hidden accounts, account changes
 * One timeline of all events, oldest first, and a summary of flagged items
 * Signature check of every program file (WinVerifyTrust, Windows catalogs, MSIX package signatures), SHA256 and MD5 hashes, version information
@@ -85,7 +88,13 @@ src/MainForm.cs          the window
 src/Scanner.cs           module runner, log header, timeline, summary, FILES
 src/Context.cs           options, user profiles and hives, hashing, trust rule
 src/Rules.cs             shared whitelist and flag rules
-src/Native.cs            Windows API calls (registry, volumes, decompression, LSA)
+src/Correlate.cs         checks across modules after the scan (script-runtime launchers)
+src/Pe.cs                read-only PE parser (imports, exports, PDB path, overlay)
+src/Sideload.cs          DLL side-loading rule
+src/Names.cs             random-looking and lure names, renamed programs
+src/Padded.cs            padded (inflated) files
+src/HostNames.cs         DNS names with victim IDs, abused TLDs
+src/Native.cs            Windows API calls (registry, volumes, decompression, LSA, processes and modules)
 src/Signature.cs         WinVerifyTrust and catalog lookup
 src/Package.cs           MSIX package signatures
 src/Sqlite.cs            read-only SQLite reader for browser history

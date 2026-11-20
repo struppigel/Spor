@@ -30,19 +30,59 @@ namespace Spor
             }
         }
 
-        /// <summary>Download origin from Zone.Identifier: "from <HostUrl>, referrer <ReferrerUrl>" (or zone only), null if none.</summary>
-        public static string Origin(string path)
+        /// <summary>The Zone.Identifier stream of a file, parsed; null if it has none (or it cannot be read).</summary>
+        public static Zone Origin(string path)
         {
             string z;
             try { z = Read(path, "Zone.Identifier"); } catch { return null; }
-            if (z == null) return null;
-            string V(string k) { var m = Regex.Match(z, @"^\s*" + k + @"\s*=\s*(.+?)\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase); return m.Success ? m.Groups[1].Value : null; }
-            var host = V("HostUrl"); var refr = V("ReferrerUrl"); var zone = V("ZoneId");
-            var parts = new List<string>();
-            if (host != null) parts.Add("from " + Util.Clip(host, 120));
-            if (refr != null && refr != host) parts.Add("referrer " + Util.Clip(refr, 80));
-            if (parts.Count == 0 && zone != null) parts.Add(zone == "3" ? "downloaded from the internet (no URL saved)" : "zone " + zone);
-            return parts.Count > 0 ? string.Join(", ", parts) : null;
+            return z == null ? null : ParseZone(z);
+        }
+
+        /// <summary>The text of a Zone.Identifier stream ("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=..."), parsed. Never null.</summary>
+        public static Zone ParseZone(string text)
+        {
+            text = text ?? "";
+            string V(string k)
+            {
+                // to the line break, not "$": in Multiline mode .NET's "$" does not match before "\r"
+                var m = Regex.Match(text, @"^[ \t]*" + k + @"[ \t]*=([^\r\n]*)", RegexOptions.Multiline | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                var v = m.Success ? Util.Clip(m.Groups[1].Value) : "";
+                return v.Length > 0 ? v : null;
+            }
+            var id = V("ZoneId");
+            return new Zone
+            {
+                Id = int.TryParse(id, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : (int?)null,
+                HostUrl = V("HostUrl"),
+                ReferrerUrl = V("ReferrerUrl"),
+            };
+        }
+    }
+
+    /// <summary>
+    /// A Zone.Identifier stream: the zone (0 this computer, 1 intranet, 2 trusted, 3 internet, 4 restricted) and the URLs a browser saved.
+    /// </summary>
+    sealed class Zone
+    {
+        public int? Id;
+        public string HostUrl, ReferrerUrl;
+
+        /// <summary>A URL that says where the file came from. "about:internet" / "about:blank" (written by some tools and Office) are none.</summary>
+        public static bool RealUrl(string u) => !string.IsNullOrWhiteSpace(u) && !u.TrimStart().StartsWith("about:", StringComparison.OrdinalIgnoreCase);
+
+        public bool HasUrl => RealUrl(HostUrl) || RealUrl(ReferrerUrl);
+
+        /// <summary>For the log: "from &lt;HostUrl&gt;, referrer &lt;ReferrerUrl&gt;", else the zone alone; null if the stream says nothing.</summary>
+        public string Text
+        {
+            get
+            {
+                var parts = new List<string>();
+                if (HostUrl != null) parts.Add("from " + HostUrl);
+                if (ReferrerUrl != null && ReferrerUrl != HostUrl) parts.Add("referrer " + ReferrerUrl);
+                if (parts.Count == 0 && Id.HasValue) parts.Add(Id == 3 ? "downloaded from the internet (no URL saved)" : "zone " + Id);
+                return parts.Count > 0 ? string.Join(", ", parts) : null;
+            }
         }
     }
 
@@ -155,6 +195,23 @@ namespace Spor
         }
 
         public static string P(EventRecord e, int i) => e.Properties.Count > i ? Convert.ToString(e.Properties[i].Value) : "";
+
+        /// <summary>A selector of named EventData fields ("NewProcessName", "Image", ...): stable across event versions, unlike indexes.</summary>
+        public static EventLogPropertySelector Fields(params string[] names) =>
+            new EventLogPropertySelector(names.Select(n => $"Event/EventData/Data[@Name='{n}']"));
+
+        /// <summary>The selected fields of an event, in the selector's order (null for a missing one); all null if it cannot be read.</summary>
+        public static string[] Values(EventRecord e, EventLogPropertySelector fields, int count)
+        {
+            var res = new string[count];
+            try
+            {
+                var v = ((EventLogRecord)e).GetPropertyValues(fields);
+                for (int i = 0; i < count && i < v.Count; i++) res[i] = v[i] == null ? null : Convert.ToString(v[i]);
+            }
+            catch { }
+            return res;
+        }
     }
 
     static class Cmd

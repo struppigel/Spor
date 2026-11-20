@@ -38,6 +38,7 @@ namespace Spor.Modules
             prog = Cmd.Program(cmd, c.WinDir);
             fl = Rules.Flags(prog);
             if (Rules.Lol.IsMatch(prog) && !fl.Contains("!lolbin")) fl.Add("!lolbin");
+            if (Names.RenamedDetail(c, c.RealCase(prog)) != null) fl.Add(Names.RenamedFlag);
             return Rules.DrivePath.IsMatch(prog) ? c.File(prog) : Rules.Fix(prog);
         }
 
@@ -46,6 +47,17 @@ namespace Spor.Modules
         {
             Show(cmd, out prog, out fl);
             return Rules.DrivePath.IsMatch(prog) ? c.F(prog) : (Rules.Fix(prog), "-");
+        }
+
+        /// <summary>
+        /// "module:" sub-line values for the unsigned DLLs a persisted program side-loads (Sideload), with their timeline lines.
+        /// Side-loading hosts are often persisted from AppData or ProgramData.
+        /// </summary>
+        List<string> Modules(string prog)
+        {
+            var hits = Sideload.For(c, prog);
+            foreach (var h in hits) Sideload.Events(c, h);
+            return hits.Select(h => Sideload.ModuleLine(c, h)).ToList();
         }
 
         /// <summary>Trusted program (location + valid signature, see Ctx.TrustedFile) with harmless arguments.</summary>
@@ -120,6 +132,7 @@ namespace Spor.Modules
                             progs.Add(n);
                             // value: the value name as stored (it can contain backslashes, so it cannot be cut from the entry reliably)
                             rt.Add(Log.T(t), kind, pf.Status, Rules.FlagCol(fl), k.Name + "\\" + Rules.Fix(n), pf.Path, Rules.Fix(Cmd.Args(cmd)), Rules.Fix(n));
+                            foreach (var m in Modules(prog)) rt.More("module", m);
                             if (Rules.Strong(fl).Count > 0) c.Find(t, $"Run entry {Rules.Fix(n)} = {c.File(prog)}{Rules.FlagText(fl)}", "key changed");
                         }
                         c.Event(t, "AUT", null, text: $"{k.Name} changed (now: {string.Join(", ", progs)})");
@@ -133,7 +146,7 @@ namespace Spor.Modules
         void Services()
         {
             c.Out.Sub(Rules.Whitelist ? "Services and drivers outside trusted locations" : "Services and drivers", "time = when the service key was last changed");
-            var sv = new List<(DateTime? T, string[] F, string Dll)>();
+            var sv = new List<(DateTime? T, string[] F, List<(string Key, string Value)> More)>();
             try
             {
                 using (var svc = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services"))
@@ -156,7 +169,10 @@ namespace Spor.Modules
                             var kind = (type & 0xF) != 0 ? "driver" : "service";   // 1 kernel driver, 2 file system driver, 8 recognizer; 0x10/0x20 services
                             // svchost-hosted: the DLL is what FRST lists and links; sub-line with its status (it is in FILES through ProgF)
                             var dllLine = cmd == dll ? Log.Item(pf.Path, pf.Status, null, Rules.FlagCol(fl)) : null;
-                            sv.Add((t, new[] { Log.T(t), kind, st, pf.Status, Rules.FlagCol(fl), Rules.Fix(n), pf.Path + (dll != null && cmd == dll ? " (svchost DLL)" : "") }, dllLine));
+                            var svMore = new List<(string Key, string Value)>();
+                            if (dllLine != null) svMore.Add(("dll", dllLine));
+                            foreach (var m in Modules(prog)) svMore.Add(("module", m));
+                            sv.Add((t, new[] { Log.T(t), kind, st, pf.Status, Rules.FlagCol(fl), Rules.Fix(n), pf.Path + (dll != null && cmd == dll ? " (svchost DLL)" : "") }, svMore));
                             if (Rules.DrivePath.IsMatch(prog)) c.Event(t, "SVC", prog, $"service {n} ({st}) changed");
                             else c.Event(t, "SVC", null, text: $"service {n} ({st}) changed: {Util.Clip(Rules.Fix(ip), 120)}");
                             if (Rules.Strong(fl).Count > 0 || (!Trusted(prog) && start <= 2 && Ctx.BadSig(pf.Status))) c.Find(t, $"service {Rules.Fix(n)} ({st}): {disp}{Rules.FlagText(fl)}", "key changed");
@@ -164,7 +180,7 @@ namespace Spor.Modules
             }
             catch (Exception e) { c.Err.Add("Services: " + e.Message); }
             var svt = new Table("@time", "[kind", "start", "!status", "<flags", "*service", ">program");
-            foreach (var r in sv.OrderBy(r => r.T)) { svt.Add(r.F); svt.More("dll", r.Dll); }
+            foreach (var r in sv.OrderBy(r => r.T)) { svt.Add(r.F); foreach (var m in r.More) svt.More(m.Key, m.Value); }
             svt.WriteTo(c.Out);
 
             var ev = Ev.Query("System", "EventID=7045", c.Since, 2000, c.Err);
@@ -189,6 +205,7 @@ namespace Spor.Modules
                 if (Rules.Whitelist && trusted && Rules.Strong(fl).Count == 0) { e.Dispose(); continue; }
                 it.Add(Log.T(t), kind, acct, pf.Status, Rules.FlagCol(fl), Rules.Fix(name), pf.Path);
                 it.More("dll", dllLine);
+                foreach (var m in Modules(prog)) it.More("module", m);
                 if (Rules.DrivePath.IsMatch(prog)) c.Event(t, "SVC", prog, $"service {name} installed");
                 else c.Event(t, "SVC", null, text: $"service {name} installed: {Util.Clip(Rules.Fix(ip), 120)}", flags: fl);
                 if (!trusted || Rules.Strong(fl).Count > 0) c.Find(t, $"service installed: {Rules.Fix(name)}: {disp}{Rules.FlagText(fl)}" + (dllLine != null ? ", dll " + dllLine : ""));
@@ -267,6 +284,7 @@ namespace Spor.Modules
                     var more = acts.Skip(1).Select(a => "action: " + Log.Item(a.Path, a.Status, a.Args.Length > 0 ? "arguments " + a.Args : null, Rules.FlagCol(a.Fl))).ToList();
                     var info = string.Join(", ", new[] { hidden ? "hidden" : null, string.IsNullOrEmpty(author) ? null : "author " + author }.Where(v => v != null));
                     if (info.Length > 0) more.Add("info: " + info);
+                    foreach (var a in acts) more.AddRange(Modules(a.Prog).Select(m => "module: " + m));
                     trows.Add((fi.CreationTimeUtc, new[] { Log.T(fi.CreationTimeUtc), "task", changed ? Log.T(fi.LastWriteTimeUtc) : "-", first.Status ?? "-", Rules.FlagCol(first.Fl),
                                                            Rules.Fix(name), first.Path ?? "(no action)", first.Args ?? "" }, more));
                     if (first.Prog != null && Rules.DrivePath.IsMatch(first.Prog))
@@ -336,6 +354,7 @@ namespace Spor.Modules
                         var pf = ProgF(target, out var prog, out var fl);
                         var ta = Cmd.Args(target);
                         stt.More("target", Log.Item(pf.Path, pf.Status, ta.Length > 0 ? "arguments " + Rules.Fix(ta) : null, Rules.FlagCol(fl)));
+                        foreach (var m in Modules(prog)) stt.More("module", m);
                         if (Rules.Strong(fl).Count > 0 || fl.Contains("!lolbin")) c.Find(f.CreationTimeUtc, "Startup item " + line + " -> " + c.File(prog) + Rules.FlagText(fl), "created");
                     }
                     else if (!f.Extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase)) c.Find(f.CreationTimeUtc, "Startup folder file (not a shortcut): " + line, "created");

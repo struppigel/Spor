@@ -34,7 +34,7 @@ namespace Spor
 
         /// <summary>Forget cached results (a new scan in the same window must see replaced files).</summary>
         static readonly Dictionary<string, uint> catalogs = new Dictionary<string, uint>(Util.IC);
-        public static void Reset() { cache.Clear(); catalogs.Clear(); online = true; Package.Reset(); }
+        public static void Reset() { cache.Clear(); catalogs.Clear(); names.Clear(); online = true; Package.Reset(); }
 
         public static Result Check(string path)
         {
@@ -133,6 +133,25 @@ namespace Spor
                 return parts.Count == 0 ? "none" : string.Join("; ", parts);
             }
             catch { return null; }
+        }
+
+        static readonly Dictionary<string, (string Original, string Internal)> names = new Dictionary<string, (string, string)>(Util.IC);
+
+        /// <summary>OriginalFilename and InternalName of the version resource (null when missing), cached.</summary>
+        public static (string Original, string Internal) Names(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return (null, null);
+            if (names.TryGetValue(path, out var r)) return r;
+            r = (null, null);
+            if (Versioned.IsMatch(path))
+                try
+                {
+                    var v = FileVersionInfo.GetVersionInfo(path);
+                    string N(string x) => string.IsNullOrWhiteSpace(x) ? null : x.Trim();
+                    r = (N(v.OriginalFilename), N(v.InternalName));
+                }
+                catch { }
+            return names[path] = r;
         }
 
         // ---- WinVerifyTrust ----

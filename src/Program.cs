@@ -21,7 +21,7 @@ Without options Spor opens its window. With options it scans without a window:
                    no inbox/Microsoft driver filtering (flags like !lolbin work the same either way)
   -noise REGEX     your own known-noise regex, added to each module's list (e.g. \\STEAMAPPS\\COMMON\\)
   -modules LIST    comma-separated subset (default: all): prefetch, amcache, exec, files, timestomp, downloads, software,
-                   persistence, defender, clickfix, remote, network, accounts
+                   persistence, processes, defender, clickfix, remote, network, accounts
   -algo NAME       hash algorithm: SHA256 (default), SHA1 (to compare with Amcache), MD5
   -maxmb N         don't hash files over N MB (default 500)
   -nohash          don't hash files (signatures are still checked)
@@ -77,7 +77,8 @@ Without options Spor opens its window. With options it scans without a window:
             catch (Exception e) { Console.Error.WriteLine(e.Message); Console.Error.Write(Usage); return 2; }
 
             string path;
-            try { path = Scanner.Run(o, (t, i, n) => Console.WriteLine($"[{i + 1}/{n}] {t}")); }
+            // "[2/5] module ...", then "Writing the log" without a number (done == total), as in the window.
+            try { path = Scanner.Run(o, (t, i, n) => Console.WriteLine(i < n ? $"[{i + 1}/{n}] {t}" : t)); }
             catch (Exception e) { Console.Error.WriteLine("Cannot write the log: " + e.Message); return 1; }
             Console.WriteLine("Log: " + path);
             if (!o.NoOpen) OpenLog(path);

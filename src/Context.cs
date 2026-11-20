@@ -77,6 +77,23 @@ namespace Spor
         public readonly Dictionary<string, (long Size, DateTime Created, DateTime Modified)> Meta =
             new Dictionary<string, (long, DateTime, DateTime)>(Util.IC);                                 // display path -> size, created, modified (UTC)
 
+        /// <summary>Side-loading results per host program (Sideload.For), so each program is checked once per scan.</summary>
+        public readonly Dictionary<string, List<SideloadHit>> Sideloads = new Dictionary<string, List<SideloadHit>>(Util.IC);
+        /// <summary>Side-loading details already on a timeline line (Sideload.Claim), so no line gets them twice.</summary>
+        public readonly HashSet<string> SideloadLines = new HashSet<string>(Util.IC);
+
+        /// <summary>
+        /// Program starts seen by modules (RUNNING PROCESSES, process creation events): a parent program started a child program
+        /// (its direct parent) with this command line.
+        /// </summary>
+        public readonly List<(string Parent, string Child, string CommandLine, DateTime? T)> Launches = new List<(string, string, string, DateTime?)>();
+
+        /// <summary>Script-runtime launchers (Correlate): never hidden by the signer whitelist, like interpreters.</summary>
+        public readonly HashSet<string> RuntimeLaunchers = new HashSet<string>(Util.IC);
+
+        /// <summary>Names.RenamedDetail per program: "original name X", or null when not renamed.</summary>
+        public readonly Dictionary<string, string> Renamed = new Dictionary<string, string>(Util.IC);
+
         /// <summary>A file line from c.File() whose signature is missing or not valid.</summary>
         public static bool BadSig(string status) => status != null && (status.Contains("unsigned") || status.Contains(" signature"));
         public string Module = "";

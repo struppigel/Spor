@@ -26,7 +26,7 @@ namespace Spor
         public static readonly IModule[] All =
         {
             new Prefetch(), new Amcache(), new ExecEvidence(), new Files(), new Timestomp(), new Downloads(), new Software(), new Persistence(),
-            new Security(), new ClickFix(), new RemoteAccess(), new Network(), new Accounts()
+            new Processes(), new Security(), new ClickFix(), new RemoteAccess(), new Network(), new Accounts()
         };
 
         /// <summary>Timeline source tags, in the order they are listed on a line.</summary>
@@ -36,6 +36,9 @@ namespace Spor
             ("PCA", "Program Compatibility Assistant: program launched"),
             ("UA", "UserAssist: program started from Explorer/Start menu"),
             ("BAM", "Background Activity Moderator: program ran"),
+            ("4688", "Security event 4688: process created (only with process creation auditing)"),
+            ("SYSMON", "Sysmon event 1: process created"),
+            ("PROC", "process running now (time = when it started)"),
             ("MPL", "Defender looked the file up in the cloud (usually when it ran or was written)"),
             ("SRU", "SRUM: program first active in the window"),
             ("AM", "Amcache: time = when Windows wrote the entry (the file was there; not necessarily run)"),
@@ -102,6 +105,9 @@ namespace Spor
                     times.Add($"{m.Id} {sw.Elapsed.TotalSeconds:N1} s");
                 }
                 progress?.Invoke("Writing the log", mods.Count, mods.Count);
+                c.Err.Clear();
+                Correlate.Run(c);   // checks across modules (script-runtime launchers); its errors go to the header
+                startErr.AddRange(c.Err);
 
                 Header(c, log, startErr);
                 var timeline = Timeline(c, out var rows);
@@ -205,7 +211,7 @@ namespace Spor
             string SignedBy(string path)
             {
                 if (!Rules.Whitelist || !Signature.Applies(path) || Rules.Strong(Rules.Flags(path)).Count > 0 || Rules.Lol.IsMatch(path)
-                    || Rules.Interpreter.IsMatch(path) || Rules.DropLocation(path)) return null;
+                    || Rules.Interpreter.IsMatch(path) || Rules.DropLocation(path) || c.RuntimeLaunchers.Contains(c.RealCase(path))) return null;
                 var real = c.RealCase(path);
                 if (!File.Exists(real)) real = c.Replacement(real);
                 if (real == null) return null;
@@ -254,8 +260,11 @@ namespace Spor
                     var row = new Row
                     {
                         T = x.Max(e => e.T), Src = string.Join(" ", x.Select(e => e.Src).Distinct().OrderBy(Order)), Status = f.Status, Obj = f.Path,
-                        Details = string.Join("; ", ex), Flags = Rules.Flags(path).Concat(x.Where(e => e.Flags != null).SelectMany(e => e.Flags)).Distinct().ToList()
+                        Details = string.Join("; ", ex), Flags = Rules.Flags(path).Concat(x.Where(e => e.Flags != null).SelectMany(e => e.Flags)).Distinct().ToList(),
+                        // sub-lines of file events too (script files of a runtime launcher, ...)
+                        More = x.Where(e => e.More != null).SelectMany(e => e.More).Distinct().ToList(),
                     };
+                    if (row.More.Count == 0) row.More = null;
                     // grouped lines: every real path with its own times, so nothing has to be guessed for removal
                     if (paths.Count > 1 && last)
                         foreach (var pg in g.GroupBy(e => e.Path, Util.IC).OrderBy(pg => pg.Max(e => e.T)))
@@ -295,11 +304,20 @@ namespace Spor
             log.Heading("SUMMARY - flagged items; details in the sections below");
             log.Comment("time = when it happened, except: ShimCache = the file's modification time (a copied file keeps its old time), Amcache = when Windows wrote the entry,");
             log.Comment("Run keys and services = when the key was last changed, tasks and Startup items = file created, log and config files = file last written.");
-            var flagged = rows.Where(r => Rules.Strong(r.Flags).Count > 0).ToList();
+            // hints (Rules.Hints) count only with a strong flag on the same line or in the same folder
+            var strongFolders = new HashSet<string>(rows.Where(r => Rules.Strong(r.Flags).Count > 0 && Rules.DrivePath.IsMatch(r.Obj ?? ""))
+                                                        .Select(r => Util.Folder(r.Obj)), Util.IC);
+            List<string> Shown(Row r)
+            {
+                var strong = Rules.Strong(r.Flags);
+                bool hints = strong.Count > 0 || (Rules.DrivePath.IsMatch(r.Obj ?? "") && strongFolders.Contains(Util.Folder(r.Obj)));
+                return hints ? strong.Concat(Rules.HintsOf(r.Flags)).ToList() : strong;
+            }
+            var flagged = rows.Where(r => Shown(r).Count > 0).ToList();
             var lolbins = rows.Where(r => r.Flags.Contains("!lolbin") && Rules.DrivePath.IsMatch(r.Obj ?? "")).Select(r => Util.Leaf(r.Obj)).Distinct(Util.IC).ToList();
             var t = new Table("@time", "[from", "*item", "!status", "=details", "<flags");
             // sorted by time, oldest first; findings without a time (signatures, Run dialog, ...) at the end, in module order
-            var items = flagged.Select(r => (T: (DateTime?)r.T, Fields: new[] { Log.T(r.T), "timeline " + r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(Rules.Strong(r.Flags)) }))
+            var items = flagged.Select(r => (T: (DateTime?)r.T, Fields: new[] { Log.T(r.T), "timeline " + r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(Shown(r)) }))
                 .Concat(c.Findings.Distinct().Select(f => (T: f.T, Fields: new[] { Log.T(f.T), f.Module, f.Text, null, null, null })))
                 .Select((x, i) => (x.T, x.Fields, I: i))
                 .OrderBy(x => x.T.HasValue ? 0 : 1).ThenBy(x => x.T ?? DateTime.MaxValue).ThenBy(x => x.I);
@@ -341,12 +359,14 @@ namespace Spor
         }
 
         /// <summary>Legend: one entry per line. Not item lines: parsers skip this section by its title.</summary>
-        static void Legend(Log log)
+        internal static void Legend(Log log)
         {
             log.W();
             log.Heading("LEGEND");
             log.W("Sources (timeline, in brackets after the time):");
-            foreach (var t in Tags) log.W("    " + t.Tag.PadRight(6) + t.Meaning);
+            // at least two blanks after the longest code: parsers split code and meaning there
+            int w = Tags.Max(t => t.Tag.Length) + 2;
+            foreach (var t in Tags) log.W("    " + t.Tag.PadRight(w) + t.Meaning);
             log.W();
             log.W("Status (in brackets after a file; no status = the file is there and validly signed or not an executable):");
             foreach (var (k, v) in new[] {

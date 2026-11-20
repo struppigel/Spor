@@ -193,5 +193,53 @@ namespace Spor
             if (machineSid != null && !System.Text.RegularExpressions.Regex.IsMatch(machineSid, @"^S-1-5-21-\d+-\d+-\d+$")) machineSid = null;
             return machineSid;
         }
+
+        // ---- processes ----
+        [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool QueryFullProcessImageName(IntPtr h, int flags, StringBuilder name, ref int size);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+        [DllImport("psapi.dll", SetLastError = true)] static extern bool EnumProcessModulesEx(IntPtr h, [Out] IntPtr[] modules, int size, out int needed, uint filter);
+        [DllImport("psapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern int GetModuleFileNameEx(IntPtr h, IntPtr module, StringBuilder name, int size);
+
+        const uint QueryLimited = 0x1000, QueryInformation = 0x0400, VmRead = 0x0010, ListModulesAll = 3;
+
+        /// <summary>The program file of a running process (needs only limited query rights), or null.</summary>
+        public static string ProcessPath(int pid)
+        {
+            var h = OpenProcess(QueryLimited, false, pid);
+            if (h == IntPtr.Zero) return null;
+            try { var sb = new StringBuilder(1024); int n = sb.Capacity; return QueryFullProcessImageName(h, 0, sb, ref n) ? sb.ToString() : null; }
+            finally { CloseHandle(h); }
+        }
+
+        /// <summary>
+        /// The files of the modules (EXE and DLLs) a process has loaded, 32- and 64-bit; null when the process cannot be opened
+        /// (protected processes, or Spor running as a 32-bit process looking at a 64-bit one). Only reads the module list.
+        /// </summary>
+        public static System.Collections.Generic.List<string> ProcessModules(int pid)
+        {
+            var h = OpenProcess(QueryInformation | VmRead, false, pid);
+            if (h == IntPtr.Zero) return null;
+            try
+            {
+                var mods = new IntPtr[1024];
+                int size = mods.Length * IntPtr.Size;
+                if (!EnumProcessModulesEx(h, mods, size, out int needed, ListModulesAll)) return null;
+                if (needed > size)
+                {
+                    mods = new IntPtr[needed / IntPtr.Size + 16];
+                    size = mods.Length * IntPtr.Size;
+                    if (!EnumProcessModulesEx(h, mods, size, out needed, ListModulesAll)) return null;
+                }
+                var res = new System.Collections.Generic.List<string>();
+                for (int i = 0; i < Math.Min(needed, size) / IntPtr.Size; i++)
+                {
+                    var sb = new StringBuilder(1024);
+                    if (GetModuleFileNameEx(h, mods[i], sb, sb.Capacity) > 0) res.Add(sb.ToString());
+                }
+                return res;
+            }
+            finally { CloseHandle(h); }
+        }
     }
 }

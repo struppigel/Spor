@@ -18,9 +18,10 @@ namespace Spor.Modules
         public string Name => "NEW FILES";
         public string Description => "executables, scripts and archives created recently, with download origin";
 
-        static readonly Regex Exec = new Regex(@"\.(exe|dll|scr|com|pif|cpl|sys|ocx|drv|efi|msi|msp|msc|jar|jnlp|xll|xlam|docm|dotm|xlsm|pptm|ppam|appx|msix|appinstaller|application|appref-ms|rdp|library-ms|search-ms|settingcontent-ms|scf|iqy|slk)$", Util.RX);
+        internal static readonly Regex Exec = new Regex(@"\.(exe|dll|scr|com|pif|cpl|sys|ocx|drv|efi|msi|msp|msc|jar|jnlp|xll|xlam|docm|dotm|xlsm|pptm|ppam|appx|msix|appinstaller|application|appref-ms|rdp|library-ms|search-ms|settingcontent-ms|scf|iqy|slk)$", Util.RX);
         // scripts: up to 3 folder levels deep (loaders use e.g. AppData\Roaming\x\y\run.vbs), except where scripts are normal
-        static readonly Regex Script = new Regex(@"\.(bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|jsc|wsf|wsh|wsc|sct|hta|py|pyw|au3|a3x|ahk)$", Util.RX);
+        internal static readonly Regex Script = new Regex(@"\.(bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|jsc|wsf|wsh|wsc|sct|hta|py|pyw|au3|a3x|ahk)$", Util.RX);
+        static readonly Regex Shortcut = new Regex(@"\.(lnk|url)$", Util.RX);
         static readonly Regex ScriptNoise = new Regex(@"\\(Mozilla\\(Firefox|Thunderbird)|Thunderbird|Waterfox|LibreWolf)\\|\\(nvm|npm|npm-cache|pnpm|yarn|JetBrains|Code\\User|Code - Insiders|Cursor\\User|GitHub Desktop|Postman)\\|\\(prefs|user|times)\.js$", Util.RX);
         static readonly Regex Archive = new Regex(@"\.(zip|rar|7z|cab|iso|img|vhd|vhdx|tar|gz|tgz|ace|arj|z)$", Util.RX);
         static readonly HashSet<string> SkipDirs = new HashSet<string>(new[] {
@@ -29,6 +30,42 @@ namespace Spor.Modules
             "Local Storage", "Session Storage", "INetCache", "WebCache", "Crashpad", "CrashDumps", "Package Cache", "WindowsApps", "pip", "npm-cache",
             ".nuget", ".gradle", ".m2", ".cargo", ".rustup", "venv", ".venv" }, Util.IC);
         const string NoiseList = @"\\APPDATA\\LOCAL\\PROGRAMS\\MICROSOFT VS CODE\\|\\APPDATA\\LOCAL\\MICROSOFT\\(EDGE|ONEDRIVE|TEAMS|WINGET)\\|\\APPDATA\\LOCAL\\(DISCORD|SLACK|GITHUBDESKTOP|SQUIRRELTEMP)\\|\\\.VSCODE\\|\\APPDATA\\LOCAL\\TEMP\\(MSEDGE_|CHROME_|SCOPED_DIR|.*\\RESOURCES\\APP\\SERVICEHUB\\)|\\PROGRAMDATA\\MICROSOFT\\(WINDOWS DEFENDER|CLICKTORUN|EDGEUPDATE|WINDOWS\\WER)\\|\\PYTHON\d+\\(LIB|DLLS|SCRIPTS)\\|\\APPDATA\\LOCAL\\TEMP\\IS-[A-Z0-9]+\.TMP\\";
+
+        /// <summary>A new file of one folder, with its Zone.Identifier.</summary>
+        sealed class NewFile
+        {
+            public FileInfo F;
+            public Zone Zone;
+            public bool HasUrl => Zone != null && Zone.HasUrl;
+            public bool Padded;   // hashing it would read hundreds of MB of padding
+            public readonly List<string> Flags = new List<string>();     // besides the name flags (Rules.Flags), which the timeline adds itself
+            public readonly List<string> Details = new List<string>();   // after the origin
+        }
+
+        /// <summary>
+        /// Signed programs in a drop-location folder with new files, and the unsigned DLLs next to them they import (Sideload).
+        /// The DLL gets !sideload and the evidence, the program "side-loads x.dll"; files that are not new get their own timeline lines.
+        /// </summary>
+        void SideLoading(string dir, List<NewFile> all)
+        {
+            List<string> exes;
+            try { exes = Directory.EnumerateFiles(dir, "*.exe").Take(50).ToList(); } catch { return; }
+            foreach (var exe in exes)
+                foreach (var h in Sideload.For(c, exe))
+                {
+                    var dll = all.FirstOrDefault(f => f.F.FullName.Equals(h.Dll.Path, StringComparison.OrdinalIgnoreCase));
+                    var host = all.FirstOrDefault(f => f.F.FullName.Equals(h.Host.Path, StringComparison.OrdinalIgnoreCase));
+                    if (dll != null && Sideload.Claim(c, h, dllLine: true)) { if (!dll.Flags.Contains(Sideload.Flag)) dll.Flags.Add(Sideload.Flag); dll.Details.Add(h.DllDetails); }
+                    if (host != null && Sideload.Claim(c, h, dllLine: false)) host.Details.Add(h.HostDetails);
+                    Sideload.Events(c, h);   // the lines not written here (a file that is not new); never twice
+                }
+        }
+
+        static string Details(NewFile f)
+        {
+            var d = new[] { f.Zone?.Text }.Concat(f.Details).Where(s => !string.IsNullOrEmpty(s)).ToList();
+            return d.Count > 0 ? string.Join("; ", d) : null;
+        }
 
         Ctx c;
         Regex noise;
@@ -54,6 +91,7 @@ namespace Spor.Modules
             int nfiles = 0, ndirs = 0;
             var back = new List<(FileInfo F, DateTime Ch)>();   // programs/scripts with old whole-second creation time and recent change time
             var qk = new Dictionary<string, int>(Util.IC);
+            var padded = new Dictionary<string, string>(Util.IC);   // file -> "padded: N MB of byte 0xXX"
             foreach (var (root, arch) in roots)
             {
                 if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
@@ -76,21 +114,29 @@ namespace Spor.Modules
                         if ((it.Attributes & (FileAttributes)(0x1000 | 0x40000 | 0x400000)) != 0) continue;   // cloud placeholders
                         bool isArch = Archive.IsMatch(it.Name);
                         bool script = Script.IsMatch(it.Name) && depth <= 3 && !(Rules.Whitelist && ScriptNoise.IsMatch(it.FullName));
-                        if (!Exec.IsMatch(it.Name) && !script && !(isArch && arch && depth <= 2)) continue;
+                        // shortcuts only with a lowered zone (!motw-removed): new .lnk files on the Desktop are normal
+                        bool shortcut = Shortcut.IsMatch(it.Name) && Rules.DropLocation(it.FullName);
+                        // big new files in drop locations, whatever their type: padding against scanner size limits (!padded)
+                        string pad = depth <= 3 && it.CreationTimeUtc >= c.Since && ((FileInfo)it).Length > Padded.MinExe && Rules.DropLocation(it.FullName)
+                                     ? Padded.OfFile((FileInfo)it) : null;
+                        if (pad != null) padded[it.FullName] = pad;
+                        if (!Exec.IsMatch(it.Name) && !script && !shortcut && !(isArch && arch && depth <= 2) && pad == null) continue;
                         if (it.CreationTimeUtc < c.Since)
                         {
                             // an "old" program or script whose creation time is a whole second (as timestomping tools write it) but whose
                             // NTFS change time is recent: its times were probably set back to hide it from this scan
-                            if (!isArch && it.CreationTimeUtc.Ticks % 10000000 == 0 && Native.ChangeTime(it.FullName) is DateTime ch
+                            // (programs and scripts only: shortcuts and padded data files are here for other checks)
+                            if ((Exec.IsMatch(it.Name) || script) && it.CreationTimeUtc.Ticks % 10000000 == 0 && Native.ChangeTime(it.FullName) is DateTime ch
                                 && ch >= c.Since && ch > it.CreationTimeUtc.AddDays(1) && ch > it.LastWriteTimeUtc.AddDays(1))
                             {
                                 back.Add(((FileInfo)it, ch));
                             }
                             continue;
                         }
+                        if (shortcut && !Exec.IsMatch(it.Name) && !Rules.MotwRemoved(it.FullName, Ads.Origin(it.FullName))) continue;
                         var rel = it.FullName.Length > 2 ? it.FullName.Substring(2) : it.FullName;
                         // known-noise folders hide only files without flags and, for executables, with a valid signature
-                        if (Rules.Whitelist && noise.IsMatch(rel) && Rules.Flags(it.FullName).Count == 0 && c.SignedOk(it.FullName))
+                        if (Rules.Whitelist && noise.IsMatch(rel) && Rules.Flags(it.FullName).Count == 0 && pad == null && c.SignedOk(it.FullName))
                         {
                             var m = noise.Match(rel); var k = it.FullName.Substring(0, 2 + m.Index + m.Length);
                             qk[k] = qk.TryGetValue(k, out var n) ? n + 1 : 1;
@@ -103,17 +149,33 @@ namespace Spor.Modules
 
             // per folder: up to PerDir files one by one, else one line for the folder (installers unpack hundreds of DLLs)
             int per = c.Opt.PerDir, withUrl = 0;
+            // folders with a new program: padding next to one (same folder or the folder above) is a strong sign
+            var programDirs = new HashSet<string>(found.Where(f => Exec.IsMatch(f.F.Name)).Select(f => f.F.DirectoryName), Util.IC);
             var lines = new List<(DateTime T, string Text)>();
             foreach (var g in found.GroupBy(f => f.F.DirectoryName, Util.IC))
             {
-                var all = g.OrderBy(f => f.F.CreationTimeUtc).ToList();
-                var flagged = all.Where(f => Rules.Strong(Rules.Flags(f.F.FullName)).Count > 0).ToList();
+                var all = g.OrderBy(f => f.F.CreationTimeUtc).Select(f => new NewFile { F = f.F, Zone = Ads.Origin(f.F.FullName) }).ToList();
+                foreach (var f in all)
+                    if (Rules.MotwRemoved(f.F.FullName, f.Zone)) f.Flags.Add("!motw-removed");
+                if (Rules.DropLocation(g.Key + @"\x")) SideLoading(g.Key, all);
+                foreach (var f in all)
+                    if (Names.RenamedDetail(c, f.F.FullName) is string renamed) { f.Flags.Add(Names.RenamedFlag); f.Details.Add(renamed); }
+                foreach (var f in all.Where(f => padded.ContainsKey(f.F.FullName)))
+                {
+                    // the flag on programs and on data next to a new program; else only the detail (a big download can be padded too)
+                    f.Padded = true;
+                    f.Details.Add(padded[f.F.FullName]);
+                    var parent = Path.GetDirectoryName(g.Key);
+                    if (Exec.IsMatch(f.F.Name) || programDirs.Contains(g.Key) || (parent != null && programDirs.Contains(parent))) f.Flags.Add(Padded.Flag);
+                }
+                // a file with a strong flag or a hint (from its name or from the checks above) always gets its own line
+                var flagged = all.Where(f => Rules.Strong(Rules.Flags(f.F.FullName)).Count > 0 || f.Flags.Count > 0).ToList();
                 var rest = all.Except(flagged).ToList();
-                var single = rest.Count <= per ? rest : rest.Where(f => Ads.Origin(f.F.FullName) != null).ToList();   // every download keeps its URL
+                var single = rest.Count <= per ? rest : rest.Where(f => f.HasUrl || f.Padded).ToList();   // every download and padded file keeps its own line
                 foreach (var f in flagged.Concat(single))
                 {
-                    var o = Ads.Origin(f.F.FullName); if (o != null) withUrl++;
-                    c.Event(f.F.CreationTimeUtc, "NEW", f.F.FullName, o);
+                    if (f.HasUrl) withUrl++;
+                    c.Event(f.F.CreationTimeUtc, "NEW", f.F.FullName, Details(f), f.Flags.Count > 0 ? f.Flags : null, noHash: f.Padded);
                 }
                 var others = rest.Except(single).ToList();
                 if (others.Count > 0)

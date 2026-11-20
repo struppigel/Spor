@@ -52,6 +52,20 @@ namespace Spor
         /// <summary>One line: line breaks become spaces, other control characters are removed. Never shortened (n is ignored; the log keeps full text).</summary>
         public static string Clip(object o, int n = 0) => LineBreaks.Replace(Controls.Replace(Convert.ToString(o) ?? "", ""), " ").Trim();
 
+        /// <summary>Shannon entropy of bytes in bits per byte: 8 = random or encrypted, below 5 = text, 0 = one repeated value.</summary>
+        public static double Entropy(byte[] b, int count = -1)
+        {
+            if (b == null) return 0;
+            if (count < 0 || count > b.Length) count = b.Length;
+            if (count == 0) return 0;
+            var n = new long[256];
+            for (int i = 0; i < count; i++) n[b[i]]++;
+            double e = 0;
+            foreach (var x in n)
+                if (x > 0) { double p = (double)x / count; e -= p * Math.Log(p, 2); }
+            return e;
+        }
+
         /// <summary>Folder part of a path ("" if none).</summary>
         public static string Folder(string p) => p.Substring(0, Math.Max(0, p.LastIndexOf('\\')));
 

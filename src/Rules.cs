@@ -122,6 +122,113 @@ namespace Spor
             return Regex.IsMatch(args, @"%(appdata|localappdata|temp|tmp|userprofile|public|programdata)%", RegexOptions.IgnoreCase);
         }
 
+        /// <summary>Programs, scripts and shortcuts: the files SmartScreen and the "open file" warning check for Mark of the Web.</summary>
+        public static bool ProgramFile(string p) =>
+            Modules.Files.Exec.IsMatch(p ?? "") || Modules.Files.Script.IsMatch(p ?? "") || Regex.IsMatch(p ?? "", @"\.(lnk|url)$", O);
+
+        /// <summary>
+        /// !motw-removed: a new program, script or shortcut in a drop location whose Zone.Identifier says zone 0-2 (this computer, intranet,
+        /// trusted) and has no URL. Browsers and Windows write zone 3/4 with a URL for internet files; droppers and some archive tools write a
+        /// low zone on purpose to turn off SmartScreen and the download warnings. A missing stream is not a signal: most local files have none.
+        /// </summary>
+        public static bool MotwRemoved(string p, Zone z) =>
+            z != null && z.Id.HasValue && z.Id.Value >= 0 && z.Id.Value <= 2 && !z.HasUrl && ProgramFile(p) && DropLocation(p);
+
+        /// <summary>
+        /// The script runtime a program ships with, from files next to or below it (relPaths: relative to the program's folder, at most two
+        /// folders deep): "Ren'Py (Python)", "Python", "AutoIt", "Node.js", "Electron", "Java", "Lua"; null for none. Malware ships a legitimate
+        /// runtime and keeps its code in data files, so the launcher's signature says nothing. Interpreters themselves (python.exe, ...) are
+        /// not launchers: they are never hidden anyway (Interpreter).
+        /// </summary>
+        public static string ScriptRuntime(string exePath, IEnumerable<string> relPaths)
+        {
+            if (string.IsNullOrEmpty(exePath) || Interpreter.IsMatch(exePath)) return null;
+            var rel = relPaths.Select(r => r.Replace('/', '\\').TrimStart('\\')).Where(r => r.Count(ch => ch == '\\') <= 2).ToList();
+            bool Has(string rx) => rel.Any(r => Regex.IsMatch(r, rx, O));
+            if (Has(@"(^|\\)librenpython[^\\]*\.dll$")) return "Ren'Py (Python)";
+            if (Has(@"(^|\\)(python3[\d]*|libpython3[\d.]*)\.dll$") && Has(@"^(lib|renpy)\\|(^|\\)base_library\.zip$")) return "Python";
+            if (Has(@"(^|\\)autoit3[^\\]*\.exe$") || Has(@"^[^\\]+\.a3x$")) return "AutoIt";
+            if (Has(@"(^|\\)node\.exe$")) return "Node.js";
+            if (Has(@"^resources\\app\.asar$")) return "Electron";
+            if (Has(@"(^|\\)jre\\bin\\javaw?\.exe$") || Has(@"(^|\\)jvm\.dll$")) return "Java";
+            if (Has(@"(^|\\)lua(jit)?[\d.]*\.dll$")) return "Lua";
+            return null;
+        }
+
+        /// <summary>Files that hold a runtime's script code (compiled or packed): what a launcher really runs.</summary>
+        public static readonly Regex ScriptContainer = new Regex(@"\.(rpa|rpyc|pyc|pyz|a3x|au3|asar|jar|js)$", O);
+
+        /// <summary>Folders of the runtime itself (its standard library), not the app's scripts.</summary>
+        public static readonly Regex RuntimeLibFolder = new Regex(@"(^|\\)(renpy|lib|__pycache__|node_modules|jre|site-packages|locales)\\", O);
+
+        /// <summary>
+        /// Proxy-execution launchers: Windows programs that start another program for the caller, so the real parent is hidden and
+        /// some application-control rules are bypassed. Name of the launcher, and its arguments that start a program.
+        /// </summary>
+        public static readonly (string Name, Regex Args)[] ProxyLaunchers =
+        {
+            ("forfiles.exe", new Regex(@"(^|\s)[/-]c(\s|$)", O)),
+            ("pcalua.exe", new Regex(@"(^|\s)-a(\s|$)", O)),
+            ("conhost.exe", new Regex(@"--headless", O)),
+            ("explorer.exe", new Regex(@"(^|[\s""])([a-z]:\\|\\\\)", O)),        // explorer.exe "C:\...\x.exe" (the shell itself has no path argument)
+            ("cmd.exe", new Regex(@"[/-]c\s+""?call\s", O)),
+            ("rundll32.exe", new Regex(@"url\.dll\s*,\s*(FileProtocolHandler|OpenURL)", O)),
+            ("scriptrunner.exe", new Regex(@"-appvscript", O)),
+            ("wmic.exe", new Regex(@"process\s+call\s+create", O)),
+            ("mshta.exe", new Regex(@"\S", O)),
+        };
+
+        /// <summary>
+        /// !proxy-exec (pure): a launcher among a program's parents, with arguments that start a program, while the program runs from
+        /// outside Windows and Program Files. launcherCommandLine is the whole command line (the program part is skipped).
+        /// </summary>
+        public static bool ProxyExec(string launcherPath, string launcherCommandLine, string childPath) =>
+            DrivePath.IsMatch(childPath ?? "") && !InTrustedLocation(childPath) && ProxyLaunch(launcherPath, launcherCommandLine);
+
+        /// <summary>(pure) A proxy-execution launcher (ProxyLaunchers) whose command line starts a program for someone else.</summary>
+        public static bool ProxyLaunch(string launcherPath, string commandLine)
+        {
+            if (string.IsNullOrEmpty(launcherPath)) return false;
+            var name = launcherPath.Substring(launcherPath.LastIndexOf('\\') + 1);
+            var args = LauncherArgs(commandLine, name);
+            return ProxyLaunchers.Any(l => l.Name.Equals(name, System.StringComparison.OrdinalIgnoreCase) && l.Args.IsMatch(args));
+        }
+
+        /// <summary>
+        /// A folder that many unrelated programs and downloads share: a profile's Downloads, Desktop, Documents, Temp, the roots of
+        /// AppData, Public, ProgramData, Windows\Temp, a drive root. Files next to a program there do not belong to it.
+        /// </summary>
+        public static bool SharedFolder(string dir) =>
+            Regex.IsMatch((dir ?? "").TrimEnd('\\'),
+                @"^[a-z]:(\\users\\[^\\]+\\(downloads|desktop|documents|appdata\\(local|roaming|locallow)(\\temp)?)|\\users\\public(\\(downloads|desktop|documents))?|\\programdata|\\windows\\temp)?$", O);
+
+        /// <summary>
+        /// (pure) A process creation event (Security 4688, Sysmon 1) for the timeline: the program or its parent is a LOLBin or interpreter,
+        /// and the command line is suspicious, it is proxy execution, or the program runs from outside Windows and Program Files.
+        /// </summary>
+        public static bool ProcessEventKept(string image, string parentImage, string commandLine, bool proxyExec)
+        {
+            bool Host(string p) => !string.IsNullOrEmpty(p) && (Lol.IsMatch(p) || Interpreter.IsMatch(p));
+            if (string.IsNullOrEmpty(image) || (!Host(image) && !Host(parentImage))) return false;
+            return proxyExec || ArgsSuspicious(LauncherArgs(commandLine, image.Substring(image.LastIndexOf('\\') + 1)))
+                   || (DrivePath.IsMatch(image) && !InTrustedLocation(image));
+        }
+
+        /// <summary>
+        /// The arguments of a Windows program's command line: after the quoted program, else after its own name ("wmic process call
+        /// create C:\x.exe": Cmd.Args would cut at the first ".exe" anywhere in the line).
+        /// </summary>
+        static string LauncherArgs(string commandLine, string name)
+        {
+            var s = (commandLine ?? "").TrimStart();
+            if (s.StartsWith("\"")) { int e = s.IndexOf('"', 1); return e > 0 ? s.Substring(e + 1) : ""; }
+            var stem = System.IO.Path.GetFileNameWithoutExtension(name);
+            var m = Regex.Match(s, @"^\S*?" + Regex.Escape(stem) + @"(\.exe)?(?=\s|$)", O);
+            if (m.Success) return s.Substring(m.Length);
+            int sp = s.IndexOf(' ');
+            return sp > 0 ? s.Substring(sp) : "";
+        }
+
         public static string Fix(string s) => Bidi.Replace(s ?? "", "<RLO>");
 
         /// <summary>!RLO, !double-extension, !in-folder-named-like-file, !lolbin. name: also test this file name for LOLBins.</summary>
@@ -145,8 +252,16 @@ namespace Spor
         /// <summary>Flags as a table field: "!a !b" or "-".</summary>
         public static string FlagCol(IEnumerable<string> f) { var s = f == null ? "" : string.Join(" ", f.Distinct()); return s.Length > 0 ? s : "-"; }
 
-        /// <summary>Flags that go to the summary (a LOLBin run alone is normal on many PCs).</summary>
-        public static List<string> Strong(List<string> f) => f.Where(x => x != "!lolbin").ToList();
+        /// <summary>
+        /// Hints: weak flags. They go to the SUMMARY only together with a strong flag on the same file or in the same folder
+        /// (a renamed signed program alone is often harmless; next to a side-loaded DLL it is the host).
+        /// </summary>
+        public static readonly HashSet<string> Hints = new HashSet<string> { "!renamed-program" };
+
+        /// <summary>Flags that go to the summary (a LOLBin run alone is normal on many PCs; hints only with a strong flag).</summary>
+        public static List<string> Strong(List<string> f) => f.Where(x => x != "!lolbin" && !Hints.Contains(x)).ToList();
+
+        public static List<string> HintsOf(List<string> f) => f.Where(Hints.Contains).ToList();
 
         public static readonly string[] FlagLegend =
         {
@@ -167,7 +282,13 @@ namespace Spor
             "!timestomped = file timestamps probably faked",
             "!com-hijack = per-user COM registration overrides the machine one",
             "!from-web = Store/MSIX app installed from a web page (App Installer / ms-appinstaller link), a known malware delivery",
-            "!log-syntax-in-name = the path contains \" => \" or a status in brackets, made to look like log text"
+            "!log-syntax-in-name = the path contains \" => \" or a status in brackets, made to look like log text",
+            "!motw-removed = a program wrote Zone.Identifier with ZoneId 0-2 (local/intranet/trusted) and no URL on a new program file, which turns off SmartScreen and download warnings",
+            "!sideload = unsigned DLL next to a validly signed program that imports it (DLL side-loading); the line names the program and any proxy evidence",
+            "!proxy-exec = started through a Windows program that launches programs for others (forfiles /c, pcalua -a, conhost --headless, cmd /c call, ...), from outside Windows and Program Files",
+            "!padded = new file inflated with one repeated byte against scanner and sandbox size limits: a program (its overlay) or data next to a new program",
+            "!runtime-loader = new launcher of a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua) with loader signs in its folder: padded or encrypted random-named data, a hidden file next to its scripts, a program it started, or a !motw-removed file near a run",
+            "!renamed-program = hint: a signed program under a random-looking or lure name that is not its original name (in SUMMARY only with a strong flag nearby)"
         };
     }
 }

@@ -6,3 +6,4 @@ Spor*.txt
 .*
 !.gitignore
 !.github/
+.tmp

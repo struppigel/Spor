@@ -99,18 +99,11 @@ namespace Spor.Modules
 
         // ---------------- live connections ----------------
         [DllImport("iphlpapi.dll")] static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool order, int af, int cls, uint reserved);
-        [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr h, int flags, StringBuilder name, ref int size);
-        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
-
         static string ProcPath(int pid)
         {
             if (pid == 0) return "System Idle";
             if (pid == 4) return "System";
-            var h = OpenProcess(0x1000, false, pid);
-            if (h == IntPtr.Zero) return "pid " + pid;
-            try { var sb = new StringBuilder(1024); int n = sb.Capacity; return QueryFullProcessImageName(h, 0, sb, ref n) ? sb.ToString() : "pid " + pid; }
-            finally { CloseHandle(h); }
+            return Native.ProcessPath(pid) ?? "pid " + pid;
         }
 
         static readonly string[] States = { "?", "CLOSED", "LISTEN", "SYN_SENT", "SYN_RCVD", "ESTABLISHED", "FIN_WAIT1", "FIN_WAIT2", "CLOSE_WAIT", "CLOSING", "LAST_ACK", "TIME_WAIT", "DELETE_TCB" };
@@ -186,18 +179,20 @@ namespace Spor.Modules
         struct DNS_CACHE_ENTRY { public IntPtr Next; public IntPtr Name; public ushort Type; public ushort DataLength; public uint Flags; }
         [DllImport("dnsapi.dll")] static extern bool DnsGetCacheDataTable(out IntPtr table);
 
-        static readonly (string Cat, Regex Rx)[] Domains =
+        static readonly (string Cat, Func<string, bool> Match)[] Domains =
         {
-            ("remote access", new Regex(@"(^|\.)(anydesk\.com|teamviewer\.com|screenconnect\.com|connectwise\.com|splashtop\.com|rustdesk\.com|atera(agent)?\.com|ninjarmm\.com|action1\.com|getscreen\.me|supremocontrol\.com|remoteutilities\.com|ammyy\.com|aeroadmin\.com|radmin\.com|zohoassist\.com|logmein\.com|gotoassist\.com|goto\.com|simple-help\.com|meshcentral\.com|tacticalrmm\.com|level\.io|syncromsp\.com|pulseway\.com|dwservice\.net|ultraviewer\.net|hoptodesk\.com|remotepc\.com|netsupportsoftware\.com|parsec\.app)$", Util.RX)),
-            ("tunnel / dynamic DNS", new Regex(@"(^|\.)(ngrok(-free)?\.(io|app|dev)|trycloudflare\.com|serveo\.net|localtonet\.com|localhost\.run|loca\.lt|pinggy\.io|playit\.gg|portmap\.io|duckdns\.org|no-ip\.(com|org|biz)|ddns\.net|hopto\.org|zapto\.org|sytes\.net|servebeer\.com|dynu\.com|freedns\.afraid\.org|ydns\.eu)$", Util.RX)),
-            ("paste / file sharing", new Regex(@"(^|\.)(pastebin\.com|paste\.ee|rentry\.co|hastebin\.com|ghostbin\.\w+|transfer\.sh|file\.io|gofile\.io|anonfiles\.com|catbox\.moe|litterbox\.catbox\.moe|temp\.sh|bashupload\.com|mega\.nz|mediafire\.com|pixeldrain\.com|sendspace\.com|uploadnow\.io)$", Util.RX)),
-            ("bot / webhook API", new Regex(@"(^|\.)(api\.telegram\.org|discord(app)?\.com|hooks\.slack\.com|webhook\.site|pipedream\.net|requestbin\.\w+)$", Util.RX)),
-            ("IP lookup", new Regex(@"(^|\.)(ipinfo\.io|ip-api\.com|ifconfig\.me|api\.ipify\.org|checkip\.amazonaws\.com|icanhazip\.com|myexternalip\.com|ipwho\.is|wtfismyip\.com|geoplugin\.net)$", Util.RX)),
+            ("remote access", new Regex(@"(^|\.)(anydesk\.com|teamviewer\.com|screenconnect\.com|connectwise\.com|splashtop\.com|rustdesk\.com|atera(agent)?\.com|ninjarmm\.com|action1\.com|getscreen\.me|supremocontrol\.com|remoteutilities\.com|ammyy\.com|aeroadmin\.com|radmin\.com|zohoassist\.com|logmein\.com|gotoassist\.com|goto\.com|simple-help\.com|meshcentral\.com|tacticalrmm\.com|level\.io|syncromsp\.com|pulseway\.com|dwservice\.net|ultraviewer\.net|hoptodesk\.com|remotepc\.com|netsupportsoftware\.com|parsec\.app)$", Util.RX).IsMatch),
+            ("tunnel / dynamic DNS", new Regex(@"(^|\.)(ngrok(-free)?\.(io|app|dev)|trycloudflare\.com|serveo\.net|localtonet\.com|localhost\.run|loca\.lt|pinggy\.io|playit\.gg|portmap\.io|duckdns\.org|no-ip\.(com|org|biz)|ddns\.net|hopto\.org|zapto\.org|sytes\.net|servebeer\.com|dynu\.com|freedns\.afraid\.org|ydns\.eu)$", Util.RX).IsMatch),
+            ("paste / file sharing", new Regex(@"(^|\.)(pastebin\.com|paste\.ee|rentry\.co|hastebin\.com|ghostbin\.\w+|transfer\.sh|file\.io|gofile\.io|anonfiles\.com|catbox\.moe|litterbox\.catbox\.moe|temp\.sh|bashupload\.com|mega\.nz|mediafire\.com|pixeldrain\.com|sendspace\.com|uploadnow\.io)$", Util.RX).IsMatch),
+            ("bot / webhook API", new Regex(@"(^|\.)(api\.telegram\.org|discord(app)?\.com|hooks\.slack\.com|webhook\.site|pipedream\.net|requestbin\.\w+)$", Util.RX).IsMatch),
+            ("IP lookup", new Regex(@"(^|\.)(ipinfo\.io|ip-api\.com|ifconfig\.me|api\.ipify\.org|checkip\.amazonaws\.com|icanhazip\.com|myexternalip\.com|ipwho\.is|wtfismyip\.com|geoplugin\.net)$", Util.RX).IsMatch),
+            ("victim ID in name", HostNames.VictimId),
+            ("abused TLD", HostNames.AbusedTld),
         };
 
         void Dns()
         {
-            c.Out.Sub(Rules.Whitelist ? "DNS cache: remote access, tunnel, paste/file sharing, bot API and IP lookup services" : "DNS cache",
+            c.Out.Sub(Rules.Whitelist ? "DNS cache: remote access, tunnel, paste/file sharing, bot API and IP lookup services, victim IDs, abused TLDs" : "DNS cache",
                 "Names this PC looked up recently (since the last restart, a few hours at most per entry). Normal use explains many.");
             var names = new List<string>();
             try
@@ -219,14 +214,14 @@ namespace Spor.Modules
             catch (Exception ex) { c.Out.None("cannot read the DNS cache: " + ex.Message); return; }
             names = names.Where(n => !string.IsNullOrEmpty(n)).Select(n => n.TrimEnd('.').ToLowerInvariant()).Distinct().OrderBy(n => n).ToList();
             var dt = new Table("[category", "*name");
-            foreach (var (cat, rx) in Domains)
+            foreach (var (cat, match) in Domains)
             {
-                var hit = names.Where(n => rx.IsMatch(n)).ToList();
+                var hit = names.Where(match).ToList();
                 foreach (var h in hit) dt.Add(cat, h);
-                if (hit.Count > 0 && (cat == "remote access" || cat == "tunnel / dynamic DNS")) c.Find($"DNS cache, {cat}: {string.Join(", ", hit)}");
+                if (hit.Count > 0 && (cat == "remote access" || cat == "tunnel / dynamic DNS" || cat == "victim ID in name")) c.Find($"DNS cache, {cat}: {string.Join(", ", hit)}");
             }
             if (!Rules.Whitelist)
-                foreach (var n in names.Where(n => !Domains.Any(d => d.Rx.IsMatch(n)))) dt.Add("-", n);
+                foreach (var n in names.Where(n => !Domains.Any(d => d.Match(n)))) dt.Add("-", n);
             c.Out.Comment($"{names.Count} names cached");
             dt.WriteTo(c.Out, "none of these");
         }

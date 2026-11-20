@@ -182,8 +182,11 @@ namespace Spor.Modules
                 else c.Find(x.M, c.File(x.P) + Rules.FlagText(x.F) + "  (ShimCache: file modified)", "file modified", "ShimCache");   // flagged, older
             }
 
+            var creations = ProcessCreations();
+
             // ---- details ----
             var o = c.Opt;
+            c.Out.Comment(creations);
             c.Out.Comment($"Entries read: PCA {npca}, UserAssist {nua}, BAM {nbam}, ShimCache {nshim}, Compatibility Assistant {ncas}.");
             c.Out.Comment($"Programs run in the last {o.Days} days{(Rules.Whitelist ? " outside trusted locations" : "")} are in the timeline (PCA, UA, BAM), and ShimCache files modified then (SC).");
             if (oldLol > 0) c.Out.Comment($"Hidden: {oldLol} ShimCache entries of validly signed LOLBins in trusted locations (Windows updates; ShimCache proves no run; -nowhitelist lists them).");
@@ -201,6 +204,90 @@ namespace Spor.Modules
             }
             ct.WriteTo(c.Out);
             c.Out.Hidden(qk, "entries");
+        }
+
+        sealed class Creation { public DateTime T; public string Src, Pid, ParentPid, Image, Parent, Cmd, ParentCmd; }
+
+        const int MaxCreations = 20000;
+        const string SysmonLog = "Microsoft-Windows-Sysmon/Operational";
+
+        /// <summary>
+        /// Process creation events in the time window: Security 4688 (needs process creation auditing; the command line only with its
+        /// policy) and Sysmon event 1. Launches by LOLBins or interpreters, or of programs outside trusted locations, go to the timeline
+        /// (4688, SYSMON), with !proxy-exec from the creating processes found in the events themselves. Catches proxy-execution chains
+        /// when Prefetch is off, not written yet, or deleted. Spor turns nothing on. Returns the comment for the section.
+        /// </summary>
+        string ProcessCreations()
+        {
+            var list = new List<Creation>();
+            var err = new List<string>();
+            int n4688 = 0, nSysmon = 0;
+            var sec = Ev.Fields("NewProcessId", "ProcessId", "NewProcessName", "ParentProcessName", "CommandLine");
+            foreach (var e in Ev.Query("Security", "EventID=4688", c.Since, MaxCreations, err))
+                using (e)
+                {
+                    var d = Ev.Values(e, sec, 5);
+                    n4688++;
+                    list.Add(new Creation
+                    {
+                        T = e.TimeCreated?.ToUniversalTime() ?? DateTime.MinValue, Src = "4688", Pid = d[0]?.ToLowerInvariant(),
+                        ParentPid = d[1]?.ToLowerInvariant(), Image = d[2], Parent = d[3], Cmd = d[4],
+                    });
+                }
+            bool sysmon = false;
+            try { sysmon = System.Diagnostics.Eventing.Reader.EventLogSession.GlobalSession.GetLogNames().Contains(SysmonLog, StringComparer.OrdinalIgnoreCase); } catch { }
+            var sys = Ev.Fields("ProcessId", "ParentProcessId", "Image", "ParentImage", "CommandLine", "ParentCommandLine");
+            if (sysmon)
+                foreach (var e in Ev.Query(SysmonLog, "EventID=1", c.Since, MaxCreations, err))
+                    using (e)
+                    {
+                        var d = Ev.Values(e, sys, 6);
+                        nSysmon++;
+                        list.Add(new Creation
+                        {
+                            T = e.TimeCreated?.ToUniversalTime() ?? DateTime.MinValue, Src = "SYSMON", Pid = d[0], ParentPid = d[1],
+                            Image = d[2], Parent = d[3], Cmd = d[4], ParentCmd = d[5],
+                        });
+                    }
+            bool capped = err.Any(x => x.Contains("more than"));
+            bool securityUnreadable = err.Any(x => x.StartsWith("Security:"));
+            c.Err.AddRange(err.Where(x => !x.Contains("more than")));
+            if (n4688 == 0 && !sysmon)
+                return securityUnreadable ? "Process creation events: the Security log could not be read, and there is no Sysmon."
+                                          : "No process creation auditing and no Sysmon: program starts only from Prefetch, BAM and Amcache.";
+
+            // the creating process of an event, from the events themselves: PIDs are reused, so the newest creation before the child
+            var byPid = list.Where(x => x.Pid != null).GroupBy(x => x.Src + "|" + x.Pid).ToDictionary(g => g.Key, g => g.OrderBy(x => x.T).ToList());
+            Creation ParentOf(Creation x) =>
+                x.ParentPid != null && byPid.TryGetValue(x.Src + "|" + x.ParentPid, out var cands) ? cands.LastOrDefault(p => p.T <= x.T && p != x) : null;
+            int kept = 0;
+            foreach (var x in list.Where(x => !string.IsNullOrEmpty(x.Image) && x.T >= c.Since))
+            {
+                var image = c.Long(x.Image);
+                var parent = !string.IsNullOrEmpty(x.Parent) ? c.Long(x.Parent) : ParentOf(x)?.Image;
+                if (!string.IsNullOrEmpty(parent) && Rules.DrivePath.IsMatch(parent) && !Rules.InTrustedLocation(parent))
+                    c.Launches.Add((c.RealCase(parent), c.RealCase(image), x.Cmd, x.T));
+                // proxy execution: a launcher among the creating processes, up to 4 levels
+                bool proxy = false;
+                var cur = x;
+                for (int i = 0; i < 4 && !proxy; i++)
+                {
+                    var p = ParentOf(cur);
+                    var pImage = p?.Image ?? (i == 0 ? x.Parent : null);
+                    var pCmd = p?.Cmd ?? (i == 0 ? x.ParentCmd : null);
+                    if (string.IsNullOrEmpty(pImage)) break;
+                    proxy = Rules.ProxyExec(pImage, pCmd, image);
+                    if (p == null) break;
+                    cur = p;
+                }
+                if (!Rules.ProcessEventKept(image, parent, x.Cmd, proxy)) continue;
+                kept++;
+                var details = "parent " + (string.IsNullOrEmpty(parent) ? "unknown" : Util.Leaf(parent)) +
+                              (string.IsNullOrEmpty(x.Cmd) ? "" : "; command line " + Rules.Fix(Util.Clip(x.Cmd)));
+                c.Event(x.T, x.Src, image, details, proxy ? new List<string> { "!proxy-exec" } : null);
+            }
+            return $"Process creation events: Security 4688 {n4688}" + (sysmon ? $", Sysmon 1 {nSysmon}" : "") + (capped ? $" (only the newest {MaxCreations} per log)" : "") +
+                   $"; {kept} launches by LOLBins or interpreters, or of programs outside trusted locations, are in the timeline (4688, SYSMON).";
         }
 
         /// <summary>Per folder: flagged rows + the first PerDir others, then a '(+N more)' row.</summary>
