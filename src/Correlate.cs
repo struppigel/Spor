@@ -65,6 +65,35 @@ namespace Spor
                     .Select(g => (g.Key, g.Select(x => x.Note).Distinct(Util.IC).ToList())).ToList();
         }
 
+        /// <summary>
+        /// (pure) The run something at time t belongs to: the latest run at or before t (a dropper writes and starts things after it
+        /// starts), else the nearest; only runs within `window` seconds when given. Null for none.
+        /// </summary>
+        internal static DateTime? RunOf(IEnumerable<DateTime> runs, DateTime t, double? window = null)
+        {
+            var near = runs.Where(r => window == null || Math.Abs((r - t).TotalSeconds) <= window.Value).ToList();
+            if (near.Count == 0) return null;
+            var before = near.Where(r => r <= t).ToList();
+            return before.Count > 0 ? before.Max() : near.OrderBy(r => Math.Abs((r - t).TotalSeconds)).First();
+        }
+
+        /// <summary>
+        /// (pure) The run lines of a launcher: each run with notes, in time order. Only the first and the last are flagged: a loader task
+        /// that runs every few minutes would fill the timeline and SUMMARY otherwise; the runs between are counted ("+N more times").
+        /// </summary>
+        internal static List<(DateTime Run, List<string> Notes, bool Flagged)> RunLines(List<(DateTime? Run, List<string> Notes)> notes)
+        {
+            var runs = notes.Where(n => n.Run != null).OrderBy(n => n.Run.Value).ToList();
+            return runs.Select((n, i) => (n.Run.Value, n.Notes, i == 0 || i == runs.Count - 1)).ToList();
+        }
+
+        /// <summary>
+        /// (pure) The signs on the launcher's first line: the folder's, and programs it started without a known run. The first line
+        /// carries !runtime-loader only with one of these; the others are on their run's line.
+        /// </summary>
+        internal static List<string> FirstLineSigns(RuntimeFolder r, List<(DateTime? Run, List<string> Notes)> notes) =>
+            FolderSigns(r).Concat(notes.Where(n => n.Run == null).SelectMany(n => n.Notes)).ToList();
+
         public static void Run(Ctx c)
         {
             try { RuntimeLaunchers(c); }
@@ -100,8 +129,9 @@ namespace Spor
                 var created = tree.Select(t => t.F.CreationTimeUtc).Concat(new[] { File.GetCreationTimeUtc(exe) });
                 var events = g.ToList();
                 var runs = events.Where(e => RunSources.Contains(e.Src)).ToList();
-                // the run a thing belongs to: the nearest in time
-                TEvent RunNear(DateTime? t) => t.HasValue ? runs.OrderBy(e => Math.Abs((e.T - t.Value).TotalSeconds)).FirstOrDefault() : null;
+                var runTimes = runs.Select(e => e.T).ToList();
+                // the run a thing belongs to (RunOf)
+                DateTime? RunAt(DateTime? t, double? window = null) => t.HasValue ? RunOf(runTimes, t.Value, window) : null;
                 var r = new RuntimeFolder
                 {
                     Launcher = exe,
@@ -115,11 +145,12 @@ namespace Spor
                     // launcher with arguments that start a program (conhost, WerFault, a shell of a CLI tool are no sign)
                     Children = c.Launches.Where(l => l.Parent.Equals(exe, StringComparison.OrdinalIgnoreCase) && !Under(l.Child, dir)
                                                      && (!Rules.InTrustedLocation(l.Child) || Rules.ProxyLaunch(l.Child, l.CommandLine)))
-                                         .Select(l => (l.Child, RunNear(l.T)?.T)).Distinct().ToList(),
+                                         .Select(l => (l.Child, RunAt(l.T))).Distinct().ToList(),
+                    // written within 2 minutes of a run: given to the latest such run at or before it, else the nearest
                     MotwNearRun = c.Events.Where(e => e.Path != null && e.Flags != null && e.Flags.Contains("!motw-removed"))
-                                          .Select(e => (e.T, Run: RunNear(e.T), Path: c.RealCase(e.Path)))
-                                          .Where(x => x.Run != null && Math.Abs((x.T - x.Run.T).TotalSeconds) <= 120)
-                                          .Select(x => (x.Path, x.Run.T)).Distinct().ToList(),
+                                          .Select(e => (Run: RunAt(e.T, 120), Path: c.RealCase(e.Path)))
+                                          .Where(x => x.Run != null)
+                                          .Select(x => (x.Path, x.Run.Value)).Distinct().ToList(),
                 };
                 var signals = electron ? new List<string>() : Signals(r);
                 var notes = signals.Count > 0 ? RunNotes(r) : new List<(DateTime? Run, List<string> Notes)>();
@@ -129,22 +160,23 @@ namespace Spor
                 var more = shown.Select(t => ("script", Log.Item(c.F(t.F.FullName, false).Path, null,
                     $"{Log.T(t.F.CreationTimeUtc)}; {t.F.Length} bytes" + ((t.F.Attributes & FileAttributes.Hidden) != 0 || t.F.Name.StartsWith(".") ? "; hidden" : "")))).ToList();
                 // the first line: the folder's signs (and programs it started without a known run); each run's signs go on its own line
-                var firstSigns = signals.Count > 0 ? FolderSigns(r).Concat(notes.Where(n => n.Run == null).SelectMany(n => n.Notes)).ToList() : new List<string>();
+                var firstSigns = signals.Count > 0 ? FirstLineSigns(r, notes) : new List<string>();
                 var extra = $"script runtime {kind}" + (containers.Count + hidden.Count > shown.Count ? $", {containers.Count + hidden.Count} script and hidden files" : "")
                             + (firstSigns.Count > 0 ? "; " + string.Join("; ", firstSigns) : "");
                 var first = events.OrderBy(e => e.T).First();
                 c.Events.Add(new TEvent
                 {
                     T = first.T, Src = first.Src, Path = first.Path, Extra = extra, NoHash = first.NoHash,
-                    Flags = signals.Count > 0 ? new List<string> { RuntimeFlag } : null, More = more,
+                    // flagged only with signs of its own: the others are on their run's line
+                    Flags = firstSigns.Count > 0 ? new List<string> { RuntimeFlag } : null, More = more,
                 });
-                foreach (var n in notes.Where(n => n.Run != null))
+                foreach (var (runT, runNotes, flagged) in RunLines(notes))
                 {
-                    var run = runs.First(e => e.T == n.Run);
+                    var run = runs.First(e => e.T == runT);
                     c.Events.Add(new TEvent
                     {
-                        T = run.T, Src = run.Src, Path = run.Path, Extra = string.Join("; ", n.Notes), NoHash = run.NoHash, Pid = run.Pid,
-                        Flags = new List<string> { RuntimeFlag },
+                        T = run.T, Src = run.Src, Path = run.Path, Extra = string.Join("; ", runNotes), NoHash = run.NoHash, Pid = run.Pid,
+                        Flags = flagged ? new List<string> { RuntimeFlag } : null,
                     });
                 }
             }

@@ -122,8 +122,27 @@ namespace Spor
             return Regex.IsMatch(args, @"%(appdata|localappdata|temp|tmp|userprofile|public|programdata)%", RegexOptions.IgnoreCase);
         }
 
-        /// <summary>A drive path in arguments (group 1): up to a quote, a comma, the next option or the end.</summary>
-        static readonly Regex ArgPath = new Regex(@"(?<![\w])([a-z]:\\[^""<>|*?\r\n]+?)(?=""|,|\s+[-/]|\s*$)", RegexOptions.IgnoreCase);
+        /// <summary>
+        /// A drive path in arguments (group 1): up to a quote, a comma, the next option, a blank after a program or script name
+        /// ("C:\x\a.exe arg1": the program, not its arguments) or the end.
+        /// </summary>
+        static readonly Regex ArgPath = new Regex(
+            @"(?<![\w])([a-z]:\\[^""<>|*?\r\n]+?)(?=""|,|\s+[-/]|\s*$|(?<=\.(?:exe|com|scr|pif|cpl|dll|msi|bat|cmd|ps1|vbs|vbe|js|jse|wsf|hta|py|pyw|jar))\s)",
+            RegexOptions.IgnoreCase);
+
+        /// <summary>cmd's "/c call &lt;target&gt;" (group 1 quoted, group 2 bare): what call runs.</summary>
+        static readonly Regex CmdCallTarget = new Regex(@"[/-]c\s+""?call\s+(?:""([^""]+)""|(\S+))", RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// (pure) A launcher's target that runs as a process of its own: a program, or a script another program runs (wscript,
+        /// powershell, mshta, ...). Not a batch file run by cmd itself (cmd /c call build.bat starts no process).
+        /// </summary>
+        public static bool LaunchesProcess(string launcher, string target)
+        {
+            if (Regex.IsMatch(target ?? "", @"\.(exe|com|scr|pif)$", O)) return true;
+            if (Regex.IsMatch(target ?? "", @"\.(bat|cmd)$", O)) return !(launcher ?? "").EndsWith("\\cmd.exe", System.StringComparison.OrdinalIgnoreCase);
+            return Modules.Files.Script.IsMatch(target ?? "");
+        }
 
         /// <summary>Programs, scripts and shortcuts: the files SmartScreen and the "open file" warning check for Mark of the Web.</summary>
         public static bool ProgramFile(string p) =>
@@ -200,13 +219,22 @@ namespace Spor
         /// <summary>
         /// (pure) The first file or folder outside Windows and Program Files that a proxy-execution launcher (ProxyLaunch) is pointed at:
         /// forfiles /p &lt;folder in Temp&gt; /c ..., pcalua -a &lt;program in Downloads&gt;, conhost --headless &lt;path&gt;, cmd /c call &lt;program&gt;.
-        /// Null if none. Not the shell (explorer.exe): its path arguments mostly open folders and documents ("show in folder"), and a
-        /// program it starts is !proxy-exec on its own line.
+        /// For cmd only what call runs (the first token after it), not the arguments that program gets. Null if none. Not the shell
+        /// (explorer.exe): its path arguments mostly open folders and documents ("show in folder"), and a program it starts is
+        /// !proxy-exec on its own line.
         /// </summary>
         public static string ProxyLaunchTarget(string image, string commandLine)
         {
             if (!ProxyLaunch(image, commandLine) || image.EndsWith("\\explorer.exe", System.StringComparison.OrdinalIgnoreCase)) return null;
-            foreach (Match m in ArgPath.Matches(LauncherArgs(commandLine, image.Substring(image.LastIndexOf('\\') + 1))))
+            var name = image.Substring(image.LastIndexOf('\\') + 1);
+            var args = LauncherArgs(commandLine, name);
+            if (name.Equals("cmd.exe", System.StringComparison.OrdinalIgnoreCase))
+            {
+                var m = CmdCallTarget.Match(args);
+                var target = m.Success ? (m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value).Trim() : "";
+                return DrivePath.IsMatch(target) && !InTrustedLocation(target) ? target : null;
+            }
+            foreach (Match m in ArgPath.Matches(args))
                 if (!InTrustedLocation(m.Groups[1].Value)) return m.Groups[1].Value;
             return null;
         }
@@ -307,7 +335,7 @@ namespace Spor
             "!log-syntax-in-name = the path contains \" => \" or a status in brackets, made to look like log text",
             "!motw-removed = a program wrote Zone.Identifier with ZoneId 0-2 (local/intranet/trusted) and no URL on a new program file, which turns off SmartScreen and download warnings",
             "!sideload = unsigned DLL next to a validly signed program that imports it (DLL side-loading); the line names the program and any proxy evidence",
-            "!proxy-exec = started through a Windows program that launches programs for others (forfiles /c, pcalua -a, conhost --headless, cmd /c call, ...), from outside Windows and Program Files; on the launcher's own 4688/SYSMON line: pointed at a program or script outside them",
+            "!proxy-exec = started through a Windows program that launches programs for others (forfiles /c, pcalua -a, conhost --headless, cmd /c call, ...), from outside Windows and Program Files; on the launcher's own 4688/SYSMON line: pointed at a program outside them that runs as its own process (not a batch file cmd runs)",
             "!padded = new file inflated with one repeated byte against scanner and sandbox size limits: a program (its overlay) or data next to a new program",
             "!runtime-loader = new launcher of a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua) with loader signs in its folder: padded or encrypted random-named data, a hidden file next to its scripts, a program it started, or a !motw-removed file near a run",
             "!known-malware = matches a pattern of a known malware family (Autodetect, resources/autodetect.txt); the line names the family",

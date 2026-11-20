@@ -87,5 +87,53 @@ namespace Spor.Tests
             // a different parent is kept
             Assert.Equal(new[] { "running, pid 1, parent a.exe", "parent b.exe" }, Scanner.MergeDetails(new[] { "running, pid 1, parent a.exe", "parent b.exe" }));
         }
+
+        [Fact]
+        public void PrefetchAndBamGoToTheNearestProcess()
+        {
+            // in module order: ExecEvidence adds BAM and PF before the 4688 events, Processes comes later
+            var lines = Scanner.Lines(new[]
+            {
+                Ev(94, "BAM", null), Ev(93, "PF", null),
+                Ev(0, "4688", 7696, "parent forfiles.exe", "!proxy-exec"), Ev(94, "4688", 7448, "parent svchost.exe"),
+                Ev(0, "PROC", 7696, "running, pid 7696, parent forfiles.exe"), Ev(94, "PROC", 7448),
+            });
+            Assert.Equal(2, lines.Count);
+            Assert.Equal(new[] { "4688", "PROC" }, lines[0].Select(e => e.Src));
+            Assert.Equal(new[] { "4688", "BAM", "PF", "PROC" }, lines[1].Select(e => e.Src).OrderBy(s => s));
+        }
+
+        [Fact]
+        public void AnSrumHourJoinsItsRun()
+        {
+            // the lab: NEW 03:33:50, PROC 03:33:52, SRUM's hour bucket 03:54:00; !known-malware on all of them
+            var t = new DateTime(2026, 11, 20, 3, 33, 50, DateTimeKind.Utc);
+            TEvent At(DateTime when, string src, int? pid) => new TEvent { T = when, Src = src, Path = Cmd, Pid = pid, Flags = new List<string> { Autodetect.Flag } };
+            var lines = Scanner.Lines(new[] { At(t, "NEW", null), At(t.AddSeconds(2), "PROC", 5), At(t.AddMinutes(20).AddSeconds(10), "SRU", null) });
+            Assert.Single(lines);
+            Assert.Equal(t, Scanner.LineTime(lines[0]));
+            // more than an hour away, or hours seen by SRUM alone: lines of their own, as before
+            Assert.Equal(2, Scanner.Lines(new[] { At(t, "NEW", null), At(t.AddMinutes(90), "SRU", null) }).Count);
+            Assert.Equal(2, Scanner.Lines(new[] { At(t, "SRU", null), At(t.AddHours(1), "SRU", null) }).Count);
+        }
+
+        [Fact]
+        public void AFlagInTheFileNameDatesTheLineAtItsFirstEvent()
+        {
+            const string Lure = @"C:\Users\anna\Downloads\invoice.pdf.exe";
+            var line = new List<TEvent> { new TEvent { T = At, Src = "NEW", Path = Lure }, new TEvent { T = At.AddSeconds(50), Src = "BAM", Path = Lure } };
+            Assert.Equal(At, Scanner.LineTime(line));
+        }
+
+        [Fact]
+        public void TheParentIsComparedWithinOneProcessIgnoringCase()
+        {
+            // PROC writes "Explorer.EXE", 4688 "explorer.exe": one process, one parent
+            Assert.Equal(new[] { "running, pid 1, parent Explorer.EXE", "command line a" },
+                         Scanner.MergeDetails(new (int?, string)[] { (1, "running, pid 1, parent Explorer.EXE"), (1, "parent explorer.exe; command line a") }));
+            // another process's parent stays: pid 6 had its own command line
+            Assert.Equal(new[] { "running, pid 5, parent cmd.exe", "parent cmd.exe", "command line x" },
+                         Scanner.MergeDetails(new (int?, string)[] { (5, "running, pid 5, parent cmd.exe"), (6, "parent cmd.exe; command line x") }));
+        }
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Xunit;
 
@@ -120,6 +121,45 @@ namespace Spor.Tests
             // no notes for a folder that is not new
             r.New = false;
             Assert.Empty(Correlate.RunNotes(r));
+        }
+
+        [Fact]
+        public void ThingsBelongToTheRunBeforeThem()
+        {
+            var at = new DateTime(2026, 11, 20, 10, 0, 0, DateTimeKind.Utc);
+            var runs = new[] { at, at.AddMinutes(3) };
+            // written 100 s after the first run, 80 s before the second: the first run's
+            Assert.Equal(at, Correlate.RunOf(runs, at.AddSeconds(100), 120));
+            // before every run: the nearest
+            Assert.Equal(at, Correlate.RunOf(runs, at.AddSeconds(-30), 120));
+            // only runs within the window when one is given
+            Assert.Equal(at.AddMinutes(3), Correlate.RunOf(runs, at.AddMinutes(4).AddSeconds(30), 120));
+            Assert.Null(Correlate.RunOf(runs, at.AddMinutes(10), 120));
+            Assert.Equal(at.AddMinutes(3), Correlate.RunOf(runs, at.AddMinutes(10)));
+        }
+
+        [Fact]
+        public void OnlyTheFirstAndTheLastRunAreFlagged()
+        {
+            // a loader task every 15 minutes for a week: two flagged run lines, the rest counted on the timeline
+            var at = new DateTime(2026, 11, 13, 0, 0, 0, DateTimeKind.Utc);
+            var notes = Enumerable.Range(0, 670).Select(i => ((DateTime?)at.AddMinutes(15 * i), new List<string> { "started forfiles.exe" })).ToList();
+            notes.Insert(0, (null, new List<string> { "started y.exe" }));
+            var lines = Correlate.RunLines(notes);
+            Assert.Equal(670, lines.Count);
+            Assert.Equal(new[] { at, at.AddMinutes(15 * 669) }, lines.Where(l => l.Flagged).Select(l => l.Run));
+        }
+
+        [Fact]
+        public void TheFirstLineIsFlaggedOnlyWithSignsOfItsOwn()
+        {
+            // a lure downloaded at 10:00, its first run at 10:30 wrote a !motw-removed file: the sign is the run's
+            var r = Folder(true);
+            r.MotwNearRun.Add((@"C:\Users\anna\AppData\Local\Temp\tmp-1-a\x.exe", Run1));
+            Assert.NotEmpty(Correlate.Signals(r));
+            Assert.Empty(Correlate.FirstLineSigns(r, Correlate.RunNotes(r)));
+            r.Padded.Add(Dir + @"data\libpython.rpmc");
+            Assert.Equal(new[] { "padded file " + Dir + @"data\libpython.rpmc" }, Correlate.FirstLineSigns(r, Correlate.RunNotes(r)));
         }
 
         [Fact]

@@ -217,52 +217,104 @@ namespace Spor
         static bool StrongEvent(TEvent e) =>
             Rules.Strong(Rules.Flags(e.Path)).Count > 0 || (e.Flags != null && Rules.Strong(e.Flags).Any(f => f != Autodetect.Flag));
 
+        /// <summary>Sources whose time is an hour bucket, not when it happened (SRUM): they join the line of the same run.</summary>
+        static readonly HashSet<string> HourlySources = new HashSet<string> { "SRU" };
+
         /// <summary>
         /// (pure) The timeline lines of one file: an event within 2 minutes of the previous one joins its line (one program start, seen by
         /// several sources). Different processes stay apart when flagged: an event with a strong flag and a PID the line does not have
-        /// starts a new line, and so does an event with another PID after a line with a strong flag.
+        /// starts a new line, and so does an event with another PID after a line with a strong flag. Events without a PID (Prefetch, BAM,
+        /// file events) join the line whose nearest event is closest in time, so they are not given to another process's line. An hour
+        /// bucket (SRUM) joins the nearest line within an hour: it is the same run, not a later one.
         /// </summary>
         internal static List<List<TEvent>> Lines(IEnumerable<TEvent> events)
         {
-            var cl = new List<List<TEvent>>();
-            var pids = new HashSet<int>();   // of the current line
-            bool strong = false;
+            var all = events.OrderBy(e => e.T).ToList();
+            var lines = new List<List<TEvent>>();
+            foreach (var chain in Chains(all.Where(e => !HourlySources.Contains(e.Src ?? ""))))
+                lines.AddRange(SplitByProcess(chain));
+            var hourly = new List<TEvent>();
+            foreach (var e in all.Where(e => HourlySources.Contains(e.Src ?? "")))
+            {
+                var near = lines.Select(l => (Line: l, Gap: l.Min(x => Math.Abs((x.T - e.T).TotalSeconds))))
+                                .Where(x => x.Gap <= 3600).OrderBy(x => x.Gap).Select(x => x.Line).FirstOrDefault();
+                if (near != null) near.Add(e);
+                else hourly.Add(e);
+            }
+            lines.AddRange(Chains(hourly));   // hour buckets of a file seen by nothing else: as before
+            // in time order; events at the same time keep their order (OrderBy is stable)
+            return lines.Select(l => l.OrderBy(e => e.T).ToList()).OrderBy(l => l[0].T).ToList();
+        }
+
+        /// <summary>Events no more than 2 minutes apart, in time order.</summary>
+        static List<List<TEvent>> Chains(IEnumerable<TEvent> events)
+        {
+            var chains = new List<List<TEvent>>();
             foreach (var e in events.OrderBy(e => e.T))
             {
+                if (chains.Count == 0 || (e.T - chains[chains.Count - 1].Last().T).TotalSeconds > 120) chains.Add(new List<TEvent>());
+                chains[chains.Count - 1].Add(e);
+            }
+            return chains;
+        }
+
+        /// <summary>One chain's lines: split by process (events with a PID), then each event without a PID to the nearest line.</summary>
+        static List<List<TEvent>> SplitByProcess(List<TEvent> chain)
+        {
+            var lines = new List<List<TEvent>>();
+            var pids = new HashSet<int>();   // of the current line
+            bool strong = false;
+            foreach (var e in chain.Where(e => e.Pid != null))
+            {
                 bool s = StrongEvent(e);
-                if (cl.Count == 0 || (e.T - cl[cl.Count - 1].Last().T).TotalSeconds > 120
-                    || (e.Pid is int pid && pids.Count > 0 && !pids.Contains(pid) && (s || strong)))
+                if (lines.Count == 0 || (!pids.Contains(e.Pid.Value) && (s || strong)))
                 {
-                    cl.Add(new List<TEvent>());
+                    lines.Add(new List<TEvent>());
                     pids.Clear();
                     strong = false;
                 }
-                cl[cl.Count - 1].Add(e);
-                if (e.Pid is int p) pids.Add(p);
+                lines[lines.Count - 1].Add(e);
+                pids.Add(e.Pid.Value);
                 strong |= s;
             }
-            return cl;
+            if (lines.Count <= 1) return new List<List<TEvent>> { chain.ToList() };
+            foreach (var e in chain.Where(e => e.Pid == null))
+                lines.OrderBy(l => l.Min(x => Math.Abs((x.T - e.T).TotalSeconds))).First().Add(e);
+            return lines;
         }
 
-        /// <summary>(pure) A line's time: its latest event; on a line with flagged events (strong flags), the first of them (when it happened).</summary>
-        internal static DateTime LineTime(List<TEvent> line) =>
-            line.Where(e => e.Flags != null && Rules.Strong(e.Flags).Count > 0).Select(e => (DateTime?)e.T).Min() ?? line.Max(e => e.T);
+        /// <summary>
+        /// (pure) A line's time: its latest event; on a flagged line (a strong flag on an event, !known-malware included, or in the file
+        /// name), the first flagged event (when it happened); for a flag in the file name that is the line's first event.
+        /// </summary>
+        internal static DateTime LineTime(List<TEvent> line)
+        {
+            if (line.Any(e => Rules.Strong(Rules.Flags(e.Path)).Count > 0)) return line.Min(e => e.T);
+            return line.Where(e => e.Flags != null && Rules.Strong(e.Flags).Count > 0).Select(e => (DateTime?)e.T).Min() ?? line.Max(e => e.T);
+        }
+
+        /// <summary>(pure) MergeDetails of events without a PID (all of one process).</summary>
+        internal static List<string> MergeDetails(IEnumerable<string> extras) => MergeDetails(extras.Select(x => ((int?)null, x)));
 
         /// <summary>
-        /// (pure) The details of merged events, in order, split at "; ". A part is left out when an earlier event gave it already, or when
-        /// another event has a part that ends with ", " and it: "parent cmd.exe" (4688) next to "running, pid 5, parent cmd.exe" (PROC).
+        /// (pure) The details of merged events (PID, details), in order, split at "; ". A part is left out when an earlier event gave it
+        /// already, or when another event of the same process (same PID, or both without one) has a part that ends with ", " and it:
+        /// "parent cmd.exe" (4688) next to "running, pid 5, parent cmd.exe" (PROC). Case does not matter (Explorer.EXE, explorer.exe).
         /// Parts of one event are kept as they are (a command line can contain "; ").
         /// </summary>
-        internal static List<string> MergeDetails(IEnumerable<string> extras)
+        internal static List<string> MergeDetails(IEnumerable<(int? Pid, string Extra)> events)
         {
-            var ex = extras.Where(s => !string.IsNullOrEmpty(s)).Distinct().Select(s => s.Split(new[] { "; " }, StringSplitOptions.None)).ToList();
+            var ex = events.Where(e => !string.IsNullOrEmpty(e.Extra)).Distinct()
+                           .Select(e => (e.Pid, Parts: e.Extra.Split(new[] { "; " }, StringSplitOptions.None))).ToList();
             var res = new List<string>();
             for (int i = 0; i < ex.Count; i++)
-                foreach (var p in ex[i])
+                foreach (var p in ex[i].Parts)
                 {
                     bool dup = false;
                     for (int j = 0; j < ex.Count && !dup; j++)
-                        if (j != i) dup = ex[j].Any(q => (j < i && q == p) || q.EndsWith(", " + p, StringComparison.Ordinal));
+                        if (j != i)
+                            dup = ex[j].Parts.Any(q => (j < i && string.Equals(q, p, StringComparison.OrdinalIgnoreCase))
+                                                       || (ex[j].Pid == ex[i].Pid && q.EndsWith(", " + p, StringComparison.OrdinalIgnoreCase)));
                     if (!dup) res.Add(p);
                 }
             return res;
@@ -314,7 +366,7 @@ namespace Spor
                 foreach (var x in cl)
                 {
                     var path = x.OrderByDescending(e => e.T).First().Path;
-                    var ex = MergeDetails(x.Select(e => e.Extra));
+                    var ex = MergeDetails(x.Select(e => (e.Pid, e.Extra)));
                     ex.InsertRange(0, x.Where(e => e.Known != null).Select(e => e.Known).Distinct());   // the family first
                     if (TimeMeaning(x.Select(e => e.Src)) is string tm) ex.Add(tm);   // last, so the other details keep their place
                     bool last = x == cl[cl.Count - 1];
@@ -350,7 +402,7 @@ namespace Spor
             log.Heading($"TIMELINE - last {c.Opt.Days} days, oldest first");
             log.Comment("Sources [PF AM ...], status [gone ...] and flags <==== !...: see LEGEND at the end of the log.");
             log.Comment("A file seen by several sources within 2 minutes is one line. A file seen many times: the first and the last time.");
-            log.Comment("Processes of one program with different PIDs get their own lines when one is flagged. A line with flagged events has the time of its first flagged event, others the latest.");
+            log.Comment("Processes of one program with different PIDs get their own lines when one is flagged; Prefetch, BAM and file events go to the nearest of them, an SRUM hour to its run. A flagged line (a flag on an event, !known-malware included, or in the file name) has the time of its first flagged event, others the latest.");
             var hiddenParts = new List<string>();
             if (defUpdates > 0) hiddenParts.Add($"{defUpdates} runs of Defender update packages (AM_Delta_Patch_*.exe)");
             if (signedHidden.Count > 0)

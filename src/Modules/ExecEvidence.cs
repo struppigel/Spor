@@ -208,7 +208,42 @@ namespace Spor.Modules
             c.Out.Hidden(qk, "entries");
         }
 
-        sealed class Creation { public DateTime T; public string Src, Pid, ParentPid, Image, Parent, Cmd, ParentCmd; }
+        internal sealed class Creation { public DateTime T; public string Src, Pid, ParentPid, Image, Parent, Cmd, ParentCmd; }
+
+        /// <summary>
+        /// (pure) The first pass over process creation events: the proxy-execution events (a launcher among the creating processes, up to
+        /// 4 levels, or a launcher itself pointed at a program outside Windows and Program Files that runs as a process of its own:
+        /// cmd /c call &lt;exe&gt;, pcalua -a, ...), and their creators up to 4 levels, which the timeline keeps too. `parentOf` finds an
+        /// event's creating event, `image` gives an event's program as a long path.
+        /// </summary>
+        internal static (HashSet<Creation> Proxy, HashSet<Creation> Creators) ProxyChains(
+            IEnumerable<Creation> events, Func<Creation, Creation> parentOf, Func<string, string> image)
+        {
+            var proxies = new HashSet<Creation>();
+            var creators = new HashSet<Creation>();
+            foreach (var x in events)
+            {
+                var img = image(x.Image);
+                var target = Rules.ProxyLaunchTarget(img, x.Cmd);
+                bool proxy = target != null && Rules.LaunchesProcess(img, target);
+                var cur = x;
+                for (int i = 0; i < 4 && !proxy; i++)
+                {
+                    var p = parentOf(cur);
+                    var pImage = p?.Image ?? (i == 0 ? x.Parent : null);
+                    var pCmd = p?.Cmd ?? (i == 0 ? x.ParentCmd : null);
+                    if (string.IsNullOrEmpty(pImage)) break;
+                    proxy = Rules.ProxyExec(image(pImage), pCmd, img);
+                    if (p == null) break;
+                    cur = p;
+                }
+                if (!proxy) continue;
+                proxies.Add(x);
+                cur = x;
+                for (int i = 0; i < 4 && (cur = parentOf(cur)) != null; i++) creators.Add(cur);
+            }
+            return (proxies, creators);
+        }
 
         /// <summary>A PID from an event: 4688 writes hex ("0x1d4"), Sysmon decimal. Null if neither.</summary>
         internal static int? Pid(string s)
@@ -276,35 +311,14 @@ namespace Spor.Modules
             int kept = 0;
             foreach (var x in list.Where(x => !string.IsNullOrEmpty(x.Image)))
                 if (Pid(x.Pid) is int pid) c.ProcessStarts.Add((pid, x.T, c.Long(x.Image)));
-            // first pass: proxy execution, from a launcher among the creating processes (up to 4 levels) or by a launcher itself pointed
-            // at a program outside Windows and Program Files (cmd /c call, pcalua -a, ...); the creators of these events are kept too.
-            // A launcher pointed at a folder there (forfiles /p) is kept by ProcessEventKept, unflagged: its program is flagged on its own line.
-            var events = list.Where(x => !string.IsNullOrEmpty(x.Image) && x.T >= c.Since)
-                             .Select(x => (X: x, Image: c.Long(x.Image), Proxy: false)).ToList();
-            var creators = new HashSet<Creation>();
-            for (int k = 0; k < events.Count; k++)
+            // first pass (ProxyChains): proxy execution and the creators of those events, which are kept too. A launcher pointed at a
+            // folder (forfiles /p) or a batch file (cmd /c call x.bat) is kept by ProcessEventKept, unflagged.
+            var creations = list.Where(x => !string.IsNullOrEmpty(x.Image) && x.T >= c.Since).ToList();
+            var (proxies, creators) = ProxyChains(creations, ParentOf, c.Long);
+            foreach (var x in creations)
             {
-                var (x, image, _) = events[k];
-                var target = Rules.ProxyLaunchTarget(image, x.Cmd);
-                bool proxy = target != null && Rules.ProgramFile(target);
-                var cur = x;
-                for (int i = 0; i < 4 && !proxy; i++)
-                {
-                    var p = ParentOf(cur);
-                    var pImage = p?.Image ?? (i == 0 ? x.Parent : null);
-                    var pCmd = p?.Cmd ?? (i == 0 ? x.ParentCmd : null);
-                    if (string.IsNullOrEmpty(pImage)) break;
-                    proxy = Rules.ProxyExec(pImage, pCmd, image);
-                    if (p == null) break;
-                    cur = p;
-                }
-                if (!proxy) continue;
-                events[k] = (x, image, true);
-                cur = x;
-                for (int i = 0; i < 4 && (cur = ParentOf(cur)) != null; i++) creators.Add(cur);
-            }
-            foreach (var (x, image, proxy) in events)
-            {
+                var image = c.Long(x.Image);
+                bool proxy = proxies.Contains(x);
                 var parent = !string.IsNullOrEmpty(x.Parent) ? c.Long(x.Parent) : ParentOf(x)?.Image;
                 if (!string.IsNullOrEmpty(parent) && Rules.DrivePath.IsMatch(parent) && !Rules.InTrustedLocation(parent))
                     c.Launches.Add((c.RealCase(parent), c.RealCase(image), x.Cmd, x.T));
