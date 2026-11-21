@@ -100,7 +100,8 @@ namespace Spor
         /// Tab-separated rows: kind, match, family, note, example, FenrisHub rule ids. match: "=text" (the whole value),
         /// "*text" (part of it) or "/regex/ key=text" (key: a lowercase literal every match contains; without a key only for the kinds
         /// in FewValues). '#' lines are comments.
-        /// A domain row (=) also matches its subdomains, and is searched in command lines too.
+        /// A domain row (=) also matches its subdomains, and is searched in command lines too. The built-in file has no domain rows
+        /// (malware domains in Spor.exe make antivirus engines flag it); they work in Spor.autodetect.txt.
         /// </summary>
         internal static Db Parse(string text)
         {

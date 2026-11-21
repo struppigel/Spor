@@ -17,7 +17,7 @@ namespace Spor.Tests
         public void TheBuiltInDatabaseLoadsWithoutErrors()
         {
             Assert.Empty(Db.Errors);
-            Assert.True(Db.Patterns.Count > 150, $"only {Db.Patterns.Count} rows");
+            Assert.True(Db.Patterns.Count > 130, $"only {Db.Patterns.Count} rows");
         }
 
         [Fact]
@@ -33,6 +33,25 @@ namespace Spor.Tests
         {
             var bad = Db.Patterns.Where(p => p.Literal != null && !p.Example.ToLowerInvariant().Contains(p.Literal)
                                              && !(p.Kind == "domain" && p.Op == '=')).Select(p => p.ToString()).ToList();
+            Assert.Empty(bad);
+        }
+
+        /// <summary>
+        /// The database is embedded in Spor.exe: malware domains in the binary make antivirus engines flag Spor (VirusTotal). So no
+        /// domain rows, and no host names in any column except example.com (domains go only into Spor.autodetect.txt).
+        /// </summary>
+        [Fact]
+        public void TheBuiltInDatabaseHasNoDomains()
+        {
+            Assert.Empty(Db.Patterns.Where(p => p.Kind == "domain").Select(p => p.ToString()));
+            var host = new System.Text.RegularExpressions.Regex(
+                @"(?<![\w.\\-])(?:[a-z0-9-]+\.)+(?:com|net|org|info|pro|biz|io|cc|vg|gl|in|top|xyz|ru|su|me|co|to|ly|site|online|live|shop|app|dev)(?![\w-])",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var bad = new List<string>();
+            foreach (var line in Autodetect.Embedded().Split('\n'))
+                foreach (System.Text.RegularExpressions.Match m in host.Matches(line))
+                    if (!m.Value.Equals("example.com", StringComparison.OrdinalIgnoreCase) && !m.Value.EndsWith(".example.com", StringComparison.OrdinalIgnoreCase))
+                        bad.Add(m.Value + "  in: " + line.Trim());
             Assert.Empty(bad);
         }
 
@@ -55,8 +74,7 @@ namespace Spor.Tests
         [InlineData("task", @"\SearchIndexer", "PavinLoader")]
         [InlineData("software", "Lighting Control Agent | 3.1 | Corsair Components Inc.", "RenLoader")]
         [InlineData("software", "DxQMWkyuwv hVZ6WPEG | 4.8.1858 | h3bJF3rjJ", "LegionLoader")]
-        [InlineData("domain", "cdn.snconor.vg", "CountLoader")]
-        [InlineData("cmd", @"C:\WINDOWS\system32\conhost.exe --headless mshta.exe https://snconor.vg", "CountLoader")]
+        [InlineData("cmd", @"C:\WINDOWS\system32\conhost.exe --headless mshta.exe https://example.com/x", "mshta loader")]
         [InlineData("company", "valid; signer Lupus Tech Limited; thumbprint AB", "TamperedChef")]
         [InlineData("service", "u234944", "Coinminer")]
         [InlineData("run", "BuilderBeta", "RenLoader")]
@@ -178,7 +196,36 @@ namespace Spor.Tests
         [InlineData(@"C:\Windows\System32\svc.dll (svchost DLL)", @"C:\Windows\System32\svc.dll")]
         [InlineData(@"C:\a\b.exe  !lolbin", @"C:\a\b.exe")]
         [InlineData("author WINDOWS10\\richa", null)]
+        // 0.7.0 sub-lines: Defender file:, Store app folder: (paths, matched); from: URLs, files: lists, key: registry keys (not paths)
+        [InlineData(@"C:\Users\anna\Downloads\tmp-39304-wscJmiyovbGx\Setup.exe", @"C:\Users\anna\Downloads\tmp-39304-wscJmiyovbGx\Setup.exe")]
+        [InlineData(@"C:\Program Files\WindowsApps\App_1.0.0.0_x64__8wekyb3d8bbwe", @"C:\Program Files\WindowsApps\App_1.0.0.0_x64__8wekyb3d8bbwe")]
+        [InlineData("https://example.com/setup.exe", null)]
+        [InlineData("UbisoftConnect.exe, upc.exe, libcef.dll", null)]
+        [InlineData(@"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{3217B6C1-7F42-424A-B5FB-BB61FE3BEFE5}", null)]
         public void PathOfSubLineValues(string value, string path) => Assert.Equal(path, Autodetect.PathOf(value));
+
+        /// <summary>
+        /// Since 0.7.0 a Defender detection's files are file: sub-lines of its DEF event (no event path): Autodetect matches them, and
+        /// as the file has no event of its own the hit is a SUMMARY finding at the detection's time. URL sub-lines are not paths.
+        /// </summary>
+        [Fact]
+        public void PathsOnSubLinesOfTextEventsAreMatched()
+        {
+            var at = DateTime.UtcNow.AddHours(-1);
+            var file = @"C:\Users\anna\AppData\Local\Temp\tmp-20656-vmkfjqTWAOFi\ehyISWlPN.exe";
+            using (var c = new Ctx(new Options()))
+            {
+                c.Event(at, "DEF", null, text: "Defender detected: Trojan:Win32/Example", more: new List<(string Key, string Value)> { ("file", file) });
+                c.Event(at, "NEW", @"C:\Users\anna\Downloads\a.zip", more: new List<(string Key, string Value)> { ("from", "https://example.com/tmp-20656-vmkfjqTWAOFi/ehyISWlPN.exe") });
+                Assert.True(Autodetect.Run(c) >= 1);
+                var hits = c.Findings.Where(f => f.Text.Contains(Autodetect.Flag)).ToList();
+                Assert.Single(hits);
+                Assert.Contains("RenLoader", hits[0].Text);
+                Assert.Contains("ehyISWlPN.exe", hits[0].Text);
+                Assert.Equal(at, hits[0].T);
+                Assert.All(c.Events, e => Assert.Null(e.Known));   // no event has the file as its path: nothing marked
+            }
+        }
 
         [Fact]
         public void AhoCorasickFindsWhatIndexOfFinds()

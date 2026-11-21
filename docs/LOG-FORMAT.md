@@ -135,7 +135,7 @@ Some sections have details that identify an entry. Every detail is left out if i
 | TIMELINE, NEW, AM and STP folder lines | `    files: a, b, c` | The names of a folder's files, about 150 characters per line, cut between names. AMCACHE inventory scans: `    files: folder\ => a, b, c`, every line with its folder. |
 | TIMELINE, Run key changes (`AUT`)    | `    now: a, b, c` | The values the key has now. |
 | TIMESTOMPING                         | `B`, `M` | Creation and modification time of the file now, with 7 fraction digits; most suspicious first. |
-| SOFTWARE, Windows Installer          | `name` | The product name alone. The item contains name and version. |
+| SOFTWARE, Windows Installer          | `name` | The product name alone. The item contains name, version and manufacturer (`installed: Hamachi 2.4.0.79 (LogMeIn, Inc.)`), read from the event's data, so it reads the same on every Windows language. A status other than 0 follows as `, status 1602 (failed)`. |
 | SOFTWARE, Windows Installer          | `product code` | The MSI product code `{GUID}`. For an MSI install this is also the name of its Uninstall subkey. |
 | SOFTWARE, Store and MSIX apps        | `folder` | The install folder of the package (`C:\Program Files\WindowsApps\<package full name>`). For a package that is gone, the folder it had. |
 

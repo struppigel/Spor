@@ -168,7 +168,7 @@ If the same file was in folders that only differ in numbers (version folders, da
 | `!sideload` | an unsigned DLL next to a signed program that imports it | High. The DLL line names the program; `proxy DLL, forwards to …` or `exports forwarded: N of M` means the DLL passes the real functions on to the original so the program keeps working. Remove the DLL, the program and the folder; the signed program is only the host. |
 | `!proxy-exec` | a running program outside Windows and Program Files was started through `forfiles /c`, `cmd /c call`, `pcalua -a`, `conhost --headless`, … | High, used to hide the real parent |
 | `!padded` | a new file is hundreds of MB of one repeated byte | High for programs and for data next to a new program: made too big for scanners and sandboxes. |
-| `!runtime-loader` | a new program that ships a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua), with loader signs in its folder | High. The code is in the data files listed as `script:` lines, not in the program. |
+| `!runtime-loader` | a new program that ships a script runtime (Python/Ren'Py, AutoIt, Node.js, Electron unless signed by a well-known publisher, Java, Lua), with loader signs in its folder | High. The code is in the data files listed as `script:` lines, not in the program. |
 | `!known-malware` | the item matches a pattern of a known malware family (Autodetect); the line names the family | High. The patterns are curated from confirmed cases; still read the line: a row can be wrong. |
 | `!renamed-program` | **hint**: a signed program under a random-looking or lure name that is not its original name | **Not on its own.** It goes to SUMMARY only with a strong flag on the same file or in the same folder, e.g. as the host of a `!sideload` DLL. |
 | `!usb-worm-lnk` | a shortcut on a USB drive that starts cmd/wscript/rundll32/..., points into a hidden folder, or is named like the drive or a hidden folder | High. The `worm signs:` line under it says why. |
@@ -186,6 +186,8 @@ If the same file was in folders that only differ in numbers (version folders, da
 With `whitelist on`, Spor hides what is almost always harmless, so that the log stays readable. A folder alone is never enough: a hidden program must also be validly signed. LOLBins, interpreters like python or node, and flagged files are never hidden.
 
 Hidden files are counted, e.g. in `(Hidden: …)` lines in the timeline and in `--- Hidden: known-noise locations ---` at the end of a section.
+
+The well-known publishers whose valid signature counts as known good are listed in `resources/publishers.txt`. To try another signer without a new build, put a `Spor.publishers.txt` next to `Spor.exe`: it replaces the built-in list, and the header's `Options` line then ends with `publishers from <path>`.
 
 Ask for a run with the whitelist off (uncheck *Whitelist*, or `-nowhitelist`) if:
 

