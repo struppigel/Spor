@@ -76,7 +76,7 @@ namespace Spor.Modules
                                last.HasValue ? Log.T(last) : hasProfile ? "-" : "no profile", u.full_name, Sid(msid, u.name, u.user_id));
                         if (recent && enabled) c.Event(pwSet, "USR", null, text: $"password of {(admin ? "admin" : "user")} account {u.name} set (or account created)");
                         if (fl.Count > 0 || (recent && enabled && admin && !builtin.Contains(u.user_id) && !hasProfile && u.password_age > 0))
-                            c.Find(pwSet, $"account {u.name} ({(admin ? "admin" : "user")}){Rules.FlagText(fl)}, password set {pwSet:yyyy-MM-dd HH:mm}{(hasProfile ? "" : ", never signed in")}", "password set");
+                            c.Find(pwSet, $"account {u.name} ({(admin ? "admin" : "user")}), password set {pwSet:yyyy-MM-dd HH:mm}{(hasProfile ? "" : ", never signed in")}", null, fl);
                     }
                 }
                 finally { NetApiBufferFree(buf); }

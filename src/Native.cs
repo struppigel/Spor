@@ -10,6 +10,26 @@ namespace Spor
     /// <summary>Windows APIs that .NET does not wrap.</summary>
     static class Native
     {
+        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
+        static extern int SHLoadIndirectString(string source, StringBuilder outBuf, int cch, IntPtr reserved);
+
+        /// <summary>
+        /// A resource reference as Windows writes it into task XML and the registry, "$(@%SystemRoot%\system32\usosvc.dll,-103)" or
+        /// "@C:\x.dll,-5", as its text; anything else, or a reference that cannot be read, unchanged.
+        /// </summary>
+        public static string IndirectString(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            var src = s.StartsWith("$(@") && s.EndsWith(")") ? s.Substring(2, s.Length - 3) : s.StartsWith("@") ? s : null;
+            if (src == null) return s;
+            try
+            {
+                var sb = new StringBuilder(1024);
+                return SHLoadIndirectString(Environment.ExpandEnvironmentVariables(src), sb, sb.Capacity, IntPtr.Zero) == 0 && sb.Length > 0 ? sb.ToString() : s;
+            }
+            catch { return s; }
+        }
+
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
         [DllImport("kernel32.dll", SetLastError = true)]

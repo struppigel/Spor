@@ -8,6 +8,32 @@ namespace Spor.Tests
     /// <summary>Timeline lines: which events of one file are one line, its time, and its merged details.</summary>
     public class TimelineTests
     {
+        const string VsTemp = @"C:\Users\anna\AppData\Local\Temp\yey3hk14\";
+
+        /// <summary>One file in folders that differ only in numbers or ids: one group.</summary>
+        [Theory]
+        [InlineData(@"C:\Users\a\AppData\Local\Discord\app-1.0.9267\Discord.exe", @"C:\Users\a\AppData\Local\Discord\app-1.0.9300\Discord.exe")]
+        [InlineData(@"C:\Program Files\EA\EA Desktop\13.813.0.6326-1792559521\EADesktop.exe", @"C:\Program Files\EA\EA Desktop\13.827.2.6342-1794635423\EADesktop.exe")]
+        [InlineData(@"C:\Windows\Temp\{3558506C-BFA8-49C4-BF95-665A8929F14D}\.cr\vc_redist.x64.exe", @"C:\Windows\Temp\{FDA43EC1-BAF8-4F17-B13B-FCCE17B7C3E2}\.cr\vc_redist.x64.exe")]
+        [InlineData(@"C:\lab\20261103-075951-1\run.exe", @"C:\lab\20261104-101010-2\run.exe")]
+        [InlineData(@"C:\Users\a\AppData\Local\Programs\Microsoft VS Code\a44adf7f53\x\vsce-sign.exe", @"C:\Users\a\AppData\Local\Programs\Microsoft VS Code\69047191fc\x\vsce-sign.exe")]
+        [InlineData(VsTemp + @"Microsoft.Net.8.0.Runtime.811E9382F7C0D322A19E\aspnetcore-runtime-x64.zip", VsTemp + @"Microsoft.Net.10.0.Runtime.30D124C19BCC397E60A2\aspnetcore-runtime-x64.zip")]
+        [InlineData(VsTemp + @"Microsoft.Net.8.0.WindowsDesktop.Runtime.8D10AEB2000708243E0C\w.zip", VsTemp + @"Microsoft.Net.10.0.WindowsDesktop.Runtime.3348394A88A27D0E93BC\w.zip")]
+        public void FoldersThatDifferOnlyInNumbersAreOneGroup(string a, string b) =>
+            Assert.Equal(Scanner.Shape(a), Scanner.Shape(b), StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Differently named folders with a random id are not one group, whether the id happens to have 6 digits in a row or not
+        /// (Spor 0.7.1 put the cab1.cab of four Visual Studio packages on one line).
+        /// </summary>
+        [Theory]
+        [InlineData(VsTemp + @"Microsoft.VisualStudio.MinShell.Shared.Msi.5277338BB25077D7590F\cab1.cab", VsTemp + @"Microsoft.VisualStudio.GitHubProtocolHandler.Msi.6725FA95520F1A897109\cab1.cab")]
+        [InlineData(VsTemp + @"Microsoft.VisualStudio.FileHandler.Msi.040167F1CC8B0F1C8A76\cab1.cab", VsTemp + @"Microsoft.VisualStudio.VsWebProtocolSelector.Msi.8983E0359E2E9C7BD859\cab1.cab")]
+        [InlineData(@"C:\Users\a\AppData\Local\Temp\5ed5c394-9271-42ee-9a14-487df8b1b262_DaVinci_Resolve_18.6.6.zip.262\x.exe", @"C:\Users\a\AppData\Local\Temp\4145fe86-3a38-4c30-a23e-23ebdb7f5167_FrostyModManager_1.0.7.zip.167\x.exe")]
+        [InlineData(@"C:\Games\Far Cry 4\x.exe", @"C:\Games\Far Cry 5\x.exe")]
+        public void DifferentlyNamedFoldersAreNotOneGroup(string a, string b) =>
+            Assert.NotEqual(Scanner.Shape(a), Scanner.Shape(b), StringComparer.OrdinalIgnoreCase);
+
         const string Cmd = @"C:\Windows\System32\cmd.exe";
         static readonly DateTime At = new DateTime(2026, 11, 20, 7, 59, 40, DateTimeKind.Utc);
 

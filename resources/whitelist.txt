@@ -1,0 +1,121 @@
+# Spor whitelist: known-noise rules. Hidden items are counted ("Hidden: ..."), -nowhitelist lists them.
+# This file says WHERE noise is; the code says WHEN it may be hidden (validly signed, no strong flags, 0 bytes, system
+# drive only, ...), so a rule here never hides a file with a bad signature or a strong flag.
+# Columns (tab-separated): scope, value, note (optional). Lines starting with # are comments.
+# Spor.whitelist.txt next to Spor.exe replaces this file (to try a rule without a new build); one that cannot be read
+# or has an error (unknown scope, bad regex) is ignored and the built-in file is used.
+#
+# Scopes (regex = .NET regex, case-insensitive, against the path WITHOUT its drive: \USERS\X\APPDATA\...;
+# the lines of one scope are joined with |):
+#   noise:prefetch   regex  loaded files PREFETCH does not list (known noise)
+#   noise:amcache    regex  AMCACHE entries counted as known noise
+#   noise:exec       regex  EXECUTION EVIDENCE entries counted as known noise
+#   noise:files      regex  NEW FILES: validly signed files without flags counted as known noise
+#   staging          regex  updater staging folders (in Program Files / Windows on the system drive only): NETWORK, AMCACHE
+#   script-noise     regex  NEW FILES: folders where scripts are normal (not listed as new scripts)
+#   breadcrumb       regex  NEW FILES: folders of empty marker files (0 bytes only)
+#   skip-dir         name   NEW FILES: folder names not searched (caches, package folders)
+#   stale-task       task => program   PERSISTENCE: Windows tasks whose System32 program feature updates remove
+#   locked-task      task   PERSISTENCE: Windows tasks only SYSTEM can read (access denied is counted, not an error)
+
+# src/Modules/Prefetch.cs (NoiseList)
+noise:prefetch	^\\(\$WINREAGENT|\$WINDOWS\.~BT|\$WINDOWS\.~WS)\\
+noise:prefetch	^\\PROGRAMDATA\\(MICROSOFT\\(WINDOWS DEFENDER|WINDOWS\\WER|CLICKTORUN|EDGEUPDATE)|NVIDIA CORPORATION|A-VOLUTE|LENOVO)\\
+noise:prefetch	\\START MENU\\
+noise:prefetch	\\\.M2\\
+noise:prefetch	\\\.VSCODE\\EXTENSIONS\\
+noise:prefetch	\\NODE_MODULES\\
+noise:prefetch	\\SITE-PACKAGES\\
+noise:prefetch	\\APPDATA\\LOCAL\\(PACKAGES|DISCORD|PROGRAMS\\MICROSOFT VS CODE)\\
+noise:prefetch	\\APPDATA\\LOCAL\\MICROSOFT\\EDGE\\USER DATA\\(?!DEFAULT\\EXTENSIONS)
+noise:prefetch	\\APPDATA\\LOCAL\\TEMP\\(MSEDGE_|HSPERFDATA|__PSSCRIPTPOLICYTEST)
+noise:prefetch	\\__PYCACHE__\\
+noise:prefetch	\\PYTHON\d+\\(LIB|DLLS)\\
+noise:prefetch	\\QMLCACHE\\
+noise:prefetch	\\MICROSOFT\\WINDOWS\\RECENT\\
+
+# src/Modules/Amcache.cs (NoiseList)
+noise:amcache	^\\(\$WINREAGENT|\$WINDOWS\.~BT|\$WINDOWS\.~WS)\\
+noise:amcache	\\PACKAGE CACHE\\
+noise:amcache	\\APPDATA\\LOCAL\\PROGRAMS\\MICROSOFT VS CODE\\
+noise:amcache	\\APPDATA\\LOCAL\\MICROSOFT\\(EDGE|ONEDRIVE)\\
+noise:amcache	\\PYTHON\d+\\(LIB|DLLS)\\
+
+# src/Modules/ExecEvidence.cs (NoiseList)
+noise:exec	^\\(\$WINREAGENT|\$WINDOWS\.~BT|\$WINDOWS\.~WS)\\
+noise:exec	\\PACKAGE CACHE\\
+noise:exec	\\APPDATA\\LOCAL\\PROGRAMS\\MICROSOFT VS CODE\\
+noise:exec	\\APPDATA\\LOCAL\\MICROSOFT\\(EDGE|ONEDRIVE)\\
+noise:exec	\\PYTHON\d+\\(LIB|DLLS)\\
+noise:exec	\\TEMP\\IS-[A-Z0-9]+\.TMP\\
+noise:exec	\\TEMP\\~NSU\.TMP\\
+noise:exec	\\TEMP\\VSCODE-STABLE-USER-
+noise:exec	\\TEMP\\[^\\]+\\RESOURCES\\APP\\SERVICEHUB\\
+noise:exec	^\\WINDOWS\\TEMP\\\{[0-9A-F-]{36}\}\\\.(BE|CR)\\
+
+# src/Modules/Files.cs (NoiseList)
+noise:files	\\APPDATA\\LOCAL\\PROGRAMS\\MICROSOFT VS CODE\\
+noise:files	\\APPDATA\\LOCAL\\MICROSOFT\\(EDGE|ONEDRIVE|TEAMS|WINGET)\\
+noise:files	\\APPDATA\\LOCAL\\(DISCORD|SLACK|GITHUBDESKTOP|SQUIRRELTEMP)\\
+noise:files	\\\.VSCODE\\
+noise:files	\\APPDATA\\LOCAL\\TEMP\\(MSEDGE_|CHROME_|SCOPED_DIR|.*\\RESOURCES\\APP\\SERVICEHUB\\)
+noise:files	\\PROGRAMDATA\\MICROSOFT\\(WINDOWS DEFENDER|CLICKTORUN|EDGEUPDATE|WINDOWS\\WER)\\
+noise:files	\\PYTHON\d+\\(LIB|DLLS|SCRIPTS)\\
+noise:files	\\APPDATA\\LOCAL\\TEMP\\IS-[A-Z0-9]+\.TMP\\
+
+# Edge / Brave / Google Update Install\{GUID}, Windows Update, WinSxS servicing
+staging	^\\PROGRAM FILES( \(X86\))?\\(MICROSOFT\\EDGEUPDATE|BRAVESOFTWARE\\UPDATE|GOOGLE\\UPDATE)\\INSTALL\\\{[0-9A-F-]{36}\}\\
+staging	^\\WINDOWS\\SOFTWAREDISTRIBUTION\\
+staging	^\\WINDOWS\\WINSXS\\
+
+# browser profiles, package managers, editors
+script-noise	\\(Mozilla\\(Firefox|Thunderbird)|Thunderbird|Waterfox|LibreWolf)\\
+script-noise	\\(nvm|npm|npm-cache|pnpm|yarn|JetBrains|Code\\User|Code - Insiders|Cursor\\User|GitHub Desktop|Postman)\\
+script-noise	\\(prefs|user|times)\.js$
+
+# .NET: empty marker files named after assemblies ("netcore,DryIoc.dll")
+breadcrumb	^\\PROGRAMDATA\\MICROSOFT\\NETFRAMEWORK\\BREADCRUMBSTORE\\
+
+# caches, package folders, source control, virtual environments
+skip-dir	node_modules
+skip-dir	.git
+skip-dir	site-packages
+skip-dir	__pycache__
+skip-dir	Cache
+skip-dir	Code Cache
+skip-dir	GPUCache
+skip-dir	Service Worker
+skip-dir	IndexedDB
+skip-dir	Packages
+skip-dir	WinSxS
+skip-dir	assembly
+skip-dir	CacheStorage
+skip-dir	ShaderCache
+skip-dir	DawnCache
+skip-dir	DawnGraphiteCache
+skip-dir	DawnWebGPUCache
+skip-dir	GrShaderCache
+skip-dir	blob_storage
+skip-dir	Local Storage
+skip-dir	Session Storage
+skip-dir	INetCache
+skip-dir	WebCache
+skip-dir	Crashpad
+skip-dir	CrashDumps
+skip-dir	Package Cache
+skip-dir	WindowsApps
+skip-dir	pip
+skip-dir	npm-cache
+skip-dir	.nuget
+skip-dir	.gradle
+skip-dir	.m2
+skip-dir	.cargo
+skip-dir	.rustup
+skip-dir	venv
+skip-dir	.venv
+
+# removed by feature updates (24H2+); hidden only when the program is gone from System32 and the task runs nothing else
+stale-task	\Microsoft\Windows\Location\Notifications => LocationNotificationWindows.exe
+stale-task	\Microsoft\Windows\UpdateOrchestrator\USO_UxBroker => MusNotification.exe
+
+locked-task	\Microsoft\Windows\Security\Pwdless\IntelligentPwdlessTask

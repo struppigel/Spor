@@ -39,3 +39,5 @@ Logitech
 Anthropic, PBC	Claude (Electron)
 Slack Technologies, LLC	Electron
 Notion Labs, Inc.	Electron
+Malwarebytes Inc	Malwarebytes 5 (its browser extension starts mbambgnativemsg.exe through cmd.exe)
+Malwarebytes Corporation	older Malwarebytes builds

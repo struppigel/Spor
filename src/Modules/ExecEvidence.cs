@@ -24,7 +24,6 @@ namespace Spor.Modules
         public string Name => "EXECUTION EVIDENCE";
         public string Description => "PCA, UserAssist, BAM, ShimCache, Compatibility Assistant";
 
-        const string NoiseList = @"^\\(\$WINREAGENT|\$WINDOWS\.~BT|\$WINDOWS\.~WS)\\|\\PACKAGE CACHE\\|\\APPDATA\\LOCAL\\PROGRAMS\\MICROSOFT VS CODE\\|\\APPDATA\\LOCAL\\MICROSOFT\\(EDGE|ONEDRIVE)\\|\\PYTHON\d+\\(LIB|DLLS)\\|\\TEMP\\IS-[A-Z0-9]+\.TMP\\|\\TEMP\\~NSU\.TMP\\|\\TEMP\\VSCODE-STABLE-USER-|\\TEMP\\[^\\]+\\RESOURCES\\APP\\SERVICEHUB\\|^\\WINDOWS\\TEMP\\\{[0-9A-F-]{36}\}\\\.(BE|CR)\\";
 
         Ctx c;
         Regex noise;
@@ -34,7 +33,7 @@ namespace Spor.Modules
 
         public void Execute(Ctx ctx)
         {
-            c = ctx; noise = Rules.Noise(NoiseList);
+            c = ctx; noise = Rules.Noise(Whitelist.Noise("exec"));
             var hives = c.Hives;
             void AddEv(DateTime? t, string src, string user, string p, string x)
             {
@@ -172,14 +171,14 @@ namespace Spor.Modules
             int oldLol = 0;
             foreach (var x in Grouped(shim, r => r.N.ToString("D8")))
             {
-                if (x.More > 0) c.Event(x.M, "SC", null, text: Rules.Fix(c.RealCase(x.P.TrimEnd('\\'))) + "\\ => " + x.More + " more files modified in this folder: " + Rules.Fix(x.Names));
+                if (x.More > 0) c.Event(x.M, "SC", null, text: Rules.Fix(c.RealCase(x.P.TrimEnd('\\'))) + "\\ => " + Util.Plural(x.More, "more file", "more files") + " modified in this folder: " +Rules.Fix(x.Names));
                 else if (Rules.Whitelist && Rules.Strong(x.F).Count == 0 && Rules.InTrustedLocation(x.P) && c.SignedOk(x.P)) oldLol++;   // also inside the window: a Windows update
                 else if (x.M.HasValue && x.M.Value >= c.Since)
                 {
                     if (Rules.DrivePath.IsMatch(x.P ?? "")) c.Event(x.M, "SC", x.P, null, x.F);
                     else c.Event(x.M, "SC", null, null, x.F, text: "ShimCache entry without a folder: " + Rules.Fix(x.P));
                 }
-                else c.Find(x.M, c.File(x.P) + Rules.FlagText(x.F) + "  (ShimCache: file modified)", "file modified", "ShimCache");   // flagged, older
+                else c.Find(x.M, c.File(x.P), "ShimCache: file modified", x.F);   // flagged, older
             }
 
             var creations = ProcessCreations();
@@ -201,7 +200,7 @@ namespace Spor.Modules
                 if (x.More > 0) { ct.Add("-", "-", "-", $"{Rules.Fix(c.RealCase(x.P.TrimEnd('\\')))}\\ => {x.More} more: {Rules.Fix(x.Names)}"); continue; }
                 var f = c.F(x.P);
                 ct.Add(x.User ?? "-", f.Status, Rules.FlagCol(x.F), f.Path);
-                if (Rules.Strong(x.F).Count > 0) c.Find(c.File(x.P) + Rules.FlagText(x.F) + "  (Compatibility Assistant)");
+                if (Rules.Strong(x.F).Count > 0) c.Find(null, c.File(x.P), "Compatibility Assistant: ran at some point", x.F);
             }
             ct.WriteTo(c.Out);
             c.Out.Hidden(qk, "entries");
@@ -354,7 +353,7 @@ namespace Spor.Modules
             var m = Rules.DrivePath.Match(p);
             if (!m.Success) return 2;
             var d = m.Groups[1].Value; var rel = m.Groups[2].Value;
-            if (Rules.OddChars(rel) || Rules.Dbl.IsMatch(rel) || Rules.Disg.IsMatch(rel)) return 2;
+            if (Rules.OddChars(rel) || Rules.DoubleExt(rel) || Rules.Disg.IsMatch(rel)) return 2;
             if (!Rules.Whitelist) return 2;
             // programs that ran: noise folders and trusted locations hide only validly signed executables
             if (noise.IsMatch(rel)) return c.SignedOk(p) ? 1 : 2;   // before Risky: installer engines (WiX Burn) unpack into Windows\Temp

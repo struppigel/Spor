@@ -26,10 +26,8 @@ namespace Spor.Modules
         static readonly Regex TmpRoot = new Regex(@"^\\(PROGRAMDATA|USERS\\[^\\]+\\APPDATA\\(ROAMING|LOCAL))\\[^\\]+\.TMP$", O);   // .tmp files directly in these folders
         static readonly Regex Installer = new Regex(@"^\\WINDOWS\\INSTALLER\\[^\\]+\.(MSI|MSP)$", O);
         static readonly Regex Inject = new Regex(@"\\DISCORD[^\\]*\\APP-[^\\]+\\MODULES\\DISCORD_DESKTOP_CORE[^\\]*\\(DISCORD_DESKTOP_CORE\\)?INDEX\.JS$", O);   // stealers patch this file
-        static readonly Regex LnkNormal = new Regex(@"\\(RECENT|START MENU)\\", O);   // .pdf.lnk in Recent/Start Menu is normal Windows behaviour
         static readonly Regex Vol = new Regex(@"^\\VOLUME\{[0-9a-f]+-([0-9a-f]{8})\}(.*)$", O);
         static readonly Regex VolPrefix = new Regex(@"^\\VOLUME\{[^}]+\}", O);
-        const string NoiseList = @"^\\(\$WINREAGENT|\$WINDOWS\.~BT|\$WINDOWS\.~WS)\\|^\\PROGRAMDATA\\(MICROSOFT\\(WINDOWS DEFENDER|WINDOWS\\WER|CLICKTORUN|EDGEUPDATE)|NVIDIA CORPORATION|A-VOLUTE|LENOVO)\\|\\START MENU\\|\\\.M2\\|\\\.VSCODE\\EXTENSIONS\\|\\NODE_MODULES\\|\\SITE-PACKAGES\\|\\APPDATA\\LOCAL\\(PACKAGES|DISCORD|PROGRAMS\\MICROSOFT VS CODE)\\|\\APPDATA\\LOCAL\\MICROSOFT\\EDGE\\USER DATA\\(?!DEFAULT\\EXTENSIONS)|\\APPDATA\\LOCAL\\TEMP\\(MSEDGE_|HSPERFDATA|__PSSCRIPTPOLICYTEST)|\\__PYCACHE__\\|\\PYTHON\d+\\(LIB|DLLS)\\|\\QMLCACHE\\|\\MICROSOFT\\WINDOWS\\RECENT\\";
         // harmless loaded files (whitelist), each with a condition that keeps the attack it could hide visible
         static readonly Regex PsHost = new Regex(@"\\(POWERSHELL|PWSH)\.EXE$", O);
         static readonly Regex PsPolicyTest = new Regex(@"^\\USERS\\[^\\]+\\APPDATA\\LOCAL\\TEMP\\__PSSCRIPTPOLICYTEST_[A-Z0-9]{8}\.[A-Z0-9]{3}\.PS1$", O);
@@ -56,7 +54,7 @@ namespace Spor.Modules
 
         public void Execute(Ctx ctx)
         {
-            c = ctx; noise = Rules.Noise(NoiseList);
+            c = ctx; noise = Rules.Noise(Whitelist.Noise("prefetch"));
             foreach (var d in DriveInfo.GetDrives())
             {
                 try { var s = Native.VolumeSerial(d.Name); if (s != null) vol[s] = d.Name.TrimEnd('\\'); } catch { }
@@ -111,7 +109,7 @@ namespace Spor.Modules
                     {
                         var r = Real(s);
                         lt.More("loaded", c.FF(r, !NoHash.IsMatch(s), Rules.Strong(Rules.Flags(r))));
-                        c.Find(x.Last, c.File(r) + Rules.FlagText(Rules.Strong(Rules.Flags(r))) + "  (loaded by " + pf2.Path + ")", "program's last run");
+                        c.Find(x.Last, c.File(r), "loaded by " + pf2.Path, Rules.Strong(Rules.Flags(r)));   // time = the program's last run
                     }
                     foreach (var s in rest) lt.More("loaded", c.FF(Real(s), !NoHash.IsMatch(s)));   // every file: the paths are needed for removal
                 }
@@ -123,7 +121,7 @@ namespace Spor.Modules
                 var kinds = harmless.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}").ToList();
                 kinds[0] = $"Hidden: {harmless.Values.Sum()} harmless loaded files (-nowhitelist lists them): " + kinds[0];
                 var parts = Log.Chunks(kinds, 190);
-                for (int i = 0; i < parts.Count; i++) c.Out.Comment(parts[i] + (i < parts.Count - 1 ? "," : ""));
+                foreach (var part in parts) c.Out.Comment(part);
             }
 
             var common = cnt.Where(kv => kv.Value >= Many).OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).ToList();
@@ -144,12 +142,12 @@ namespace Spor.Modules
             {
                 c.Out.Sub("Hidden: programs run from known-noise locations", "Not in the timeline; -nowhitelist lists them.");
                 var ht = new Table("=count", "*folder");
-                foreach (var kv in np.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)) ht.Add(kv.Value + " programs", kv.Key);
+                foreach (var kv in np.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)) ht.Add(Util.Plural(kv.Value, "program", "programs"), kv.Key);
                 ht.WriteTo(c.Out);
             }
         }
 
-        static bool Sus(string s) => Rules.Disg.IsMatch(s) || Rules.Dbl.IsMatch(s) || Rules.OddChars(s);
+        static bool Sus(string s) => Rules.Disg.IsMatch(s) || Rules.DoubleExt(s) || Rules.OddChars(s);
 
         string Real(string s)
         {
@@ -162,15 +160,8 @@ namespace Spor.Modules
             var rel = VolPrefix.Replace(f, "");
             var m = noise.Match(rel);
             var k = Real(f.Substring(0, f.Length - rel.Length) + (m.Success ? rel.Substring(0, m.Index + m.Length) : rel));
-            return Rules.SxsVersion.Replace(Rules.Fix(c.RealCase(k.TrimEnd('\\')) + (k.EndsWith("\\") ? "\\" : "")), "");
-        }
-
-        /// <summary>Flags of a file in a known-noise folder; "x.pdf.lnk" in Recent / Start Menu is a normal shortcut, not a double extension.</summary>
-        static List<string> NoiseFlags(string path, string rel)
-        {
-            var fl = Rules.Flags(path);
-            if (rel.EndsWith(".LNK", StringComparison.OrdinalIgnoreCase) && LnkNormal.IsMatch(rel)) fl.Remove("!double-extension");
-            return fl;
+            // a folder ends in "\"; a match that ends inside a name (Temp\__PSSCRIPTPOLICYTEST...) is a name prefix: "*"
+            return Rules.SxsVersion.Replace(Rules.Fix(c.RealCase(k.TrimEnd('\\')) + (k.EndsWith("\\") ? "\\" : m.Success ? "*" : "")), "");
         }
 
         /// <summary>2 = show, 1 = count only (known noise), 0 = ignore</summary>
@@ -179,7 +170,7 @@ namespace Spor.Modules
             var m = Vol.Match(f);
             if (!m.Success) return 0;
             var v = m.Groups[1].Value; var rel = m.Groups[2].Value;
-            if (Rules.OddChars(rel) || (Rules.Dbl.IsMatch(rel) && !(rel.EndsWith(".LNK", StringComparison.OrdinalIgnoreCase) && LnkNormal.IsMatch(rel)))) return 2;
+            if (Rules.OddChars(rel) || Rules.DoubleExt(rel)) return 2;   // x.pdf.lnk in Recent / Start Menu is no double extension
             if (Task.IsMatch(rel) || TmpRoot.IsMatch(rel) || Installer.IsMatch(rel)) return 2;
             if (!Ext.IsMatch(rel)) return 0;
             if (Rules.Disg.IsMatch(rel) || Inject.IsMatch(rel)) return 2;
@@ -188,7 +179,7 @@ namespace Spor.Modules
             // known-noise folders (Discord, VS Code, AppData\Local\Programs ...) hide only validly signed files without flags: token stealers
             // and injected modules live there. check: signatures of loaded files only for programs run in the time window
             if (noise.IsMatch(rel))
-                return Exeish.IsMatch(rel) || NoiseFlags(Real(f), rel).Count > 0 || ((program || check) && Signature.Applies(rel) && !c.SignedOk(Real(f))) ? 2 : 1;
+                return Exeish.IsMatch(rel) || Rules.Flags(Real(f)).Count > 0 || ((program || check) && Signature.Applies(rel) && !c.SignedOk(Real(f))) ? 2 : 1;
             if (Rules.Trusted.IsMatch(rel)) return program && !c.SignedOk(Real(f)) ? 2 : 0;   // loaded files: location only (see docs/WHITELISTING.md)
             return 2;
         }

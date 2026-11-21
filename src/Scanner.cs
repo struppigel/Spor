@@ -207,8 +207,9 @@ namespace Spor
                   (o.NoHash ? "no hashes" : o.Algo + " hashes of files up to " + o.MaxMB + " MB") +
                   (o.Modules != null ? ", only " + string.Join(", ", Selected(o).Select(m => m.Id)) : ", profile " + (ProfileModules(o.Profile) != null ? o.Profile.ToLowerInvariant() : "default")) +
                   (Autodetect.Patterns.Source != "built in" ? ", autodetect patterns from " + Autodetect.Patterns.Source : "") +
-                  (Rules.PublishersSource != null ? ", publishers from " + Rules.PublishersSource : ""));
-            log.W("Times:     UTC");
+                  (Rules.PublishersSource != null ? ", publishers from " + Rules.PublishersSource : "") +
+                  (Whitelist.Source != null ? ", whitelist from " + Whitelist.Source : ""));
+            log.W("Times:     UTC, except created and modified in FILES (local time of this PC, as FRST shows them)");
             log.W("Format:    one item per line: time [sources] item [status] => details <==== flags (parts left out when empty);");
             log.W("           (lines in brackets) are comments, \"(line: ...)\" names the parts; indented \"key: value\" lines belong to the item above.");
             log.W("           Hashes, signatures and versions of the files: FILES near the end. Sources, status words and flags: LEGEND at the end.");
@@ -218,16 +219,28 @@ namespace Spor
         class Row { public DateTime T; public string Src, Status, Obj, Details; public List<string> Flags; public List<string> Paths = new List<string>(); public List<(string Key, string Value)> More; }
 
         /// <summary>Path with version numbers, dated / numbered / GUID folder names replaced by #, for grouping.</summary>
-        static string Shape(string p)
+        static readonly Regex ShapeGuid = new Regex(@"\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?", Util.RX);
+        static readonly Regex ShapeHex = new Regex(@"(?<![0-9a-z])(?=[0-9a-f]*\d)[0-9a-f]{8,}(?![0-9a-z])", Util.RX);   // ids, hashes, commit prefixes
+        static readonly Regex ShapeLong = new Regex(@"\d{6,}", Util.RX);                                                 // dates, times, counters
+        static readonly Regex ShapeVersion = new Regex(@"\d+([._]\d+)+", Util.RX);
+        static readonly Regex ShapeLetter = new Regex(@"\p{L}", Util.RX);
+
+        /// <summary>
+        /// A path with the numbers in its folder names replaced by "#", for grouping one file's versions, dated or random temp folders.
+        /// Only the number or id is replaced (Microsoft.Net.8.0.Runtime.811E9382F7C0D322A19E -> Microsoft.Net.#.Runtime.#, app-1.0.9267 ->
+        /// app-#, Claude_5.1.2.0_x64__id -> Claude_#_x64__id), so differently named folders with random ids are not one group; a folder
+        /// name that is nothing but numbers and ids becomes "#" as a whole (20261103-075951-1, {GUID}, 13.827.2.6342-1794635423).
+        /// </summary>
+        internal static string Shape(string p)
         {
             int k = p.LastIndexOf('\\');
             if (k < 0) return p;
-            // a folder name with a GUID or a long number (date, time, id) becomes "#" as a whole (20261103-075951-1, {GUID}, ...);
-            // in other folder names only version numbers do (app-1.0.9267 -> app-#, Claude_5.1.2.0_x64__id -> Claude_#_x64__id)
-            var segs = p.Substring(0, k).Split('\\').Select(seg =>
-                Regex.IsMatch(seg, @"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{6,}", RegexOptions.IgnoreCase) ? "#"
-                : Regex.Replace(seg, @"\d+([._]\d+)+", "#"));
-            return string.Join("\\", segs) + p.Substring(k);
+            string Seg(string seg)
+            {
+                var s = ShapeVersion.Replace(ShapeLong.Replace(ShapeHex.Replace(ShapeGuid.Replace(seg, "#"), "#"), "#"), "#");
+                return s.IndexOf('#') >= 0 && !ShapeLetter.IsMatch(s) ? "#" : s;
+            }
+            return string.Join("\\", p.Substring(0, k).Split('\\').Select(Seg)) + p.Substring(k);
         }
 
         /// <summary>
@@ -438,7 +451,7 @@ namespace Spor
                     bool last = x == cl[cl.Count - 1];
                     if (dropped > 0 && last)
                         // several folders: their path: sub-lines below carry the times
-                        ex.Add(paths.Count > 1 ? $"+{dropped} more times (below)" : $"+{dropped} more times since {first.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}");
+                        ex.Add(paths.Count > 1 ? $"+{dropped} more times in between (all paths below)" : $"+{dropped} more times since {first.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}");
                     var f = c.F(path, !x.All(e => e.NoHash));
                     var row = new Row
                     {
@@ -471,12 +484,12 @@ namespace Spor
             log.Comment("A file seen by several sources within 2 minutes is one line. A file seen many times: the first and the last time.");
             // one comment per hidden kind (one line would be too long)
             var hiddenParts = new List<string>();
-            if (defUpdates > 0) hiddenParts.Add($"{defUpdates} runs of Defender update packages (AM_Delta_Patch_*.exe)");
+            if (defUpdates > 0) hiddenParts.Add($"{Util.Plural(defUpdates, "run", "runs")} of Defender update packages (AM_Delta_Patch_*.exe)");
             if (signedHidden.Count > 0)
-                hiddenParts.Add($"{signedHidden.Values.Sum()} runs of files validly signed by well-known publishers, without flags: " +
+                hiddenParts.Add($"{Util.Plural(signedHidden.Values.Sum(), "run", "runs")} of files validly signed by well-known publishers, without flags: " +
                                 string.Join(", ", signedHidden.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")));
             for (int i = 0; i < hiddenParts.Count; i++)
-                log.Comment((i == 0 ? "Hidden (-nowhitelist lists them): " : "") + hiddenParts[i] + (i < hiddenParts.Count - 1 ? ";" : "."));
+                log.Comment((i == 0 ? "Hidden (-nowhitelist lists them): " : "") + hiddenParts[i] + ".");   // each comment line a whole sentence
             var t = new Table("@time", "[sources", "*file or event", "!status", "=details", "<flags");
             foreach (var r in rows) { t.Add(Log.T(r.T), r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(r.Flags)); foreach (var p in r.Paths) t.More("path", p); if (r.More != null) foreach (var m in r.More) t.More(m.Key, m.Value); }
             t.WriteTo(log);
@@ -488,8 +501,8 @@ namespace Spor
         {
             log.W();
             log.Heading("SUMMARY - flagged items; details in the sections below");
-            log.Comment("time = when it happened, except: ShimCache = the file's modification time (a copied file keeps its old time), Amcache = when Windows wrote the entry,");
-            log.Comment("Run keys and services = when the key was last changed, tasks and Startup items = file created, log and config files = file last written.");
+            log.Comment("time = when it happened, except: ShimCache = the file's modification time (a copied file keeps its old time), Amcache = when Windows wrote the entry.");
+            log.Comment("Also not when it happened: Run keys and services = when the key was last changed, tasks and Startup items = file created, log and config files = file last written.");
             // hints (Rules.Hints) count only with a strong flag on the same line or in the same folder
             var strongFolders = new HashSet<string>(rows.Where(r => Rules.Strong(r.Flags).Count > 0 && Rules.DrivePath.IsMatch(r.Obj ?? ""))
                                                         .Select(r => Util.Folder(r.Obj)), Util.IC);
@@ -505,7 +518,8 @@ namespace Spor
             // sorted by time, oldest first; findings without a time (signatures, Run dialog, ...) at the end, in module order
             List<(string Key, string Value)> NoMore = null;
             var items = flagged.Select(r => (T: (DateTime?)r.T, Fields: new[] { Log.T(r.T), "timeline " + r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(Shown(r)) }, More: r.More))
-                .Concat(c.Findings.Distinct().Select(f => (T: f.T, Fields: new[] { Log.T(f.T), f.Module, f.Text, null, null, null },
+                .Concat(c.Findings.GroupBy(f => (Log.T(f.T), f.Module, f.Text)).Select(g => g.First()).Select(f => (T: f.T, Fields: new[] { Log.T(f.T), f.Module, f.Text, null, null,
+                                                                                   c.FindingFlags.TryGetValue(f.Module + "\n" + f.Text, out var ff) ? Rules.FlagCol(ff) : null },
                                                            More: c.FindingMore.TryGetValue(f.Text ?? "", out var fm) ? fm : NoMore)))
                 .Select((x, i) => (x.T, x.Fields, x.More, I: i))
                 .OrderBy(x => x.T.HasValue ? 0 : 1).ThenBy(x => x.T ?? DateTime.MaxValue).ThenBy(x => x.I);
@@ -536,19 +550,120 @@ namespace Spor
             return (Join(sigParts.Where(p => p != thumb)), file, ver);
         }
 
+        // where a path in a line can end: the path is followed by " [status]", " => ", ",", ")", ... or the end of the line
+        static readonly HashSet<char> PathEnd = new HashSet<char> { ' ', ',', ';', ')', ']', '"', '\'', '|', '<', '>', '\t' };
+
+        /// <summary>
+        /// (pure) The keys (FILES paths) the lines name: the full path in a line (case-insensitive), or - for grouped lines
+        /// ("folder\ => 14 new files" with "files: a.exe, b.exe" sub-lines) - the folder on its own (followed by a blank, ",", ...)
+        /// and the file name in the same item (its line and its indented sub-lines). A bare name elsewhere ("parent services.exe")
+        /// does not count.
+        /// </summary>
+        internal static HashSet<string> ShownFiles(IEnumerable<string> lines, IEnumerable<string> keys)
+        {
+            var want = new HashSet<string>(keys, Util.IC);
+            var byFolder = new Dictionary<string, List<string>>(Util.IC);
+            foreach (var k in want)
+            {
+                int i = k.LastIndexOf('\\');
+                if (i < 2 || i == k.Length - 1) continue;
+                var f = k.Substring(0, i + 1);
+                if (!byFolder.TryGetValue(f, out var l)) byFolder[f] = l = new List<string>();
+                l.Add(k);
+            }
+            var shown = new HashSet<string>(Util.IC);
+            var folders = new HashSet<string>(Util.IC);
+            var block = new StringBuilder();
+            void Flush()
+            {
+                if (folders.Count > 0)
+                {
+                    var text = block.ToString();
+                    foreach (var f in folders)
+                        foreach (var k in byFolder[f])
+                            if (!shown.Contains(k) && NamedIn(text, k.Substring(f.Length))) shown.Add(k);
+                }
+                folders.Clear(); block.Clear();
+            }
+            foreach (var line in lines)
+            {
+                if (line == null) continue;
+                if (!line.StartsWith(" ", StringComparison.Ordinal)) Flush();   // a new item: its sub-lines are indented
+                block.Append(line).Append('\n');
+                for (int s = line.IndexOf(":\\", StringComparison.Ordinal); s >= 1; s = line.IndexOf(":\\", s + 2, StringComparison.Ordinal))
+                {
+                    int st = s - 1;
+                    if (!char.IsLetter(line[st]) || (st > 0 && char.IsLetterOrDigit(line[st - 1]))) continue;
+                    // every place the path can end: paths hold blanks and parens ("Program Files (x86)")
+                    for (int e = s + 2; e <= line.Length; e++)
+                    {
+                        if (e < line.Length && !PathEnd.Contains(line[e])) continue;
+                        var cand = line.Substring(st, e - st);
+                        if (want.Contains(cand)) shown.Add(cand);
+                        else if (cand.EndsWith("\\", StringComparison.Ordinal) && byFolder.ContainsKey(cand)) folders.Add(cand);
+                    }
+                }
+            }
+            Flush();
+            return shown;
+        }
+
+        /// <summary>The file name as a whole word of an item's text (after a blank, ",", ":", "\" or "(", before a blank, ",", ";", ")" or "]").</summary>
+        static bool NamedIn(string text, string name)
+        {
+            for (int i = text.IndexOf(name, StringComparison.OrdinalIgnoreCase); i >= 0; i = text.IndexOf(name, i + 1, StringComparison.OrdinalIgnoreCase))
+            {
+                int e = i + name.Length;
+                bool before = i == 0 || " ,:\\(\n\t".IndexOf(text[i - 1]) >= 0;
+                bool after = e == text.Length || " ,;)]\n\t".IndexOf(text[e]) >= 0;
+                if (before && after) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// (pure) The FILES keys to list, sorted, and how many the whitelist leaves out: a validly signed file no section shows (the
+        /// programs of the services and drivers Persistence hides, ...). Anything else - unsigned, a bad signature, no access, not an
+        /// executable - stays listed. signer(key) = the signature description ("valid; signer X; ..."), null if none.
+        /// </summary>
+        internal static (List<string> Keep, int Hidden) FilesToList(IEnumerable<string> keys, Func<string, string> signer, ISet<string> shown, bool whitelist)
+        {
+            var keep = new List<string>(); int hidden = 0;
+            foreach (var k in keys.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+            {
+                var sg = signer(k);
+                bool valid = sg != null && (sg == "valid" || sg.StartsWith("valid;", StringComparison.Ordinal));
+                if (whitelist && valid && !shown.Contains(k)) { hidden++; continue; }
+                keep.Add(k);
+            }
+            return (keep, hidden);
+        }
+
         static void Files(Ctx c, Log log)
         {
-            var files = c.Sha256.Keys.Concat(c.Signer.Keys).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
-            if (files.Count > 0)
+            var all = c.Sha256.Keys.Concat(c.Signer.Keys).Concat(c.ToHash.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            HashSet<string> shown = null;
+            if (Rules.Whitelist)
+            {
+                shown = ShownFiles(log.Lines, all);
+                // an app execution alias shows the program it starts (its status is that program's)
+                foreach (var (alias, target) in c.AliasTargets())
+                    if (shown.Contains(alias)) shown.Add(target);
+            }
+            var (files, hidden) = FilesToList(all, k => c.Signer.TryGetValue(k, out var s) ? s : null, shown ?? new HashSet<string>(), Rules.Whitelist);
+            if (files.Count > 0 || hidden > 0)
             {
                 log.W();
                 log.Heading($"FILES - {c.Opt.Algo}, signature and version of the files as they are on disk now");
                 log.Comment("Three lines per file. The line: hash and signature: valid / invalid / revoked / expired / unsigned, \"(catalog)\" = signed through a Windows catalog; signer; note.");
                 log.Comment("file: md5 = MD5 of the file now; size = bytes; created, modified = file times in LOCAL time of this PC (as FRST shows them), not UTC; amcache sha1 = the file when Windows recorded it (differs if replaced since).");
                 log.Comment("version: file version, description, product, company, original name; thumbprint = certificate SHA1.");
+                if (hidden > 0)
+                    log.Comment($"Hidden: {Util.Plural(hidden, "validly signed file", "validly signed files")} no section above shows (Windows drivers and system files, programs of trusted services); -nowhitelist lists them.");
                 var t = new Table("*file", ">" + c.Opt.Algo.ToLowerInvariant(), "signature");
                 foreach (var k in files)
                 {
+                    c.HashFile(k);
                     c.Sha256.TryGetValue(k, out var h); c.Signer.TryGetValue(k, out var sg); c.Version.TryGetValue(k, out var vi); c.AmSha1.TryGetValue(k, out var am);
                     c.Md5.TryGetValue(k, out var md5); bool meta = c.Meta.TryGetValue(k, out var fm);
                     var (sig, fileLine, versionLine) = FileParts(sg, vi, am?.ToUpperInvariant(), md5, meta ? fm.Size.ToString() : null,
@@ -559,7 +674,8 @@ namespace Spor
                 }
                 t.WriteTo(log);
             }
-            var amOnly = c.AmSha1.Where(kv => !c.Sha256.ContainsKey(kv.Key) && !c.Signer.ContainsKey(kv.Key)).ToList();
+            // not the files the whitelist left out of FILES either: they are known good
+            var amOnly = c.AmSha1.Where(kv => !c.Sha256.ContainsKey(kv.Key) && !c.Signer.ContainsKey(kv.Key) && !c.ToHash.ContainsKey(kv.Key)).ToList();
             if (amOnly.Count > 0)
             {
                 log.W();

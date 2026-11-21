@@ -66,6 +66,9 @@ namespace Spor.Modules
                 try { Scan(drive, found); }
                 catch (Exception e) { c.Err.Add(drive + ": " + e.Message); }
             }
+            // Windows Update's packages keep the times they were built with (Deployment.cab, ...): whitelist
+            int wu = Rules.Whitelist ? found.RemoveAll(x => Rules.InWindowsUpdateFolder(x.Path)) : 0;
+            if (wu > 0) c.Out.Comment($"Hidden: {Util.Plural(wu, "file", "files")} in Windows Update's download folder (SoftwareDistribution; -nowhitelist lists them).");
             foreach (var x in found.OrderByDescending(x => x.Score).ThenByDescending(x => x.Changed))
             {
                 t.Add(Log.T(x.Changed), x.Status, Exact(x.Created), Exact(x.Modified), x.Path);

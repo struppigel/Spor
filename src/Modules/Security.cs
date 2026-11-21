@@ -48,9 +48,15 @@ namespace Spor.Modules
             var pids = new HashSet<string>(parts.Where(x => x.StartsWith("process: ", StringComparison.OrdinalIgnoreCase))
                                                 .Select(x => Regex.Match(x, @"\bpid:(\d+)").Groups[1].Value).Where(x => x.Length > 0));
             var res = new List<(string, string)>();
+            bool inCmd = false;
             foreach (var x in parts)
             {
                 var pm = Regex.Match(x, @"^pid:(\d+)[,:]", Util.RX);
+                // a command line (CmdLine:_...) can contain "; " itself: the parts after it belong to it until the next item
+                bool newItem = pm.Success || x.StartsWith("process: ", StringComparison.OrdinalIgnoreCase) || Rules.DrivePath.IsMatch(x)
+                               || x.StartsWith(@"\\", StringComparison.Ordinal) || Regex.IsMatch(x, @"^[a-z]+:_", Util.RX);
+                if (inCmd && !newItem) { var last = res[res.Count - 1]; res[res.Count - 1] = (last.Item1, last.Item2 + "; " + x); continue; }
+                inCmd = x.StartsWith("CmdLine:", StringComparison.OrdinalIgnoreCase);
                 if (x.StartsWith("process: ", StringComparison.OrdinalIgnoreCase)) res.Add(("process", x.Substring("process: ".Length)));
                 else if (pm.Success && pids.Contains(pm.Groups[1].Value)) continue;
                 else if (pm.Success) res.Add(("process", x));

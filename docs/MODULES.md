@@ -56,6 +56,7 @@ A new program, script or shortcut in a drop location (Temp, Downloads, Desktop, 
 In a drop-location folder with new files, every validly signed program is checked for DLL side-loading: an unsigned DLL next to it that it imports (normal or delay-loaded imports, not API sets or KnownDLLs) gets `!sideload`, with proxy evidence when a signed copy of the original DLL sits in the folder under another name or most of its exports only forward or jump. Spor reads the PE headers as bytes; it never loads the files.
 Every new file over 50 MB in a drop location (any type, up to three folders deep) is checked for padding: one repeated byte in 16 samples of 64 KB (`!padded`, see LOG-FORMAT.md). Padded files are not hashed.
 A validly signed program under a random-looking or lure name that differs from its original name gets the hint `!renamed-program` (also in `persistence`).
+Old-looking programs with a recent NTFS change time (times set back) are `!timestomped` when one or two of them are not validly signed; three or more within a minute in one folder tree are an install or update (signed files count for that) and get one unflagged `STP` line. Windows Update's folder (`SoftwareDistribution`) and the empty marker files in .NET's `BreadcrumbStore` are left out (`-nowhitelist` lists them).
 
 ## timestomp
 
@@ -69,11 +70,13 @@ Every file gets a score and Spor lists files with a score of 3 or more, most sus
 * +1 if both times are more than 7 days before the change, only together with another signal
 
 The journal is a ring buffer. On a busy PC it may only go back a few hours. The log says how far back it goes.
+Files in Windows Update's download folder (`C:\Windows\SoftwareDistribution`) are counted, not listed: its packages keep the times they were built with (`-nowhitelist` lists them).
 
 ## downloads
 
 Browser download history of Chrome, Edge, Brave, Vivaldi, Opera, Yandex and Firefox, with the URL and the page the download came from.
 Also files opened in Explorer (also from CD, ISO, USB and network drives), `file:///` entries in WebCache, mounted ISO, IMG and VHD files, and the WinRAR and 7-Zip history.
+WebCache writes many entries at once (5 or more files of one user with the same second): such a time is marked `WebCache batch of N entries, not the open time`, and the timeline uses it only for a file without an open time of its own. Download URLs over 250 characters (signed links) are cut with `…`.
 
 ## software
 
@@ -84,16 +87,18 @@ Software installed, updated or removed in the time window:
 * Store and MSIX apps: added, registered, removed or failed, where the package came from, whether it runs with full trust, its signature now and its install folder
 
 Apps installed from a web page (App Installer, `ms-appinstaller:` links) get the flag `!from-web`.
+The timeline has one `INS` line per install: a Windows Installer event is left out when the Uninstall key of the same product code has a line within 5 minutes, a failed 1033 next to its 11708 too, and the operations of one Store install within 2 minutes (provision, add, register) are one line.
 
 ## persistence
 
 Run keys, services, scheduled tasks, Startup folders and WMI subscriptions, each with the time it was created or changed.
 Also service installs (System event 7045) and the Task Scheduler events, which still show deleted tasks.
 Programs outside Windows and Program Files are checked for DLL side-loading like in `files`; the DLLs are listed as `module:` lines under the entry, flagged `!sideload`.
+Hidden from the task list (`-nowhitelist` lists them, the comment counts them): Microsoft tasks that run trusted programs; tasks whose every action runs a program validly signed by one well-known publisher (`resources/publishers.txt`) in Windows, Program Files or ProgramData, with harmless arguments and no side-loaded DLL; the Windows tasks `Location\Notifications` and `UpdateOrchestrator\USO_UxBroker` when their System32 program is gone (removed by feature updates); and `Security\Pwdless\IntelligentPwdlessTask`, which only SYSTEM can read.
 
 ## processes
 
-Programs running now that run from outside Windows and Program Files (or from a user-writable folder inside them), are not validly signed, are a LOLBin or interpreter with suspicious arguments, or have an unsigned module from outside Windows and Program Files loaded. Each with its parent chain (4 levels), its command line, and the unsigned modules as `module:` lines. The program is checked for DLL side-loading (`!sideload`) and renaming (`!renamed-program`). A program whose parent chain contains a proxy-execution launcher (`forfiles /c`, `pcalua -a`, `conhost --headless`, `cmd /c call`, ...) gets `!proxy-exec`. Programs installed per user and validly signed by a well-known publisher are counted, not listed (`-nowhitelist` lists them). Each listed process is also in the timeline (`PROC`) at its start time. Spor only reads the process list and the module lists; it does not open the processes' memory.
+Programs running now that run from outside Windows and Program Files (or from a user-writable folder inside them), are not validly signed, are a LOLBin or interpreter with suspicious arguments, or have an unsigned module from outside Windows and Program Files loaded. Each with its parent chain (4 levels), its command line, and the unsigned modules as `module:` lines. The program is checked for DLL side-loading (`!sideload`) and renaming (`!renamed-program`). A program whose parent chain contains a proxy-execution launcher (`forfiles /c`, `pcalua -a`, `conhost --headless`, `cmd /c call`, ...) gets `!proxy-exec`. Programs installed per user and validly signed by a well-known publisher are counted, not listed (`-nowhitelist` lists them), and so is `cmd.exe` started by Chrome, Edge or Brave for an extension's native-messaging host (`cmd /d /s /c ""<host>" chrome-extension://..."` with the browser's pipes) validly signed by a well-known publisher in Windows or Program Files. Each listed process is also in the timeline (`PROC`) at its start time. Spor only reads the process list and the module lists; it does not open the processes' memory.
 
 ## defender
 
@@ -111,7 +116,7 @@ Traces of remote access tools: AnyDesk, TeamViewer, ScreenConnect, Splashtop, Ra
 
 ## network
 
-* SRUM: data sent and received per program, usually 30 to 60 days back
+* SRUM: data sent and received per program, usually 30 to 60 days back. Packages staged by Edge, Brave, Google and Windows Update are counted, not listed (`-nowhitelist` lists them).
 * Connections and listening ports now, with the program and its signature
 * DNS cache entries of remote access, tunnel, paste and file sharing, bot API and IP lookup services
 * DNS cache entries with a victim ID in the name (`victim ID in name`: the first label of `<id>.<domain>.<tld>` is a MAC address, 32 hex digits, a GUID or a long base32/base64 ID; not under CDN and cloud domains; also in SUMMARY) and names under TLDs campaigns favour (`abused TLD`: .click, .top, .xyz, ...; listed only)
@@ -183,6 +188,9 @@ The result is `valid`, `invalid` (with the reason, e.g. the file was changed aft
 A file that Spor cannot read is `no access`, not `unsigned`.
 
 The FILES section also lists the version information: file version, description, product, company and original file name.
+With the whitelist on, it lists only the files the log shows: a validly signed file that a module checked and then hid (the program of a trusted service or driver) is counted, not listed, and not hashed (hashes are computed when FILES is written).
+
+The known-noise locations and names the modules use (noise folders, updater staging folders, folders NEW FILES does not search, stale and locked Windows tasks) are in `resources/whitelist.txt`; a `Spor.whitelist.txt` next to `Spor.exe` replaces it.
 
 ## Locked files
 

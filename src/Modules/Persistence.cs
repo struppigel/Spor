@@ -96,6 +96,35 @@ namespace Spor.Modules
             return args.Length == 0 || args.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).All(t => Regex.IsMatch(t, @"^[-/][\w:-]*$"));
         }
         readonly HashSet<string> hiddenTasks = new HashSet<string>(Util.IC);
+        readonly Dictionary<string, int> publisherTasks = new Dictionary<string, int>(Util.IC);
+        int staleTasks, lockedTasks;
+
+        /// <summary>Windows tasks whose program feature updates remove (24H2+), with that program in System32.</summary>
+        static Dictionary<string, string> StaleTasks => Whitelist.StaleTasks;   // resources/whitelist.txt, scope "stale-task"
+
+        /// <summary>Windows tasks only SYSTEM can read: access denied there is normal for an admin.</summary>
+        static HashSet<string> LockedTasks => Whitelist.LockedTasks;   // resources/whitelist.txt, scope "locked-task"
+
+        /// <summary>
+        /// The well-known publisher (resources/publishers.txt) whose validly signed programs every action runs, or null. The program is in
+        /// Windows / Program Files, or in ProgramData (vendor folders like ProgramData\Lenovo, outside Windows and Program Files: then
+        /// also no side-loaded DLL next to it); its arguments are harmless; no flags; actions of several publishers: null.
+        /// </summary>
+        string PublisherTask(List<(string Prog, string Args, List<string> Fl)> acts)
+        {
+            string who = null;
+            foreach (var (prog, args, fl) in acts)
+            {
+                if (string.IsNullOrEmpty(prog) || !Rules.DrivePath.IsMatch(prog) || fl.Count > 0 || Rules.ArgsSuspicious(args)) return null;
+                var inProgramData = prog.StartsWith(Path.Combine(c.SystemDrive + "\\", "ProgramData") + "\\", StringComparison.OrdinalIgnoreCase);
+                if (!Rules.InTrustedLocation(prog) && !(inProgramData && Sideload.For(c, prog).Count == 0)) return null;
+                if (!c.SignedOk(prog)) return null;
+                var s = (Signature.Check(prog).Signer ?? "").Replace(" (catalog)", "");
+                if (!Rules.TrustedSigners.Contains(s) || (who != null && !who.Equals(s, StringComparison.OrdinalIgnoreCase))) return null;
+                who = s;
+            }
+            return who;
+        }
 
         void RunKeys()
         {
@@ -141,7 +170,7 @@ namespace Spor.Modules
                             rt.More("arguments", Rules.Fix(Cmd.Args(cmd)));
                             if (n.Contains("\\")) rt.More("value", Rules.Fix(n));
                             foreach (var m in Modules(prog)) rt.More("module", m);
-                            if (Rules.Strong(fl).Count > 0) c.Find(t, $"Run entry {Rules.Fix(n)} = {c.File(prog)}{Rules.FlagText(fl)}", "key changed");
+                            if (Rules.Strong(fl).Count > 0) c.Find(t, $"Run entry {Rules.Fix(n)} = {c.File(prog)}", null, fl);   // time = key changed
                         }
                         // the values it has now on now: sub-lines (a Run key can have dozens)
                         c.Event(t, "AUT", null, text: $"{k.Name} changed ({progs.Count} values now)", more: Log.Chunks(progs).Select(p => ("now", p)).ToList());
@@ -188,7 +217,7 @@ namespace Spor.Modules
                             sv.Add((t, new[] { Log.T(t), kind, st, pf.Status, Rules.FlagCol(fl), Rules.Fix(n), pf.Path + (dll != null && cmd == dll ? " (svchost DLL)" : "") }, svMore));
                             if (Rules.DrivePath.IsMatch(prog)) c.Event(t, "SVC", prog, $"service {n} ({st}) changed");
                             else c.Event(t, "SVC", null, text: $"service {n} ({st}) changed: {Util.Clip(Rules.Fix(ip), 120)}");
-                            if (Rules.Strong(fl).Count > 0 || (!Trusted(prog) && start <= 2 && Ctx.BadSig(pf.Status))) c.Find(t, $"service {Rules.Fix(n)} ({st}): {disp}{Rules.FlagText(fl)}", "key changed");
+                            if (Rules.Strong(fl).Count > 0 || (!Trusted(prog) && start <= 2 && Ctx.BadSig(pf.Status))) c.Find(t, $"service {Rules.Fix(n)} ({st}): {disp}", null, fl);   // time = key changed
                         }
             }
             catch (Exception e) { c.Err.Add("Services: " + e.Message); }
@@ -224,7 +253,7 @@ namespace Spor.Modules
                 foreach (var m in Modules(prog)) it.More("module", m);
                 if (Rules.DrivePath.IsMatch(prog)) c.Event(t, "SVC", prog, $"service {name} installed");
                 else c.Event(t, "SVC", null, text: $"service {name} installed: {Util.Clip(Rules.Fix(ip), 120)}", flags: fl);
-                if (!trusted || Rules.Strong(fl).Count > 0) c.Find(t, $"service installed: {Rules.Fix(name)}: {disp}{Rules.FlagText(fl)}" + (dllLine != null ? ", dll " + dllLine : ""));
+                if (!trusted || Rules.Strong(fl).Count > 0) c.Find(t, $"service installed: {Rules.Fix(name)}: {disp}" + (dllLine != null ? ", dll " + dllLine : ""), null, fl);
                 e.Dispose();
             }
             it.WriteTo(c.Out);
@@ -274,7 +303,7 @@ namespace Spor.Modules
                         var args = ex.SelectSingleNode("t:Arguments", ns)?.InnerText ?? "";
                         var pf = ProgF(cmd, out var prog, out var fl);
                         var disp = Log.Item(pf.Path, pf.Status);
-                        acts.Add((prog, disp + (args.Length > 0 ? "  " + Rules.Fix(args) : "") + Rules.FlagText(fl), fl, pf.Path, pf.Status, Rules.Fix(args)));
+                        acts.Add((prog, disp + (args.Length > 0 ? "  " + Rules.Fix(args) : ""), fl, pf.Path, pf.Status, Rules.Fix(args)));
                     }
                     foreach (XmlNode ch in x.SelectNodes("//t:Actions/t:ComHandler/t:ClassId", ns))
                     {
@@ -283,7 +312,7 @@ namespace Spor.Modules
                         if (dll == null) { acts.Add(("", "COM handler " + ch.InnerText, new List<string>(), "COM handler " + ch.InnerText + " (not registered)", "-", "")); continue; }
                         var pf = ProgF(dll, out var prog, out var fl);
                         if (where != "HKLM") fl.Add("!com-hijack");
-                        acts.Add((prog, Log.Item(pf.Path, pf.Status) + " (COM handler " + ch.InnerText + ", " + where + ")" + Rules.FlagText(fl), fl, pf.Path + " (COM handler, " + where + ")", pf.Status, ""));
+                        acts.Add((prog, Log.Item(pf.Path, pf.Status) + " (COM handler " + ch.InnerText + ", " + where + ")", fl, pf.Path + " (COM handler, " + where + ")", pf.Status, ""));
                     }
                     // Autodetect sees every task, also the ones the whitelist hides
                     var taskItem = $"task {Rules.Fix(name)}: {(acts.Count > 0 ? acts[0].Line : "(no action)")}";
@@ -301,7 +330,15 @@ namespace Spor.Modules
                     bool allTrusted = acts.Count > 0 && acts.All(a => Unregistered(a)
                                                                      || (a.Prog.Length > 0 && Trusted(a.Prog, a.Args) && Rules.Strong(a.Fl).Count == 0 && !a.Fl.Contains("!com-hijack")));
                     if (Rules.Whitelist && allTrusted && (ms || fi.CreationTimeUtc < c.Since || acts.All(Unregistered))) { hiddenTasks.Add(name); continue; }
-                    var author = x.SelectSingleNode("//t:RegistrationInfo/t:Author", ns)?.InnerText;
+                    // Windows' own tasks whose program a feature update removed (normal on 24H2 and later): by exact name and program
+                    if (Rules.Whitelist && StaleTasks.TryGetValue(name, out var staleExe) && acts.Count == 1
+                        && acts[0].Prog.Equals(Path.Combine(c.WinDir, "System32", staleExe), StringComparison.OrdinalIgnoreCase) && !File.Exists(acts[0].Prog))
+                    { hiddenTasks.Add(name); staleTasks++; continue; }
+                    // tasks of well-known publishers (Lenovo, Google's updater, ...): every action a program validly signed by one, in
+                    // Windows / Program Files or the publisher's ProgramData folder, with harmless arguments and no side-loaded DLL
+                    if (Rules.Whitelist && acts.Count > 0 && PublisherTask(acts.Select(a => (a.Prog, a.Args, a.Fl)).ToList()) is string pub)
+                    { hiddenTasks.Add(name); publisherTasks[pub] = (publisherTasks.TryGetValue(pub, out var pn) ? pn : 0) + 1; continue; }
+                    var author = Native.IndirectString(x.SelectSingleNode("//t:RegistrationInfo/t:Author", ns)?.InnerText);   // a resource reference ("$(@...usosvc.dll,-103)") as its text
                     var hidden = x.SelectSingleNode("//t:Settings/t:Hidden", ns)?.InnerText == "true";
                     var first = acts.FirstOrDefault();
                     var changed = (fi.LastWriteTimeUtc - fi.CreationTimeUtc).TotalMinutes > 2;
@@ -325,10 +362,18 @@ namespace Spor.Modules
                         if (changed) c.Event(fi.LastWriteTimeUtc, "TSK", null, text: $"task {Rules.Fix(name)} changed");
                     }
                     if (acts.Any(a => Rules.Strong(a.Fl).Count > 0 || (a.Prog.Length > 0 && !Trusted(a.Prog) && Ctx.BadSig(a.Line))) || (hidden && !ms && acts.Any(a => a.Prog.Length > 0 && !Trusted(a.Prog))))
-                        c.Find(fi.CreationTimeUtc, $"task {Rules.Fix(name)}{(hidden ? " (hidden)" : "")}: {first.Line}", "task file created");
+                        c.Find(fi.CreationTimeUtc, $"task {Rules.Fix(name)}{(hidden ? " (hidden)" : "")}: {first.Line}", null, first.Fl);   // time = task file created
                 }
+                catch (UnauthorizedAccessException) when (Rules.Whitelist && LockedTasks.Contains(f.Substring(root.Length))) { lockedTasks++; }
                 catch (Exception e) { c.Err.Add("Task " + f + ": " + e.Message); }
             }
+            var notes = new List<string>();
+            if (publisherTasks.Count > 0)
+                notes.Add($"{Util.Plural(publisherTasks.Values.Sum(), "task", "tasks")} of well-known publishers, validly signed (" +
+                          string.Join(", ", publisherTasks.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")) + ")");
+            if (staleTasks > 0) notes.Add($"{Util.Plural(staleTasks, "Windows task", "Windows tasks")} whose program a Windows update removed (Location\\Notifications, USO_UxBroker)");
+            if (lockedTasks > 0) notes.Add($"{Util.Plural(lockedTasks, "Windows task", "Windows tasks")} only SYSTEM can read (Pwdless\\IntelligentPwdlessTask)");
+            if (notes.Count > 0) c.Out.Comment("Hidden: " + string.Join("; ", notes) + "; -nowhitelist lists them.");
             foreach (var r in trows.OrderBy(r => r.T))
             {
                 tt.Add(r.F);
@@ -386,9 +431,9 @@ namespace Spor.Modules
                         var ta = Cmd.Args(target);
                         stt.More("target", Log.Item(pf.Path, pf.Status, ta.Length > 0 ? "arguments " + Rules.Fix(ta) : null, Rules.FlagCol(fl)));
                         foreach (var m in Modules(prog)) stt.More("module", m);
-                        if (Rules.Strong(fl).Count > 0 || fl.Contains("!lolbin")) c.Find(f.CreationTimeUtc, "Startup item " + line + " -> " + c.File(prog) + Rules.FlagText(fl), "created");
+                        if (Rules.Strong(fl).Count > 0 || fl.Contains("!lolbin")) c.Find(f.CreationTimeUtc, "Startup item " + c.File(f.FullName) + " -> " + c.File(prog), null, Rules.Flags(f.FullName).Concat(fl).ToList());
                     }
-                    else if (!f.Extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase)) c.Find(f.CreationTimeUtc, "Startup folder file (not a shortcut): " + line, "created");
+                    else if (!f.Extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase)) c.Find(f.CreationTimeUtc, "Startup folder file (not a shortcut): " + c.File(f.FullName), null, Rules.Flags(f.FullName));
                     c.Event(f.CreationTimeUtc, "STA", f.FullName, target != null ? "-> " + target : null);
                 }
             }

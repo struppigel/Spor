@@ -34,6 +34,31 @@ namespace Spor
             @"|^\\WINDOWS\\(SYSTEM32|SYSWOW64)\\(TASKS|TASKS_MIGRATED|COM\\DMP|FXSTMP|SPOOL\\(DRIVERS\\COLOR|PRINTERS|SERVERS)|MICROSOFT\\CRYPTO\\RSA\\MACHINEKEYS|LOGFILES|WDI\\LOGFILES)\\" +
             @"|\\STARTUP\\", O);
 
+        /// <summary>
+        /// Windows Update's download and install folder (full path). Its packages and cabinets keep the times they were built with
+        /// (whole seconds, older than the download), and its staged updaters are gone after the update: whitelist, not timestomping.
+        /// </summary>
+        /// <remarks>Only on the system drive: users can create D:\Windows\SoftwareDistribution.</remarks>
+        public static bool InWindowsUpdateFolder(string p) =>
+            p != null && p.StartsWith(SystemDrive + @"\Windows\SoftwareDistribution\", System.StringComparison.OrdinalIgnoreCase);
+
+        static Regex Staging => global::Spor.Whitelist.Staging;   // resources/whitelist.txt, scope "staging"
+
+        /// <summary>
+        /// Where updaters stage their packages and delete them afterwards (Edge / Brave / Google Update Install\{GUID}, Windows Update,
+        /// WinSxS servicing): known noise, also when the file is gone and its signature cannot be checked any more. Only in Windows and
+        /// Program Files on the system drive (only admins write there); C:\$WinREAgent is not here, any user can create folders in C:\.
+        /// </summary>
+        public static bool InUpdaterStaging(string p) => InTrustedLocation(p) && Staging.IsMatch(DrivePath.Match(p).Groups[2].Value);
+
+        /// <summary>The staging folder of a path InUpdaterStaging is true for ("C:\Windows\SoftwareDistribution\"), else null.</summary>
+        public static string StagingRoot(string p)
+        {
+            if (!InUpdaterStaging(p)) return null;
+            var m = DrivePath.Match(p);
+            return m.Groups[1].Value + Staging.Match(m.Groups[2].Value).Value;
+        }
+
         /// <summary>The system drive ("C:"); Windows and Program Files only count there.</summary>
         public static readonly string SystemDrive = (System.Environment.GetEnvironmentVariable("SystemDrive") ?? "C:").TrimEnd('\\');
 
@@ -55,6 +80,13 @@ namespace Spor
         /// <summary>Double extension, harmless then executable (name.pdf.exe, also padded with spaces).</summary>
         public static readonly Regex Dbl = new Regex(
             @"\.(PDF|DOCX?|DOTX?|XLSX?|XLSM|PPTX?|TXT|RTF|ODT|CSV|JPE?G|PNG|GIF|BMP|ICO|MP[34]|AVI|MKV|MOV|WAV|HTML?|INI|LOG)\s*\.(EXE|SCR|COM|BAT|CMD|PS1|VBS|VBE|JSE?|JSC|WSF|WSH|HTA|LNK|MSI|MSP|PIF|CPL|DLL|JAR|SCT|CHM|ISO|IMG)$", O);
+
+        /// <summary>Folders where Windows and Office name shortcuts after the file they open (report.pdf.lnk), and the Start Menu.</summary>
+        public static readonly Regex LnkNormal = new Regex(@"\\MICROSOFT\\(WINDOWS|OFFICE)\\RECENT\\|\\START MENU\\", O);
+
+        /// <summary>A double extension (Dbl), except a shortcut x.pdf.lnk in Recent or the Start Menu, which is normal Windows behaviour.</summary>
+        public static bool DoubleExt(string p) =>
+            p != null && Dbl.IsMatch(p) && !(p.EndsWith(".lnk", System.StringComparison.OrdinalIgnoreCase) && LnkNormal.IsMatch(p));
 
         /// <summary>RTLO and other bidi override characters (shown as &lt;RLO&gt;).</summary>
         public static readonly Regex Bidi = new Regex("[\u202A-\u202E\u2066-\u2069]", O);
@@ -325,7 +357,7 @@ namespace Spor
             p = p ?? "";
             if (Bidi.IsMatch(p)) f.Add("!RLO");
             if (Hiding.IsMatch(p)) f.Add(InvisibleFlag);
-            if (Dbl.IsMatch(p)) f.Add("!double-extension");
+            if (DoubleExt(p)) f.Add("!double-extension");
             if (Disg.IsMatch(p)) f.Add("!in-folder-named-like-file");
             if (Lol.IsMatch(p) || (name != null && Lol.IsMatch("\\" + name))) f.Add("!lolbin");
             if (LogSyntax.IsMatch(p)) f.Add("!log-syntax-in-name");

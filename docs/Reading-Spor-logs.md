@@ -16,14 +16,17 @@ Computer:  DESKTOP-4K2M7QX, Windows 11 Home 26H2, build 26300.9974, 64-bit
 Run by:    anna (administrator)
 Machine SID: S-1-5-21-1111111111-2222222222-3333333333
 Users:     anna
-Options:   last 30 days, whitelist on, SHA256 hashes of files up to 500 MB
-Times:     UTC
+Options:   last 30 days, whitelist on, SHA256 hashes of files up to 500 MB, profile default
+Times:     UTC, except created and modified in FILES (local time of this PC, as FRST shows them)
+Format:    one item per line: time [sources] item [status] => details <==== flags (parts left out when empty);
+           ...
 ```
 
 | Line | What to check |
 |---|---|
 | `Run by` | Must say `(administrator)`. Without admin rights most sources are missing. Ask for a new run as administrator. |
-| `Times` | **All times in the log are UTC.** Use the local time in `Created` to convert them when you talk to the user, e.g. 08:49 local is 07:49 UTC. |
+| `Times` | **The times in the log are UTC**: the time at the start of a line and the times in its details. The only exception are the `created` and `modified` times on the `file:` lines in FILES: they are the PC's local time, as FRST shows them, so you can compare them with an FRST log. Use the local time in `Created` to convert UTC when you talk to the user, e.g. 07:49 UTC is 08:49 local. (Up to Spor 0.7.1 this line said only `Times: UTC`; FILES was local time then too.) |
+| `Format` | A short reminder of how a line is built, see section 2. |
 | `Options` | The time window, 30 days by default. If the infection is older, ask for a run with a longer time window. `whitelist on` means that known good files are hidden, see section 7. |
 | `Error:` lines | Something went wrong before the scan. Sections can also end with `--- Errors ---`. An error means that part may be incomplete. |
 
@@ -49,7 +52,7 @@ Every part except the item is left out when it is empty.
     page: toolslib.net/…
 ```
 
-- **time**: when it happened, in UTC
+- **time**: in UTC. Usually when it happened, but not for every source: `[SC]` lines have the file's modification time, `[AM]` lines when Windows wrote the Amcache entry, Run keys and services when the key was last changed, tasks and Startup items when the file was created (see section 4 and SUMMARY in section 8)
 - **[sources]**: which Windows artifacts saw it, see section 4. Several tags mean several independent sources agree.
 - **item**: a full path, a command or an event text
 - **[status]**: only if something is not normal, see section 5. No status means the file is there and validly signed, or it is not a program.
@@ -83,7 +86,7 @@ Other details on their own lines: a Defender detection's files (`file:`, `proces
 1. **SUMMARY**: everything Spor flagged.
 2. **TIMELINE**: This allows you to reconstruct what happened, starting with oldest first. Find the first suspicious event, then read what happened before and after.
 3. **The sections**: Contains more details about the entries in the timeline (loaded files, persistence entries, accounts, network use). Look at these to enrich your findings from the summary and timeline.
-4. **FILES**: hash, signature and version of every file in the log: the hash and signature on the line, `file:` (md5, size, times) and `version:` (version resource, certificate thumbprint) below it. Use it to look up files, e.g. on VirusTotal.
+4. **FILES**: hash, signature and version of every file the log names (with the whitelist on, not of the validly signed files it hides): the hash and signature on the line, `file:` (md5, size, created and modified in the PC's **local** time) and `version:` (version resource, certificate thumbprint) below it. Use it to look up files, e.g. on VirusTotal.
 5. **LEGEND**: what every source tag, status word and flag means.
 
 ---
@@ -98,7 +101,7 @@ Not every source means that a file ran. A file that Windows only *recorded* is n
 | `PCA` | Program Compatibility Assistant | **ran**, sometimes with an exit code like `Abnormal process exit` or `Installer failed` |
 | `UA` | UserAssist | **started by the user** from Explorer or the Start menu (`UA 5x` means 5 times) |
 | `BAM` | Background Activity Moderator | **ran**, last time per user |
-| `SRU` | SRUM | **was active and used the network** (first activity in the time window, data sent) |
+| `SRU` | SRUM | **was active** (first activity in the time window) and how much data it sent; `sent 0 bytes` means it ran without using the network |
 | `MPL` | Defender log | Defender **looked the file up in the cloud**, usually because it ran or was written |
 | `AM` | Amcache | Windows **recorded** the file. It was there, but did not necessarily run. The time is when Windows wrote the entry. |
 | `SC` | ShimCache | the file **existed**. The time is the file's modification time, not when it ran or arrived: a copied file keeps its old time. No proof of execution on Windows 10 and 11. |
@@ -120,7 +123,7 @@ Not every source means that a file ran. A file that Windows only *recorded* is n
 Several execution sources on one line, e.g. `[PF PCA UA BAM]`, are strong evidence. A file that only `[AM]` or `[SC]` saw may never have run.
 
 If several sources see a file within 2 minutes, it is **one** line. A file that was seen many times shows the first and the last time, with `+N more times since …`. Processes of one program with different PIDs stay separate lines when one of them is flagged (Prefetch, BAM and file events go to the nearest of them, a SRUM hour to its run). A flagged line (a flag on an event, `!known-malware` included, or in the file name) has the time of its first flagged event, others the latest. A loader that runs again and again shows its first and its last run as flagged lines, the runs between as `+N more times`.
-If the same file was in folders that only differ in numbers (version folders, dated temp folders), the line says `+N more times (below)` and every real path follows as an indented `path:` line with its own times. **Use these `path:` lines for removal.**
+If the same file was in folders that only differ in numbers (version folders, dated temp folders), the line says `+N more times in between (all paths below)` and every real path follows as an indented `path:` line with its own times. **Use these `path:` lines for removal.**
 
 `[SC]` lines say `file modified` (ShimCache keeps the file's modification time, a copied file keeps its old time), `[AM]` lines `Amcache write` (when Windows wrote the entry). Neither proves that the program ran.
 
@@ -185,9 +188,13 @@ If the same file was in folders that only differ in numbers (version folders, da
 
 With `whitelist on`, Spor hides what is almost always harmless, so that the log stays readable. A folder alone is never enough: a hidden program must also be validly signed. LOLBins, interpreters like python or node, and flagged files are never hidden.
 
+The exceptions, where a signature cannot be checked or says nothing, are narrow and listed here: packages that Edge, Brave, Google Update and Windows Update staged and deleted again (only in their folders in Program Files and Windows), files in `Windows\SoftwareDistribution` for the timestomping checks, empty marker files in .NET's `ProgramData\Microsoft\NetFramework\BreadcrumbStore`, and two Windows tasks whose program feature updates removed (`Location\Notifications`, `UpdateOrchestrator\USO_UxBroker`).
+
 Hidden files are counted, e.g. in `(Hidden: …)` lines in the timeline and in `--- Hidden: known-noise locations ---` at the end of a section.
 
 The well-known publishers whose valid signature counts as known good are listed in `resources/publishers.txt`. To try another signer without a new build, put a `Spor.publishers.txt` next to `Spor.exe`: it replaces the built-in list, and the header's `Options` line then ends with `publishers from <path>`.
+
+The known-noise locations and names are listed in `resources/whitelist.txt`: the noise folders of PREFETCH, AMCACHE, EXECUTION EVIDENCE and NEW FILES, the updater staging folders, the folders NEW FILES does not search, and the Windows tasks above. The file says where noise is; the conditions (valid signature, no flags, ...) stay in Spor. A `Spor.whitelist.txt` next to `Spor.exe` replaces it (the `Options` line then says `whitelist from <path>`); one with an error is ignored.
 
 Ask for a run with the whitelist off (uncheck *Whitelist*, or `-nowhitelist`) if:
 
@@ -200,7 +207,7 @@ Ask for a run with the whitelist off (uncheck *Whitelist*, or `-nowhitelist`) if
 ## 8. Section by section
 
 ### SUMMARY
-Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Persistence]`, `[Defender]`, …), oldest first. `!known-malware` names a known malware family: on a timeline line (`known malware <family>: ...` in the details) or as an `[Autodetect]` line for hits that are not files on the timeline. Every line is a starting point, not a verdict.
+Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Persistence]`, `[Defender]`, …), oldest first. Every line is built like any other line, e.g. `[Prefetch] C:\…\x.pdf.lnk => loaded by C:\…\host.exe <==== !double-extension` (up to Spor 0.7.1 the section findings had their flags in the text: `x.pdf.lnk  !double-extension  (loaded by …)`). `!known-malware` names a known malware family: on a timeline line (`known malware <family>: ...` in the details) or as an `[Autodetect]` line for hits that are not files on the timeline. Every line is a starting point, not a verdict.
 The time is when something happened, except for these: ShimCache lines show the file's modification time, Amcache lines when Windows wrote the entry, Run keys and services when the key was last changed, tasks and Startup items when the file was created, and log or config files when they were last written. Such a time can be much older or newer than the infection: a dropped copy of MSBuild.exe keeps the modification time of the original.
 
 ### TIMELINE
@@ -229,7 +236,7 @@ Programs, scripts and archives created in the time window in Downloads, Desktop,
 
 `zone 0` (or 1, 2) without a URL on a new program is `!motw-removed`. In folders in Temp, Downloads and the top of AppData, signed programs are checked for **DLL side-loading**: the unsigned DLL gets `!sideload`, the program `side-loads <dll>`. New files over 50 MB are checked for padding (`padded: N MB of byte 0x00`).
 
-This section also lists programs and scripts that look old but whose NTFS change time is recent. A single file like that is flagged (`STP … set: B …, M … <==== !timestomped`). A batch of 3 or more such files in one folder within a minute is one line without a flag, because installers and updaters copy files with their original times.
+This section also lists programs and scripts that look old but whose NTFS change time is recent. A single file like that is flagged (`STP … set: B …, M … <==== !timestomped`). A batch of 3 or more such programs in one folder tree within a minute is one line without a flag, because installers and updaters copy files with their original times. Validly signed programs count for the batch but are not listed, so an install of signed programs with one unsigned `.jar` is a batch, not a flagged `.jar`.
 
 ### TIMESTOMPING
 Files whose timestamps were set, from the NTFS change journal. The journal is a ring buffer, on a busy PC it may only cover a few hours. The log says how far back it goes (`back to <time>`). Files are listed most suspicious first, with their signals; `B` and `M` are the creation and modification time with all 7 fraction digits (`.0000000` = a whole second). Round times on programs and scripts in user folders are the interesting ones. A creation time newer than the modification time is not a signal: copying, downloading, extracting and moving to another drive keep the modification time and set a new creation time.
@@ -267,7 +274,7 @@ Webcam and microphone use per program, and traces of AnyDesk, TeamViewer, Screen
 **Ask the user whether they know the tool and the connections.** Scammers use legitimate remote access tools.
 
 ### NETWORK
-- SRUM: data sent and received per program in the time window. A lot of `sent` data for an unknown program can mean stolen data.
+- SRUM: data sent and received per program in the time window. A lot of `sent` data for an unknown program can mean stolen data. `sent 0 bytes; received 0 bytes` means the program ran without using the network.
 - Connections now: programs outside trusted locations, LOLBins and unsigned programs.
 - DNS cache: recent lookups of remote access, tunnel, paste and file sharing, bot API (Telegram, Discord webhooks) and IP lookup services. Many of them are normal, so combine them with the timeline.
 - `victim ID in name`: a host name whose first part is a MAC address, a GUID or a long hash (`0800272a1b3c.example.click`). Beacons do this so every victim resolves its own name. Also in SUMMARY.
@@ -286,7 +293,8 @@ Only with the **USB worm** or **All** profile. A typical USB worm infection look
 Read the **Shortcuts** sub-section for the command line, and FILES for the hashes of the worm's copy and of everything else on the stick. On the PC, look for the worm's copy in PERSISTENCE and RUNNING PROCESSES, and for runs from USB volumes in the timeline (`on USB drive <label>`). "MountPoints2" and "USB storage devices" tell you which sticks were plugged in and when, so you know which other sticks to clean.
 
 ### FILES and AMCACHE FILES
-One line per file: hash, signature status, signer, certificate thumbprint, version information and the SHA1 that Amcache recorded. If the Amcache SHA1 differs from the file now, the file was replaced after Windows recorded it.
+Three lines per file: the hash, signature status and signer; `file:` with md5, size, the created and modified times in the PC's **local** time (like FRST, so you can compare the two logs) and the SHA1 that Amcache recorded; `version:` with the version information and the certificate thumbprint. If the Amcache SHA1 differs from the file now, the file was replaced after Windows recorded it.
+With the whitelist on, FILES leaves out validly signed files that no line above shows and counts them in a `(Hidden: …)` comment; `-nowhitelist` lists them all.
 AMCACHE FILES lists the SHA1 of files that are not on disk anymore. Use them to look up deleted malware.
 
 ---

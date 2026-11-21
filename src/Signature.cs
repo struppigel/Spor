@@ -127,9 +127,10 @@ namespace Spor
             try
             {
                 var v = FileVersionInfo.GetVersionInfo(path);
-                var ver = (v.FileVersion ?? "").Trim(); if (ver.Length == 0) ver = (v.ProductVersion ?? "").Trim();
+                // control characters out first: a value of only those (a cracked DLL's "\0") is empty, not "file version ;"
+                var ver = Util.Clip(v.FileVersion); if (ver.Length == 0) ver = Util.Clip(v.ProductVersion);
                 var parts = new[] { ("file version", ver), ("description", v.FileDescription), ("product", v.ProductName), ("company", v.CompanyName), ("original name", v.OriginalFilename) }
-                    .Where(x => !string.IsNullOrWhiteSpace(x.Item2)).Select(x => x.Item1 + " " + x.Item2.Trim().Replace(";", ",")).ToList();
+                    .Select(x => (x.Item1, Value: Util.Clip(x.Item2))).Where(x => x.Value.Length > 0).Select(x => x.Item1 + " " + x.Value.Replace(";", ",")).ToList();
                 return parts.Count == 0 ? "none" : string.Join("; ", parts);
             }
             catch { return null; }

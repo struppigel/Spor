@@ -4,11 +4,11 @@ This describes how `Spor.txt` is built. It is meant for helpers who want to know
 
 ## Layout
 
-1. **Header**: `key: value` lines with the creation time, the computer, who ran Spor, the users and the options
-2. **SUMMARY**: only the flagged items, oldest first. Items without a time (e.g. invalid signatures, Run dialog entries) come last. The comment under the title says which times are not when something happened (ShimCache: file modified; Amcache: entry written; Run keys and services: key changed; ...).
+1. **Header**: `key: value` lines with the creation time, the computer, who ran Spor, the users and the options. `Times:` starts with `UTC` (all times are UTC except `created` and `modified` in FILES, which are the PC's local time; up to Spor 0.7.1 the line was only `Times:     UTC`)
+2. **SUMMARY**: only the flagged items, oldest first. Items without a time (e.g. invalid signatures, Run dialog entries) come last. Every line has the item line format, the flags after `<==== ` (up to Spor 0.7.1 the lines of a module such as `[Prefetch]` had them in the text: `x.pdf.lnk  !double-extension  (loaded by y.exe)`; now `x.pdf.lnk => loaded by y.exe <==== !double-extension`). The comment under the title says which times are not when something happened (ShimCache: file modified; Amcache: entry written; Run keys and services: key changed; ...).
 3. **TIMELINE**: everything with a time from all modules, oldest first, with the sources in brackets
 4. **One section per module** with everything that does not fit into a timeline, see [MODULES.md](MODULES.md). Lists with times are oldest first too. Exceptions: the Run dialog and archive tool histories keep Windows' order (newest first, only the newest entry has a time), and some lists are sorted by size or score.
-5. **FILES**: one line per file with hash, signature, version information and the SHA1 that Amcache recorded
+5. **FILES**: one line per file the sections above name, with hash, signature, version information and the SHA1 that Amcache recorded
 6. **AMCACHE FILES**: SHA1 from Amcache of files that are not listed in FILES
 7. **LEGEND**: the timeline sources, status words and flags, one per line
 
@@ -28,7 +28,7 @@ Lines seen only by `SC` (ShimCache) or `AM` (Amcache) end their details with wha
 
 If several sources see the same file within 2 minutes, it is one line, e.g. `[PF PCA BAM]`. A file that was seen many times shows its first and last time, and every time it was flagged.
 Processes of one program with different PIDs (`PROC`, `4688`, `SYSMON`) are separate lines when one of them is flagged; events without a PID (`PF`, `BAM`, file events) go to the line whose nearest event is closest in time, and an `SRU` hour bucket to the nearest line within an hour (the same run). A line's time is its latest event; on a flagged line (a strong flag on an event, `!known-malware` included, or in the file name), the time of the first flagged event, which for a flag in the file name is the line's first event.
-Paths that only differ in numbers in folder names (version folders, dated or GUID temp folders) count as the same file. Such a line is followed by one indented `path:` line per real path, so every path is still in the log; its details say `+N more times (below)`, the `path:` lines have the times. A file seen in one folder only says `+N more times since <first time>`.
+Paths that only differ in numbers in folder names (version folders, dated or GUID temp folders) count as the same file. Only the number or id is replaced, so differently named folders with random ids (`Microsoft.VisualStudio.X.Msi.<id>` and `...Y.Msi.<id>`) stay apart. Such a line is followed by one indented `path:` line per real path, so every path is still in the log, the first and the last time included; its details say `+N more times in between (all paths below)` (N = the events between the first line and this one), the `path:` lines have the times. A file seen in one folder only says `+N more times since <first time>`.
 
 Paths are written in their real case, although Prefetch stores them in upper case and Amcache in lower case. Nothing is shortened.
 
@@ -104,6 +104,14 @@ Up to Spor 0.6 all of this was on one line, in the order `signature; signer; thu
 
 Files named in a Defender detection are hashed if they still exist, so they get a FILES line too. For `x.zip->inner.exe` this is the archive.
 
+With the whitelist on (Spor 0.7.2+), FILES lists only the files some line above names: by their full path, or by their name in an item whose line names their folder on its own (`folder\ => 14 new files` with `files: a.exe, b.exe`). Validly signed files that Spor checked but no line shows (the programs of the services and drivers PERSISTENCE hides, most of Windows' drivers) are left out, not hashed, and counted in a comment after the header comments:
+
+```
+(Hidden: 844 validly signed files no section above shows (Windows drivers and system files, programs of trusted services); -nowhitelist lists them.)
+```
+
+Files with any other signature status (unsigned, invalid, no access, not an executable) are always listed. They are not in AMCACHE FILES either.
+
 ## Details
 
 Some sections have details that identify an entry. Every detail is left out if its value is unknown.
@@ -147,7 +155,7 @@ The `INS` lines in the timeline have the same details as the SOFTWARE line they 
 |---|---|
 | `!lolbin` | regasm, msbuild, mshta, certutil, powershell, ... (also listed in System32) |
 | `!renamed-lolbin` | a Windows tool under another name (original name from Amcache) |
-| `!double-extension` | e.g. `invoice.pdf.exe`, also padded with spaces |
+| `!double-extension` | e.g. `invoice.pdf.exe`, also padded with spaces. Not a shortcut `report.pdf.lnk` in `Microsoft\Windows\Recent`, `Microsoft\Office\Recent` or the Start Menu: Windows and Office name their shortcuts like that |
 | `!in-folder-named-like-file` | e.g. `ab.exe\evil.dll`, `app.exe.local\x.dll` |
 | `!RLO` | bidi override characters in the path, shown as `<RLO>` |
 | `!invisible-char` | an invisible character in the path, shown as `<U+XXXX>`. Every module flags only characters that are never part of normal names: zero-width space, word joiner and invisible operators, Hangul fillers (U+3164, U+115F, U+1160, U+FFA0), the Braille blank U+2800, BOM, Khmer / Mongolian invisible vowels and separators. USB DRIVES flags every invisible character, also the no-break space, ideographic space and zero-width (non-)joiner (normal in Persian, Japanese and web-page-titled names elsewhere), and a name that starts or ends with a space or ends with a dot. USB worms hide their copy in a folder named like that. Every module shows all of them as `<U+XXXX>`. |

@@ -67,6 +67,7 @@ namespace Spor.Modules
             // signer and folder are long (a GUID, the package's full name again): sub-lines
             var t2 = new Table("@last", "[operation", "*package", "=display name", "first", "times", "from", "source", "full trust", "!status", "<flags");
             int hidden = 0;
+            var merged = new Dictionary<string, StoreLine>(Util.IC);   // package -> its timeline line (operations merged)
             // the package now: its own folder, or (removed / updated) the newest folder of the same app (name + publisher ID) seen in the log
             string Family(string pkg) { var m = Regex.Match(pkg, @"^([^_]+)_.*_([a-z0-9]{13})$", Util.RX); return m.Success ? m.Groups[1].Value + "_" + m.Groups[2].Value : pkg; }
             string Dir(string pkg)
@@ -107,14 +108,35 @@ namespace Spor.Modules
                 var signer = dir != null ? now.Signer : fam.Signer != "-" ? fam.Signer + " (newer version)" : "-";
                 if (signer != "-") t2.More("signer", signer);
                 t2.More("folder", Rules.Fix(folder));
+                // one install runs several operations (provision, add, register) within seconds: one timeline line for them
+                var op = OpName(o.Op);
+                if (!o.Failed && fl.Count == 0 && merged.TryGetValue(o.Pkg, out var m) && (o.T - m.Ev.T).TotalMinutes <= 2)
+                {
+                    if (!m.Ops.Contains(op)) m.Ops.Add(op);
+                    if (m.Name.Length == 0) m.Name = o.Name;
+                    if (m.Src.Length == 0) m.Src = o.Src;
+                    m.Ev.Text = StoreText(m.Ops, o.Pkg, m.Name, m.Src);
+                    continue;
+                }
+                int before = c.Events.Count;
                 c.Event(o.T, "INS", null, null, fl.Count > 0 ? fl : null,
-                        text: $"Store app {o.Op.ToLowerInvariant()}{(o.Failed ? " FAILED" : "")}: {Rules.Fix(o.Pkg)}" + (o.Name.Length > 0 ? $" ({Rules.Fix(o.Name)})" : "") +
-                              (o.Src.Length > 0 ? ", from " + Rules.Fix(Source(o.Src)) : ""),
+                        text: StoreText(new List<string> { op + (o.Failed ? " FAILED" : "") }, o.Pkg, o.Name, o.Src),
                         more: new List<(string Key, string Value)> { ("folder", Rules.Fix(folder)) });
+                if (!o.Failed && fl.Count == 0 && c.Events.Count > before)
+                    merged[o.Pkg] = new StoreLine { Ev = c.Events[c.Events.Count - 1], Ops = new List<string> { op }, Name = o.Name, Src = o.Src };
             }
             if (hidden > 0) c.Out.Comment($"{hidden} operations on Microsoft packages (Store and Windows updates, also failed ones) not listed; -nowhitelist lists them.");
             t2.WriteTo(c.Out, "no Store or MSIX app operations in the time window" + (hidden > 0 ? " except Microsoft's own" : ""));
         }
+
+        class StoreLine { public TEvent Ev; public List<string> Ops; public string Name; public string Src; }
+
+        /// <summary>(pure) An AppXDeploymentServer operation for the timeline: "ProvisionPackageOperation" -> "provision", "Add" -> "add".</summary>
+        internal static string OpName(string op) => Regex.Replace(op ?? "", "PackageOperation$", "", RegexOptions.IgnoreCase).ToLowerInvariant();
+
+        /// <summary>(pure) "Store app add, register: package (name), from source".</summary>
+        internal static string StoreText(List<string> ops, string pkg, string name, string src) =>
+            $"Store app {string.Join(", ", ops)}: {Rules.Fix(pkg)}" + (name.Length > 0 ? $" ({Rules.Fix(name)})" : "") + (src.Length > 0 ? ", from " + Rules.Fix(Source(src)) : "");
 
         /// <summary>(pure) Where a package came from, for the log: a Windows Update URL ("x-windowsupdate://GUID/GUID/hash") as "Windows Update".</summary>
         internal static string Source(string s) =>
@@ -154,9 +176,9 @@ namespace Spor.Modules
                                 var lw = Native.LastWrite(k);
                                 var idate = InstallDate(S(k, "InstallDate"));
                                 // Autodetect sees every entry, also older ones: "name | version | publisher", the folder and the icon program
-                                var swItem = $"installed program {name} {S(k, "DisplayVersion")}".TrimEnd() + (S(k, "Publisher").Length > 0 ? $" ({S(k, "Publisher")})" : "") + $", key {prefix}{n}";
+                                var swItem = $"installed program {NameVersion(name, S(k, "DisplayVersion"))}" + (S(k, "Publisher").Length > 0 ? $" ({S(k, "Publisher")})" : "") + $", key {prefix}{n}";
                                 c.Observe("software", $"{name} | {S(k, "DisplayVersion")} | {S(k, "Publisher")}", lw ?? idate, swItem);
-                                var loc = S(k, "InstallLocation").Trim('"').TrimEnd('\\');
+                                var loc = InstallFolder(S(k, "InstallLocation"));
                                 if (Rules.DrivePath.IsMatch(loc)) c.Observe("path", loc + "\\", lw ?? idate, swItem);
                                 var ico = Regex.Replace(S(k, "DisplayIcon"), @",-?\d+$", "").Trim('"');
                                 if (Rules.DrivePath.IsMatch(ico)) c.Observe("path", ico, lw ?? idate);
@@ -168,7 +190,7 @@ namespace Spor.Modules
                                 var prog = cmd.Length > 0 ? Cmd.Program(cmd, c.WinDir) : "";
                                 var msi = Regex.IsMatch(prog, @"\\msiexec\.exe$", Util.RX);
                                 var pf = prog.Length > 0 && !msi && Rules.DrivePath.IsMatch(prog) ? c.F(prog) : (msi ? "Windows Installer (msiexec)" : "-", "-");
-                                var folder = S(k, "InstallLocation").Trim('"').TrimEnd('\\');
+                                var folder = InstallFolder(S(k, "InstallLocation"));
                                 var fl = prog.Length > 0 && !msi ? Rules.Flags(prog) : new List<string>();
                                 var when = lw ?? idate.Value;
                                 bool hiddenEntry = int.TryParse(Convert.ToString(k.GetValue("SystemComponent")), out var sc) && sc == 1;   // FRST: "Hidden"
@@ -210,7 +232,7 @@ namespace Spor.Modules
                 {
                     lines.Add((r.T, new[] { Log.T(r.T), r.Scope, r.Name, r.Ver, r.Pub, r.Date, r.Folder, r.Prog, r.Status, Rules.FlagCol(r.Fl), r.Key, r.Hidden ? "yes" : "-" }));
                     c.Event(r.T, "INS", null, null, r.Fl.Count > 0 ? r.Fl : null, more: new List<(string Key, string Value)> { ("key", r.Key) },
-                            text: $"installed or updated: {r.Name} {r.Ver}".TrimEnd() + (r.Pub.Length > 0 ? $" ({r.Pub})" : "") + (r.Scope.StartsWith("user") ? ", per user" : ""));
+                            text: $"installed or updated: {NameVersion(r.Name, r.Ver)}" + (r.Pub.Length > 0 ? $" ({r.Pub})" : "") + (r.Scope.StartsWith("user") ? ", per user" : ""));
                 }
             }
             foreach (var (l, i) in lines.Select((l, i) => (l, i)).OrderBy(x => x.l.T))
@@ -263,17 +285,24 @@ namespace Spor.Modules
                 // the English labels of the message only as a fallback
                 var data = (e.Id == 1033 || e.Id == 1034) ? MsiData(e) : null;
                 string F(string n) { var m = Regex.Match(msg, n + @":\s*(.*?)\.(\s+[A-Z][\w ]+:|\s*$)"); return m.Success ? m.Groups[1].Value.Trim() : ""; }
-                var what = e.Id == 1033 ? "installed" : e.Id == 1034 ? "removed" : "install FAILED";
                 var name = data?.Name ?? F("Product Name");
                 var ver = data?.Version ?? F("Product Version");
                 var maker = data?.Maker ?? F("Manufacturer");
                 var st = data?.Status ?? F("(?:Installation|Removal) success or error status");
+                bool failed = e.Id == 11708 || (st.Length > 0 && st != "0");
+                // a 1033 with an error status is a failed install, not "installed: ..., status 1603 (failed)"
+                var what = e.Id == 1034 ? (failed ? "removal FAILED" : "removed") : failed ? "install FAILED" : "installed";
                 var text = name.Length > 0
-                    ? $"{what}: {name} {ver}".TrimEnd() + (maker.Length > 0 ? $" ({maker})" : "") + (st.Length > 0 && st != "0" ? $", status {st} (failed)" : "")
+                    ? $"{what}: {NameVersion(name, ver)}" + (maker.Length > 0 ? $" ({maker})" : "") + (failed && st.Length > 0 && st != "0" ? $", status {st}" : "")
                     : $"{what}: " + Regex.Replace(msg, @"^Product:\s*", "", RegexOptions.IgnoreCase);
                 var code = ProductCode(e);   // = the product's Uninstall subkey (FRST: HKLM\...\{GUID})
                 t.Add(Log.T(tm), e.Id.ToString(), text, user, name, code);
-                c.Event(tm, "INS", null, code != null ? "product code " + code : null, text: "Windows Installer " + text);
+                // the timeline has one line per install: not a second one for the same product within 5 minutes (the Uninstall key's
+                // "installed or updated" line, or the 11708 next to a failed 1033)
+                bool twin = code != null && tm.HasValue && c.Events.Any(x => x.Src == "INS" && Math.Abs((x.T - tm.Value).TotalMinutes) <= 5
+                    && ((x.More != null && x.More.Any(m => m.Key == "key" && m.Value.EndsWith("\\" + code, StringComparison.OrdinalIgnoreCase)) && !failed)
+                        || (x.Extra == "product code " + code && failed && (x.Text ?? "").Contains("FAILED"))));
+                if (!twin) c.Event(tm, "INS", null, code != null ? "product code " + code : null, text: "Windows Installer " + text);
                 e.Dispose();
             }
             t.WriteTo(c.Out, "no Windows Installer installs or removals in the time window");
@@ -308,6 +337,23 @@ namespace Spor.Modules
         string Who(string sid) => sid == "S-1-5-18" ? "SYSTEM" : sid == "S-1-5-19" ? "LOCAL SERVICE" : sid == "S-1-5-20" ? "NETWORK SERVICE" : c.UserOf(sid);
 
         static string S(RegistryKey k, string n) => (Convert.ToString(k.GetValue(n)) ?? "").Trim();
+
+        /// <summary>(pure) InstallLocation as a folder without the last "\": quotes and blanks off, "C:/Riot Games/x/" with backslashes.</summary>
+        internal static string InstallFolder(string s)
+        {
+            s = (s ?? "").Trim().Trim('"').Trim();
+            if (Regex.IsMatch(s, @"^[a-z]:/", Util.RX)) s = s.Replace('/', '\\');
+            return s.TrimEnd('\\');
+        }
+
+        /// <summary>(pure) "name version", the version left out when empty or already in the name ("Antigravity 2.32.1", not "... 2.32.1 2.32.1").</summary>
+        internal static string NameVersion(string name, string version)
+        {
+            name = (name ?? "").Trim(); version = (version ?? "").Trim();
+            if (version.Length == 0) return name;
+            return System.Text.RegularExpressions.Regex.IsMatch(name, @"(^|[^\w.])" + System.Text.RegularExpressions.Regex.Escape(version) + @"($|[^\w.])")
+                ? name : (name + " " + version).Trim();
+        }
 
         static DateTime? InstallDate(string s) =>
             DateTime.TryParseExact(s, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var d) ? d : (DateTime?)null;

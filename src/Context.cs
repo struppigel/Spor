@@ -83,6 +83,32 @@ namespace Spor
         public readonly Dictionary<string, string> Md5 = new Dictionary<string, string>(Util.IC);       // display path -> MD5 (FRST Search logs give only MD5)
         public readonly Dictionary<string, (long Size, DateTime Created, DateTime Modified)> Meta =
             new Dictionary<string, (long, DateTime, DateTime)>(Util.IC);                                 // display path -> size, created, modified (UTC)
+        /// <summary>Display path -> real path of the files to hash (F with hash on); FILES hashes the ones it lists (HashFile).</summary>
+        public readonly Dictionary<string, string> ToHash = new Dictionary<string, string>(Util.IC);
+
+        /// <summary>
+        /// Hashes a file F queued (ToHash) into Sha256 and Md5: the chosen algorithm and MD5 in one read (MD5 to meet FRST Search
+        /// lines). A file that cannot be read any more stays without a hash ("not hashed").
+        /// </summary>
+        public void HashFile(string disp)
+        {
+            if (!ToHash.TryGetValue(disp, out var real) || Sha256.ContainsKey(disp)) return;
+            try
+            {
+                using (var fs = new FileStream(real, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 20, FileOptions.SequentialScan))
+                using (var a = HashAlgorithm.Create(Opt.Algo))
+                using (var m = MD5.Create())
+                {
+                    bool both = !Opt.Algo.Equals("MD5", StringComparison.OrdinalIgnoreCase);
+                    var buf = new byte[1 << 20]; int n;
+                    while ((n = fs.Read(buf, 0, buf.Length)) > 0) { a.TransformBlock(buf, 0, n, null, 0); if (both) m.TransformBlock(buf, 0, n, null, 0); }
+                    a.TransformFinalBlock(buf, 0, 0);
+                    Sha256[disp] = BitConverter.ToString(a.Hash).Replace("-", "");
+                    if (both) { m.TransformFinalBlock(buf, 0, 0); Md5[disp] = BitConverter.ToString(m.Hash).Replace("-", ""); }
+                }
+            }
+            catch { }
+        }
 
         /// <summary>Side-loading results per host program (Sideload.For), so each program is checked once per scan.</summary>
         public readonly Dictionary<string, List<SideloadHit>> Sideloads = new Dictionary<string, List<SideloadHit>>(Util.IC);
@@ -184,8 +210,26 @@ namespace Spor
         public void Find(DateTime? t, string text, List<(string Key, string Value)> more)
         {
             Findings.Add((t, Module, text));
-            if (more != null && more.Count > 0 && !FindingMore.ContainsKey(text)) FindingMore[text] = more;
+            if (more == null || more.Count == 0) return;
+            // the same text again (Defender logs a detection again when it finds another file): its sub-lines are added, the SUMMARY
+            // writes one line for findings that read the same in the same second
+            if (FindingMore.TryGetValue(text, out var had)) had.AddRange(more.Where(m => !had.Contains(m)));
+            else FindingMore[text] = new List<(string Key, string Value)>(more);
         }
+        /// <summary>
+        /// A finding with flags, written like every other item line: "item => details &lt;==== !flags" (details left out when null).
+        /// Up to Spor 0.7.1 the flags were inside the text ("x.pdf.lnk  !double-extension  (loaded by y.exe)").
+        /// </summary>
+        public void Find(DateTime? t, string item, string details, List<string> flags)
+        {
+            var text = string.IsNullOrEmpty(details) ? item : item + " => " + details;
+            Findings.Add((t, Module, text));
+            if (flags == null || flags.Count == 0) return;
+            var key = Module + "\n" + text;
+            FindingFlags[key] = FindingFlags.TryGetValue(key, out var had) ? had.Union(flags).ToList() : flags.Distinct().ToList();
+        }
+        /// <summary>Flags of a finding (Find with flags), by module and text.</summary>
+        public readonly Dictionary<string, List<string>> FindingFlags = new Dictionary<string, List<string>>();
         /// <summary>Sub-lines of a finding, by its text (Find with sub-lines).</summary>
         public readonly Dictionary<string, List<(string Key, string Value)>> FindingMore = new Dictionary<string, List<(string Key, string Value)>>();
         /// <summary>
@@ -256,7 +300,9 @@ namespace Spor
         {
             var m = Rules.DrivePath.Match(p ?? "");
             if (!m.Success) return p;
-            if (caseCache.TryGetValue(p, out var r)) return r;
+            // the cache also holds the parts looked up on the way, null for a part that is gone: a gone folder asked for
+            // later (a "folder: " line, a "more:" line) must not get that null (it printed as "\")
+            if (caseCache.TryGetValue(p, out var r) && r != null) return r;
             var parts = m.Groups[2].Value.Split(new[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
             var cur = m.Groups[1].Value.ToUpperInvariant();
             int i = 0;
@@ -323,7 +369,11 @@ namespace Spor
             return t;
         }
 
-        static readonly Regex VersionPart = new Regex(@"\d+([._]\d+)+", Util.RX);
+        /// <summary>(alias, program) of the app execution aliases met so far, as FILES writes them (real case, Rules.Fix).</summary>
+        public IEnumerable<(string Alias, string Target)> AliasTargets() =>
+            aliases.Where(kv => kv.Value != null).Select(kv => (Rules.Fix(RealCase(kv.Key)), Rules.Fix(RealCase(kv.Value)))).ToList();
+
+        static readonly Regex VersionPart =new Regex(@"\d+([._]\d+)+", Util.RX);
         static readonly Regex HashFolder = new Regex(@"^(?=[^\\]*\d)[0-9a-f]{8,40}$", Util.RX);   // VS Code: Microsoft VS Code\2C33B50B16 (commit prefix)
 
         /// <summary>Folder name with its version replaced by # (app-1.0.9267 -> app-#, 2C33B50B16 -> #), or null if it has none.</summary>
@@ -364,6 +414,8 @@ namespace Spor
         {
             if (string.IsNullOrEmpty(p)) return ("-", "-");
             if (p.StartsWith(@"\VOLUME{", StringComparison.OrdinalIgnoreCase)) return (Rules.Fix(p), "volume not mounted");
+            // a path without its drive (PCA) that no drive has now (ExecEvidence.PcaPath checked them all): gone, not "present and signed"
+            if (p.StartsWith(@"?:\", StringComparison.Ordinal)) return (Rules.Fix(p), "gone");
             if (!Rules.DrivePath.IsMatch(p)) return (Rules.Fix(p), "-");
             var real = RealCase(p);
             var disp = Rules.Fix(real);
@@ -376,25 +428,18 @@ namespace Spor
                 else
                 {
                     try { var fm = new FileInfo(real); Meta[disp] = (fm.Length, fm.CreationTimeUtc, fm.LastWriteTimeUtc); } catch { }
-                    // hash only when asked; the signature always (the whitelist decides by it, so the log must show it)
+                    // hash only when asked; the signature always (the whitelist decides by it, so the log must show it).
+                    // The hash itself waits for FILES (HashFile): only the files it lists are read in full.
                     if (hash && !Opt.NoHash)
                         try
                         {
                             var fi = new FileInfo(real);
                             if (fi.Length > (long)Opt.MaxMB * 1024 * 1024) sts.Add("> " + Opt.MaxMB + " MB, not hashed");
                             else
-                                using (var fs = new FileStream(real, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 20, FileOptions.SequentialScan))
-                                using (var a = HashAlgorithm.Create(Opt.Algo))
-                                using (var m = MD5.Create())
-                                {
-                                    // one read for both: the chosen hash and MD5 (to meet FRST Search lines)
-                                    bool both = !Opt.Algo.Equals("MD5", StringComparison.OrdinalIgnoreCase);
-                                    var buf = new byte[1 << 20]; int n;
-                                    while ((n = fs.Read(buf, 0, buf.Length)) > 0) { a.TransformBlock(buf, 0, n, null, 0); if (both) m.TransformBlock(buf, 0, n, null, 0); }
-                                    a.TransformFinalBlock(buf, 0, 0);
-                                    Sha256[disp] = BitConverter.ToString(a.Hash).Replace("-", "");
-                                    if (both) { m.TransformFinalBlock(buf, 0, 0); Md5[disp] = BitConverter.ToString(m.Hash).Replace("-", ""); }
-                                }
+                            {
+                                using (new FileStream(real, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) { }   // readable?
+                                ToHash[disp] = real;
+                            }
                         }
                         catch { sts.Add("no access"); }
                     if (Signature.Applies(real) && !sts.Contains("no access"))

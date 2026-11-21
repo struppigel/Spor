@@ -74,7 +74,7 @@ namespace Spor.Modules
             {
                 var name = apps.TryGetValue(kv.Key, out var n) ? n : "(unknown SRUM app id " + kv.Key + ")";
                 var path = c.DevicePath(name);
-                var user = string.Join(", ", kv.Value.Users.Select(u => users.TryGetValue(u, out var s) ? c.UserOf(s) : "").Where(s => s.Length > 0 && !s.StartsWith("S-1-5-1")).Distinct());
+                var user = string.Join(", ", kv.Value.Users.Select(u => users.TryGetValue(u, out var s) ? c.UserOf(s) : "").Where(s => s.Length > 0 && !s.StartsWith("S-1-5-1") && s != "S-1-5-20").Distinct());   // no tag for SYSTEM, LOCAL and NETWORK SERVICE (like other service rows)
                 return (Path: path, IsFile: Rules.DrivePath.IsMatch(path), kv.Value.Sent, kv.Value.Recv, kv.Value.First, kv.Value.Last, User: user);
             }).ToList();
             // SRUM can hold the same program under several app ids (other path spelling, other user): one row per path, sums
@@ -83,15 +83,19 @@ namespace Spor.Modules
                         User: string.Join(", ", g.SelectMany(r => r.User.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries)).Distinct()))).ToList();
             var shown = rows.Where(r => r.IsFile && (!Rules.Whitelist || !Trusted(r.Path) || Rules.Lol.IsMatch(r.Path))).OrderByDescending(r => r.Sent).ThenByDescending(r => r.Last).ToList();
             var st = new Table("first seen", "@last seen", "sent", "received", "[user", "!status", "<flags", "*program");
-            int k = 0;
+            int k = 0, staging = 0;
             foreach (var r in shown)
             {
-                var fl = Rules.Flags(r.Path); var f = c.F(r.Path);
+                var fl = Rules.Flags(r.Path);
+                // whitelist: updaters' staged packages (gone after the update; timeline too)
+                if (Rules.Whitelist && Rules.InUpdaterStaging(r.Path) && Rules.Strong(fl).Count == 0) { staging++; continue; }
+                var f = c.F(r.Path);
                 st.Add(Log.T(r.First), Log.T(r.Last), Cmd.Bytes(r.Sent), Cmd.Bytes(r.Recv), r.User, f.Status, Rules.FlagCol(fl), f.Path);
                 // timeline: the 60 programs that sent the most (the table lists all)
                 if (k++ < 60 || Rules.Strong(fl).Count > 0) c.Event(r.First, "SRU", r.Path, $"SRUM first activity in the window; sent {Cmd.Bytes(r.Sent)} in total");
                 if (r.Sent >= 50L << 20 && !c.SignedOk(r.Path)) c.Find(r.Last, $"{c.File(r.Path)} sent {Cmd.Bytes(r.Sent)} ({r.First:MM-dd} to {r.Last:MM-dd}, SRUM)", "last activity");
             }
+            if (staging > 0) c.Out.Comment($"Hidden: {Util.Plural(staging, "updater package", "updater packages")} staged by Edge, Brave, Google or Windows Update; -nowhitelist lists them.");
             st.WriteTo(c.Out);
         }
 
@@ -167,7 +171,7 @@ namespace Spor.Modules
                 if (Rules.Whitelist && !Rules.DrivePath.IsMatch(path)) continue;   // System, protected processes
                 ct.Add(g.Key.ToString(), f.Item2, Rules.FlagCol(fl), disp, string.Join(", ", est), string.Join(", ", lis.Select(x => "port " + x)));
                 if (est.Count > 0 && (fl.Contains("!lolbin") || (unsigned && !Trusted(path))))
-                    c.Find($"{disp} is connected to {string.Join(", ", est.Take(3))}{Rules.FlagText(fl)}");
+                    c.Find(null, disp, $"connected to {string.Join(", ", est.Take(3))}", fl);
             }
             ct.WriteTo(c.Out);
         }

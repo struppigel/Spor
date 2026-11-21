@@ -21,7 +21,6 @@ namespace Spor.Modules
         public string Name => "AMCACHE";
         public string Description => "files and drivers Windows recorded";
 
-        const string NoiseList = @"^\\(\$WINREAGENT|\$WINDOWS\.~BT|\$WINDOWS\.~WS)\\|\\PACKAGE CACHE\\|\\APPDATA\\LOCAL\\PROGRAMS\\MICROSOFT VS CODE\\|\\APPDATA\\LOCAL\\MICROSOFT\\(EDGE|ONEDRIVE)\\|\\PYTHON\d+\\(LIB|DLLS)\\";
         static readonly Regex Exe = new Regex(@"\.(exe|scr|com)$", Util.RX);
         static readonly Regex Sys = new Regex(@"^[a-z]:\\windows\\(system32|syswow64)\\([^\\]+)$", Util.RX);
         static readonly Regex Pf = new Regex(@"^[a-z]:\\program files( \(x86\))?\\", Util.RX);
@@ -53,7 +52,7 @@ namespace Spor.Modules
 
         public void Execute(Ctx ctx)
         {
-            c = ctx; noise = Rules.Noise(NoiseList);
+            c = ctx; noise = Rules.Noise(Whitelist.Noise("amcache"));
             var src = Path.Combine(c.WinDir, @"appcompat\Programs\Amcache.hve");
             if (!File.Exists(src)) { c.Out.None("Amcache.hve not found: " + src); return; }
             var dir = Path.Combine(c.Temp, "amcache");
@@ -100,7 +99,14 @@ namespace Spor.Modules
         static string Sha(object v) { var s = (Convert.ToString(v) ?? "").Trim(); return s.Length == 44 && s.StartsWith("0000") ? s.Substring(4) : s; }
         static string Short(string s, int n) => s;
         /// <summary>File name; entries without a Name value only have the key name, which Windows cuts to 16 characters (shown with …).</summary>
-        static string Nm(Entry e) { var n = e.S("Name"); if (n.Length > 0) return n; n = e.Key.Split('|')[0]; return n.Length >= 16 ? n + "…" : n; }
+        static string Nm(Entry e) { var n = e.S("Name"); return n.Length > 0 ? n : KeyName(e.Key.Split('|')[0]); }
+
+        /// <summary>
+        /// (pure) A name from the key, which Windows cuts to 16 characters: "…" when it may be cut. A 16-character name that ends in a
+        /// program extension is whole (msedge_proxy.exe, cls-srep_x64.exe).
+        /// </summary>
+        internal static string KeyName(string n) =>
+            n.Length < 16 || (n.Length == 16 && Regex.IsMatch(n, @"\.(exe|dll|sys|com|cpl|scr|ocx|msi)$", Util.RX)) ? n : n + "…";
 
         /// <summary>What else an entry says about the file: product, publisher, version, Store package.</summary>
         static string Describe(Entry e)
@@ -133,9 +139,10 @@ namespace Spor.Modules
             var m = Rules.DrivePath.Match(p);
             if (!m.Success) return 2;
             var d = m.Groups[1].Value; var rel = m.Groups[2].Value;
-            if (Rules.OddChars(rel) || Rules.Dbl.IsMatch(rel) || Rules.Disg.IsMatch(rel)) return 2;
+            if (Rules.OddChars(rel) || Rules.DoubleExt(rel) || Rules.Disg.IsMatch(rel)) return 2;
             if (!Rules.Whitelist) return 2;
             if (!d.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase) || Rules.Risky.IsMatch(rel)) return 2;
+            if (Rules.InUpdaterStaging(p) && !File.Exists(p)) return 1;   // a staged update package, deleted after the update (am_delta.exe)
             bool unsignedExe = check && Exe.IsMatch(p) && !c.SignedOk(p);   // only executables: Amcache also lists thousands of DLLs
             if (noise.IsMatch(rel)) return Signature.Applies(p) && !c.SignedOk(p) ? 2 : 1;   // every signable file: injected DLLs live in app folders
             if (Rules.Trusted.IsMatch(rel)) return unsignedExe ? 2 : 0;
@@ -144,6 +151,7 @@ namespace Spor.Modules
 
         string Key(string p)
         {
+            if (Rules.StagingRoot(p) is string root) return root;   // staged update packages: one count per staging folder
             string d = "", rel = p;
             var m = Rules.DrivePath.Match(p);
             if (m.Success) { d = m.Groups[1].Value; rel = m.Groups[2].Value; }
@@ -271,7 +279,7 @@ namespace Spor.Modules
             {
                 var f = c.F(x.P);
                 dt.Add(Log.T(x.T), f.Status, Rules.FlagCol(x.F), f.Path, x.I);
-                c.Find(x.T, f.Path + Rules.FlagText(x.F) + "  (driver)", "entry written");
+                c.Find(x.T, f.Path, "driver; Amcache entry written", x.F);
             }
             dt.WriteTo(c.Out);
             c.Out.Sub("Entries without path (not in the timeline)",
@@ -280,7 +288,7 @@ namespace Spor.Modules
             foreach (var x in nop.OrderBy(x => x.T))
             {
                 nt.Add(Log.T(x.T), Rules.FlagCol(x.F), x.Sha.ToUpperInvariant(), Rules.Fix(x.I), string.Join(", ", new[] { x.D, x.K }.Where(v => !string.IsNullOrEmpty(v))));
-                if (Rules.Strong(x.F).Count > 0) c.Find(x.T, Rules.Fix(x.I) + Rules.FlagText(x.F) + "  (Amcache entry without path)", "entry written");
+                if (Rules.Strong(x.F).Count > 0) c.Find(x.T, Rules.Fix(x.I), "Amcache entry without path; entry written", x.F);
             }
             nt.WriteTo(c.Out);
             c.Out.Sub("Inventory scans (not in the timeline)");

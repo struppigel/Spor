@@ -92,6 +92,7 @@ src/MainForm.cs          the window
 src/Scanner.cs           module runner, log header, timeline, summary, FILES
 src/Context.cs           options, user profiles and hives, hashing, trust rule
 src/Rules.cs             shared whitelist and flag rules
+src/Whitelist.cs         known-noise locations and names (resources/whitelist.txt)
 src/Correlate.cs         checks across modules after the scan (script-runtime launchers)
 src/Autodetect.cs        known-malware patterns (resources/autodetect.txt) over everything the modules collected
 src/Pe.cs                read-only PE parser (imports, exports, PDB path, overlay)

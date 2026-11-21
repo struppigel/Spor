@@ -79,6 +79,10 @@ namespace Spor
         /// <summary>"(prefix item, item, ...)" as one comment line.</summary>
         public void Wrap(string prefix, IEnumerable<string> items) => Comment(prefix + string.Join(", ", items));
 
+        /// <summary>The singular of a count unit: "new files" -> "new file", "entries" -> "entry".</summary>
+        static string One(string unit) =>
+            unit.EndsWith("ies") ? unit.Substring(0, unit.Length - 3) + "y" : unit.EndsWith("s") ? unit.Substring(0, unit.Length - 1) : unit;
+
         /// <summary>Known-noise locations that were hidden, with counts.</summary>
         public void Hidden(Dictionary<string, int> counts, string unit)
         {
@@ -86,7 +90,7 @@ namespace Spor
             Sub("Hidden: known-noise locations", "Folders where such files are normal on most PCs; counts only. -nowhitelist lists them.");
             var t = new Table("=count", "*folder");
             foreach (var kv in counts.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
-                t.Add(kv.Value + " " + unit, kv.Key);
+                t.Add(Util.Plural(kv.Value, One(unit), unit), kv.Key);
             t.WriteTo(this);
         }
     }

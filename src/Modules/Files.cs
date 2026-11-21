@@ -22,14 +22,10 @@ namespace Spor.Modules
         // scripts: up to 3 folder levels deep (loaders use e.g. AppData\Roaming\x\y\run.vbs), except where scripts are normal
         internal static readonly Regex Script = new Regex(@"\.(bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|jsc|wsf|wsh|wsc|sct|hta|py|pyw|au3|a3x|ahk)$", Util.RX);
         static readonly Regex Shortcut = new Regex(@"\.(lnk|url)$", Util.RX);
-        static readonly Regex ScriptNoise = new Regex(@"\\(Mozilla\\(Firefox|Thunderbird)|Thunderbird|Waterfox|LibreWolf)\\|\\(nvm|npm|npm-cache|pnpm|yarn|JetBrains|Code\\User|Code - Insiders|Cursor\\User|GitHub Desktop|Postman)\\|\\(prefs|user|times)\.js$", Util.RX);
+        static Regex ScriptNoise => Whitelist.ScriptNoise;   // resources/whitelist.txt
         static readonly Regex Archive = new Regex(@"\.(zip|rar|7z|cab|iso|img|vhd|vhdx|tar|gz|tgz|ace|arj|z)$", Util.RX);
-        static readonly HashSet<string> SkipDirs = new HashSet<string>(new[] {
-            "node_modules", ".git", "site-packages", "__pycache__", "Cache", "Code Cache", "GPUCache", "Service Worker", "IndexedDB",
-            "Packages", "WinSxS", "assembly", "CacheStorage", "ShaderCache", "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache", "blob_storage",
-            "Local Storage", "Session Storage", "INetCache", "WebCache", "Crashpad", "CrashDumps", "Package Cache", "WindowsApps", "pip", "npm-cache",
-            ".nuget", ".gradle", ".m2", ".cargo", ".rustup", "venv", ".venv" }, Util.IC);
-        const string NoiseList = @"\\APPDATA\\LOCAL\\PROGRAMS\\MICROSOFT VS CODE\\|\\APPDATA\\LOCAL\\MICROSOFT\\(EDGE|ONEDRIVE|TEAMS|WINGET)\\|\\APPDATA\\LOCAL\\(DISCORD|SLACK|GITHUBDESKTOP|SQUIRRELTEMP)\\|\\\.VSCODE\\|\\APPDATA\\LOCAL\\TEMP\\(MSEDGE_|CHROME_|SCOPED_DIR|.*\\RESOURCES\\APP\\SERVICEHUB\\)|\\PROGRAMDATA\\MICROSOFT\\(WINDOWS DEFENDER|CLICKTORUN|EDGEUPDATE|WINDOWS\\WER)\\|\\PYTHON\d+\\(LIB|DLLS|SCRIPTS)\\|\\APPDATA\\LOCAL\\TEMP\\IS-[A-Z0-9]+\.TMP\\";
+        static HashSet<string> SkipDirs => Whitelist.SkipDirs;   // resources/whitelist.txt
+        static Regex Breadcrumb => Whitelist.Breadcrumb;   // resources/whitelist.txt
 
         /// <summary>A new file of one folder, with its Zone.Identifier.</summary>
         sealed class NewFile
@@ -72,7 +68,7 @@ namespace Spor.Modules
 
         public void Execute(Ctx ctx)
         {
-            c = ctx; noise = Rules.Noise(NoiseList);
+            c = ctx; noise = Rules.Noise(Whitelist.Noise("files"));
             var sw = Stopwatch.StartNew();
             var roots = new List<(string Dir, bool Archives)>();
             foreach (var p in c.Profiles)
@@ -142,6 +138,13 @@ namespace Spor.Modules
                             qk[k] = qk.TryGetValue(k, out var n) ? n + 1 : 1;
                             continue;
                         }
+                        // .NET's BreadcrumbStore: empty marker files named after assemblies ("netcore,DryIoc.dll"); a file with content stays
+                        if (Rules.Whitelist && Breadcrumb.IsMatch(rel) && ((FileInfo)it).Length == 0)
+                        {
+                            var k = it.FullName.Substring(0, 2) + Breadcrumb.Match(rel).Value;
+                            qk[k] = qk.TryGetValue(k, out var n) ? n + 1 : 1;
+                            continue;
+                        }
                         found.Add(((FileInfo)it, isArch));
                     }
                 }
@@ -196,43 +199,57 @@ namespace Spor.Modules
 
         /// <summary>
         /// Old-looking files with a recent NTFS change time. Installers and updaters copy files with their original (whole-second) times,
-        /// many files in one folder tree within a minute: one unflagged line per such batch, with every name. A single file or two,
-        /// unsigned or not validly signed, is flagged !timestomped. Validly signed files are not timestomping candidates.
+        /// many files in one folder tree within a minute: one unflagged line per such batch, with the names of its files that are not
+        /// validly signed. A single file or two, unsigned or not validly signed, is flagged !timestomped. Validly signed files are not
+        /// timestomping candidates, but they count for the batch: an install of signed programs with one unsigned .jar is a batch.
+        /// Windows Update's download folder is left out (its packages keep the times they were built with).
         /// </summary>
         void Backdated(List<(FileInfo F, DateTime Ch)> back)
         {
-            var cand = back.Where(b => !Rules.Whitelist || !Signature.Applies(b.F.FullName) || !c.SignedOk(b.F.FullName)).ToList();
-            // batch = same folder tree (three levels below AppData\Local|Roaming, ProgramData or the profile) and change times within 60 s
+            bool Candidate(string p) => !Rules.Whitelist || !Signature.Applies(p) || !c.SignedOk(p);
+            foreach (var x in Batches(back.Where(b => !(Rules.Whitelist && Rules.InWindowsUpdateFolder(b.F.FullName))), b => b.F.FullName, b => b.Ch))
+            {
+                var cand = x.Where(b => Candidate(b.F.FullName)).ToList();
+                if (cand.Count == 0) continue;
+                if (Rules.Whitelist && x.Count >= 3)
+                {
+                    foreach (var fo in cand.GroupBy(b => b.F.DirectoryName, Util.IC))
+                        c.Event(fo.Max(b => b.Ch), "STP", null,
+                                text: $"{Rules.Fix(fo.Key)}\\ => {Util.Plural(fo.Count(), "file", "files")} written with older timestamps (installer or update, {x.Count} programs at once)",
+                                more: Log.Chunks(fo.Select(b => Rules.Fix(b.F.Name))).Select(p => ("files", p)).ToList());
+                    continue;
+                }
+                foreach (var b in cand)
+                {
+                    // the line's time is the NTFS change time (when the times were set)
+                    c.Event(b.Ch, "STP", b.F.FullName, Timestomp.StpDetail(b.F.CreationTimeUtc, b.F.LastWriteTimeUtc), new List<string> { "!timestomped" });
+                }
+            }
+        }
+
+        /// <summary>
+        /// (pure) Backdated files in batches: the same folder tree (two levels below AppData\Local|Roaming|LocalLow, ProgramData or a
+        /// profile folder, else the file's folder) and change times at most 60 s apart.
+        /// </summary>
+        internal static List<List<T>> Batches<T>(IEnumerable<T> items, Func<T, string> path, Func<T, DateTime> changed)
+        {
             string Root(string p)
             {
                 foreach (var rx in new[] { @"^(.*?\\AppData\\(Local|Roaming|LocalLow)\\[^\\]+(\\[^\\]+)?)\\", @"^([a-z]:\\ProgramData\\[^\\]+(\\[^\\]+)?)\\", @"^([a-z]:\\Users\\[^\\]+\\[^\\]+(\\[^\\]+)?)\\" })
                 { var m = Regex.Match(p, rx, Util.RX); if (m.Success) return m.Groups[1].Value; }
                 return Util.Folder(p);
             }
-            foreach (var g in cand.GroupBy(b => Root(b.F.FullName), Util.IC))
+            var res = new List<List<T>>();
+            foreach (var g in items.GroupBy(b => Root(path(b)), Util.IC))
             {
-                var cl = new List<List<(FileInfo F, DateTime Ch)>>();
-                foreach (var b in g.OrderBy(b => b.Ch))
+                List<T> cur = null;
+                foreach (var b in g.OrderBy(changed))
                 {
-                    if (cl.Count == 0 || (b.Ch - cl[cl.Count - 1].Last().Ch).TotalSeconds > 60) cl.Add(new List<(FileInfo, DateTime)>());
-                    cl[cl.Count - 1].Add(b);
-                }
-                foreach (var x in cl)
-                {
-                    if (Rules.Whitelist && x.Count >= 3)
-                    {
-                        foreach (var fo in x.GroupBy(b => b.F.DirectoryName, Util.IC))
-                            c.Event(fo.Max(b => b.Ch), "STP", null, text: $"{Rules.Fix(fo.Key)}\\ => {fo.Count()} files written with older timestamps (installer or update)",
-                                    more: Log.Chunks(fo.Select(b => Rules.Fix(b.F.Name))).Select(p => ("files", p)).ToList());
-                        continue;
-                    }
-                    foreach (var b in x)
-                    {
-                        // the line's time is the NTFS change time (when the times were set)
-                        c.Event(b.Ch, "STP", b.F.FullName, Timestomp.StpDetail(b.F.CreationTimeUtc, b.F.LastWriteTimeUtc), new List<string> { "!timestomped" });
-                    }
+                    if (cur == null || (changed(b) - changed(cur[cur.Count - 1])).TotalSeconds > 60) res.Add(cur = new List<T>());
+                    cur.Add(b);
                 }
             }
+            return res;
         }
     }
 }

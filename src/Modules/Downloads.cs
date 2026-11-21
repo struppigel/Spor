@@ -140,13 +140,13 @@ namespace Spor.Modules
                 var fl = Rules.Flags(r.Path).Concat(r.Fl).Distinct().ToList();
                 var f = c.F(r.Path);
                 dlt.Add(Log.T(r.T), c.MultiUser ? r.User : null, r.Browser, f.Status, Rules.FlagCol(fl), f.Path);
-                dlt.More("from", r.Url);
-                if (!string.IsNullOrEmpty(r.Page) && r.Page != r.Url) dlt.More("page", r.Page);
+                dlt.More("from", LongUrl(r.Url));
+                if (!string.IsNullOrEmpty(r.Page) && r.Page != r.Url) dlt.More("page", LongUrl(r.Page));
                 // the URLs on sub-lines (they make the line too long); the page only when it is not the download URL itself
                 var urls = new List<(string Key, string Value)> { ("from", Host(r.Url)) };
                 if (!string.IsNullOrEmpty(r.Page) && !Host(r.Page).Equals(Host(r.Url), StringComparison.OrdinalIgnoreCase)) urls.Add(("page", Host(r.Page)));
                 c.Event(r.T, "DL", r.Path, $"{c.U(r.User)}{r.Browser}", r.Fl, more: urls);
-                if (Rules.Strong(fl).Count > 0) c.Find(r.T, $"download {c.File(r.Path)}{Rules.FlagText(Rules.Strong(fl))} from {r.Url}");
+                if (Rules.Strong(fl).Count > 0) c.Find(r.T, c.File(r.Path), $"downloaded from {r.Url}", Rules.Strong(fl));
             }
             dlt.WriteTo(c.Out, $"none in the last {c.Opt.Days} days");
         }
@@ -156,8 +156,13 @@ namespace Spor.Modules
         {
             var n = Path.GetFileName(dir);
             if (n.Equals("User Data", StringComparison.OrdinalIgnoreCase)) n = Path.GetFileName(Path.GetDirectoryName(dir));
+            // an app's numbered profile folders (...\App\0, ...\App\1): "App 0", not "0"
+            else if (Regex.IsMatch(n, @"^\d+$")) n = Path.GetFileName(Path.GetDirectoryName(dir)) + " " + n;
             return n.Replace("-Browser", "").Replace("YandexBrowser", "Yandex");
         }
+
+        /// <summary>(pure) A URL for the section: whole up to 250 characters, else cut with "…" (signed download links carry 1 KB of tokens).</summary>
+        internal static string LongUrl(string url) => url == null || url.Length <= 250 ? url : url.Substring(0, 250) + "…";
 
         static string Host(string url)
         {
@@ -235,15 +240,30 @@ namespace Spor.Modules
                 catch (Exception e) { c.Err.Add("WebCache " + p.User + ": " + e.Message); }
             }
             rows = rows.GroupBy(r => r.Path + "|" + r.T.ToString("yyyyMMddHHmm"), Util.IC).Select(g => g.First()).ToList();
-            var wct = new Table("@time", "[user", "!status", "<flags", "*file");
+            // many entries of one user with the same second: WebCache wrote them at once (sync, compaction), not when each file was opened
+            var batch = WebCacheBatches(rows.Select(r => (r.T, r.User, r.Path)));
+            var wct = new Table("@time", "[user", "!status", "=details", "<flags", "*file");
             foreach (var r in rows.OrderBy(r => r.T))
             {
                 var f = c.F(r.Path);
-                wct.Add(Log.T(r.T), r.User, f.Status, Rules.FlagCol(Rules.Flags(r.Path)), f.Path);
-                if (Risky.IsMatch(r.Path) || !Rules.Whitelist) c.Event(r.T, "OPN", r.Path, "opened (WebCache)");
+                var n = batch.TryGetValue(BatchKey(r.T, r.User), out var bn) ? bn : 0;
+                var note = n > 0 ? $"WebCache batch of {n} entries, not the open time" : "-";
+                wct.Add(Log.T(r.T), r.User, f.Status, note, Rules.FlagCol(Rules.Flags(r.Path)), f.Path);
+                if (!(Risky.IsMatch(r.Path) || !Rules.Whitelist)) continue;
+                // a batch time only when the file has no real open time of its own
+                if (n > 0 && rows.Any(o => o.Path.Equals(r.Path, StringComparison.OrdinalIgnoreCase) && !batch.ContainsKey(BatchKey(o.T, o.User)))) continue;
+                c.Event(r.T, "OPN", r.Path, n > 0 ? "opened (WebCache); " + note : "opened (WebCache)");
             }
             wct.WriteTo(c.Out);
         }
+
+        static string BatchKey(DateTime t, string user) => (user ?? "") + "|" + t.ToString("yyyyMMddHHmmss");
+
+        /// <summary>(pure) WebCache batches: 5 or more different files of one user with the same second, by BatchKey, with their count.</summary>
+        internal static Dictionary<string, int> WebCacheBatches(IEnumerable<(DateTime T, string User, string Path)> rows) =>
+            rows.GroupBy(r => BatchKey(r.T, r.User), StringComparer.OrdinalIgnoreCase)
+                .Select(g => (g.Key, N: g.Select(r => r.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count()))
+                .Where(x => x.N >= 5).ToDictionary(x => x.Key, x => x.N, StringComparer.OrdinalIgnoreCase);
 
         // ---------------- disk images mounted ----------------
         void Images()

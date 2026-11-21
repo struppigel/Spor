@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Management;
+using System.Text.RegularExpressions;
 
 namespace Spor.Modules
 {
@@ -28,13 +29,30 @@ namespace Spor.Modules
 
         Ctx c;
 
+        /// <summary>Chromium-based browsers, which start an extension's native-messaging host through cmd.exe.</summary>
+        static readonly Regex Browser = new Regex(@"\\(chrome|msedge|brave|vivaldi|opera|chromium)\.exe$", Util.RX);
+        static readonly Regex NativeMessaging = new Regex(
+            @"^/d /s /c """"([a-z]:\\[^""]+\.exe)"" chrome-extension://[a-p]{32}/( --parent-window=\d+)?"" < \\\\\.\\pipe\\chrome\.nativeMessaging\.in\.[0-9a-f]+ > \\\\\.\\pipe\\chrome\.nativeMessaging\.out\.[0-9a-f]+$",
+            Util.RX);
+
+        /// <summary>
+        /// (pure) The host program when this is cmd.exe as a Chromium browser starts an extension's native-messaging host, else null:
+        /// cmd.exe /d /s /c ""C:\x\host.exe" chrome-extension://ID/ --parent-window=0" &lt; \\.\pipe\chrome.nativeMessaging.in.N &gt; \\.\pipe\chrome.nativeMessaging.out.N
+        /// </summary>
+        internal static string NativeMessagingHost(string program, string commandLine)
+        {
+            if (program == null || !program.EndsWith(@"\cmd.exe", StringComparison.OrdinalIgnoreCase)) return null;
+            var m = NativeMessaging.Match(Cmd.Args(Util.Clip(commandLine)).Trim());
+            return m.Success ? m.Groups[1].Value : null;
+        }
+
         public void Execute(Ctx ctx)
         {
             c = ctx;
             var procs = Snapshot(out bool wmi);
             var byPid = procs.GroupBy(p => p.Pid).ToDictionary(g => g.Key, g => g.First());
             int self = Process.GetCurrentProcess().Id;
-            int checkedCount = 0, noAccess = 0;
+            int checkedCount = 0, noAccess = 0, nativeHosts = 0;
             var hidden = new Dictionary<string, int>(Util.IC);
             var t = new Table("@started", "[pid", "*program", "!status", "=parent", "command line", "arguments", "<flags");
             foreach (var p in procs.OrderBy(p => p.Created ?? DateTime.MaxValue).ThenBy(p => p.Pid))
@@ -61,6 +79,16 @@ namespace Spor.Modules
                 var hits = Sideload.For(c, path);
                 var flags = Rules.Flags(path).Concat(extra).Distinct().ToList();
                 if (!(outside || !signedOk || argsBad || badMods.Count > 0 || hits.Count > 0 || Rules.Strong(flags).Count > 0)) continue;
+                // whitelist: a browser extension's native-messaging host, which Chrome / Edge / Brave start through cmd.exe, validly
+                // signed by a well-known publisher in Windows / Program Files (Malwarebytes' mbambgnativemsg.exe): counted, not listed
+                if (Rules.Whitelist && signedOk && badMods.Count == 0 && hits.Count == 0 && Rules.Strong(flags).Count == 0
+                    && NativeMessagingHost(path, p.CommandLine) is string host && chain.Count > 0 && chain[0].Proc != null
+                    && Browser.IsMatch(chain[0].Proc.Path ?? "\\" + chain[0].Proc.Name) && Rules.InTrustedLocation(host) && c.SignedOk(host)
+                    && Rules.TrustedSigners.Contains((Signature.Check(host).Signer ?? "").Replace(" (catalog)", "")))
+                {
+                    nativeHosts++;
+                    continue;
+                }
                 // whitelist: a program installed per user (outside Windows and Program Files, not in a drop location), validly signed by a
                 // well-known publisher, with nothing else to say: counted, not listed
                 if (Rules.Whitelist && signedOk && !argsBad && badMods.Count == 0 && hits.Count == 0 && flags.All(x => x == "!lolbin")
@@ -79,7 +107,7 @@ namespace Spor.Modules
                 var details = $"running, pid {p.Pid}" + (chain.Count > 0 && chain[0].Proc != null ? ", parent " + chain[0].Proc.Leaf : "");
                 c.Event(p.Created, "PROC", path, details, extra.Count > 0 ? extra : null, pid: p.Pid);
                 if (Rules.Strong(extra).Count > 0 && (!p.Created.HasValue || p.Created < c.Since))
-                    c.Find(p.Created, $"running process {f.Path} (pid {p.Pid}), {ChainText(chain, wmi, p.Created, c.ProcessStarts)}{Rules.FlagText(Rules.Strong(extra))}");
+                    c.Find(p.Created, $"running process {f.Path} (pid {p.Pid}), {ChainText(chain, wmi, p.Created, c.ProcessStarts)}", null, Rules.Strong(extra));
             }
             c.Out.Comment($"{checkedCount} processes checked" + (wmi ? "" : " (WMI not available: no parents and command lines)") +
                           (noAccess > 0 ? $"; {noAccess} listed ones without access to their modules (protected processes)" : "") + ".");
@@ -88,6 +116,9 @@ namespace Spor.Modules
             if (hidden.Count > 0)
                 c.Out.Comment($"Hidden: {hidden.Values.Sum()} programs installed per user, validly signed by well-known publishers (-nowhitelist lists them): " +
                               string.Join(", ", hidden.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")));
+            if (nativeHosts > 0)
+                c.Out.Comment($"Hidden: {Util.Plural(nativeHosts, "cmd.exe", "cmd.exe processes")} a browser started for an extension's native-messaging host, " +
+                              "signed by a well-known publisher (-nowhitelist lists them).");
             t.WriteTo(c.Out);
         }
 

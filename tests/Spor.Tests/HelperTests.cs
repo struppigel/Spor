@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Spor.Modules;
 using Xunit;
 
@@ -326,5 +327,226 @@ namespace Spor.Tests
         [InlineData("", false)]
         [InlineData(null, false)]
         public void RunnableShortcutTargets(string target, bool runnable) => Assert.Equal(runnable, Usb.Runnable(target));
+    }
+
+    /// <summary>!double-extension: report.pdf.lnk is normal where Windows and Office write shortcuts named after the file they open.</summary>
+    public class DoubleExtensionTests
+    {
+        [Theory]
+        [InlineData(@"C:\Users\anna\Downloads\invoice.pdf.exe", true)]
+        [InlineData(@"C:\Users\anna\Downloads\invoice.pdf.lnk", true)]
+        [InlineData(@"C:\Users\anna\Downloads\Recent\invoice.pdf.lnk", true)]                             // a folder named Recent is not enough
+        [InlineData(@"C:\Users\anna\AppData\Roaming\Microsoft\Office\Recent\invoice.pdf.exe", true)]       // only shortcuts are exempt
+        [InlineData(@"C:\Users\anna\AppData\Roaming\Microsoft\Office\Recent\Library_Final.pptx.LNK", false)]
+        [InlineData(@"C:\Users\anna\AppData\Roaming\Microsoft\Windows\Recent\report.docx.lnk", false)]
+        [InlineData(@"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Readme.txt.lnk", false)]
+        [InlineData(@"\VOLUME{01d0-1234abcd}\USERS\ANNA\APPDATA\ROAMING\MICROSOFT\OFFICE\RECENT\X.PPTX.LNK", false)]   // Prefetch's form
+        public void Flag(string path, bool flagged) => Assert.Equal(flagged, Rules.Flags(path).Contains("!double-extension"));
+    }
+
+    /// <summary>Backdated files (old whole-second times, recent NTFS change time): installer batches vs. single files.</summary>
+    public class BackdatedTests
+    {
+        static readonly DateTime At = new DateTime(2026, 10, 28, 16, 49, 0, DateTimeKind.Utc);
+        const string Jdk = @"C:\Users\anna\AppData\Local\Programs\Eclipse Adoptium\jdk-25.0.5.8-hotspot\";
+
+        /// <summary>
+        /// An MSI writes the JDK's signed programs and one unsigned jrt-fs.jar within seconds: one batch of all of them, so the jar is
+        /// not a lone backdated file (Spor 0.7.1 dropped the signed files before batching and flagged the jar !timestomped).
+        /// </summary>
+        [Fact]
+        public void SignedFilesOfAnInstallAreInTheBatch()
+        {
+            var files = new[] { (Jdk + @"bin\java.exe", 0), (Jdk + @"bin\javaw.exe", 1), (Jdk + @"bin\server\jvm.dll", 2), (Jdk + @"lib\jrt-fs.jar", 36) };
+            var b = Files.Batches(files, f => f.Item1, f => At.AddSeconds(f.Item2));
+            Assert.Single(b);
+            Assert.Equal(4, b[0].Count);
+        }
+
+        [Fact]
+        public void FarApartOrOtherTreesAreSeparate()
+        {
+            var files = new[]
+            {
+                (@"C:\Users\anna\AppData\Roaming\Evil\a.exe", 0), (@"C:\Users\anna\AppData\Roaming\Evil\b.exe", 120),   // 2 minutes apart
+                (@"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\x.exe", 0), (@"C:\ProgramData\Other\y.exe", 0),
+            };
+            Assert.Equal(4, Files.Batches(files, f => f.Item1, f => At.AddSeconds(f.Item2)).Count);
+        }
+
+        [Theory]
+        [InlineData(@"\Windows\SoftwareDistribution\Download\0ceda8a1727e2aa3\Metadata\Deployment.cab", true)]
+        [InlineData(@"\WINDOWS\softwaredistribution\Download\Install\AM_Delta_Patch_1.463.364.0.exe", true)]
+        [InlineData(@"\Windows\SoftwareDistributionX\a.exe", false)]
+        [InlineData(@"\Users\anna\SoftwareDistribution\a.exe", false)]
+        public void WindowsUpdateFolderOnTheSystemDrive(string rel, bool inside)
+        {
+            Assert.Equal(inside, Rules.InWindowsUpdateFolder(Rules.SystemDrive + rel));
+            var other = Rules.SystemDrive.Equals("Z:", StringComparison.OrdinalIgnoreCase) ? "Y:" : "Z:";
+            Assert.False(Rules.InWindowsUpdateFolder(other + rel));
+        }
+    }
+
+    public class SoftwareTextTests
+    {
+        [Theory]
+        [InlineData("Antigravity 2.32.1", "2.32.1", "Antigravity 2.32.1")]
+        [InlineData("Malwarebytes version 5.8.1.409", "5.8.1.409", "Malwarebytes version 5.8.1.409")]
+        [InlineData("Google Chrome", "157.0.8103.79", "Google Chrome 157.0.8103.79")]
+        [InlineData("Eclipse Temurin JDK with Hotspot 25.0.5+8 (x64)", "25.0.5.8", "Eclipse Temurin JDK with Hotspot 25.0.5+8 (x64) 25.0.5.8")]
+        [InlineData("App 12.3", "2.3", "App 12.3 2.3")]                 // only the whole version counts
+        [InlineData("App 1.2.3", "1.2", "App 1.2.3 1.2")]
+        [InlineData("Xbox Service", "", "Xbox Service")]
+        public void VersionOnlyOnce(string name, string version, string text) => Assert.Equal(text, Software.NameVersion(name, version));
+
+        [Theory]
+        [InlineData(@"C:/Riot Games/Riot Client/", @"C:\Riot Games\Riot Client")]
+        [InlineData("\"C:\\Program Files\\App\\\"", @"C:\Program Files\App")]
+        [InlineData(" C:\\Games\\x\\ ", @"C:\Games\x")]
+        [InlineData(@"\", "")]
+        [InlineData(null, "")]
+        public void InstallFolders(string value, string folder) => Assert.Equal(folder, Software.InstallFolder(value));
+
+        [Fact]
+        public void StoreOperationsOfOneInstallAreOneText()
+        {
+            Assert.Equal("provision", Software.OpName("ProvisionPackageOperation"));
+            Assert.Equal("add", Software.OpName("Add"));
+            Assert.Equal("Store app provision, add, register: Malwarebytes.AntiMalware_5.0.0.115_neutral__fjscb452b7c5t (Malwarebytes Anti-Malware), from file:///C:/WINDOWS/TEMP/mb_BEC2.tmp",
+                Software.StoreText(new List<string> { "provision", "add", "register" }, "Malwarebytes.AntiMalware_5.0.0.115_neutral__fjscb452b7c5t", "Malwarebytes Anti-Malware", "file:///C:/WINDOWS/TEMP/mb_BEC2.tmp"));
+        }
+    }
+
+    public class DefenderItemTests
+    {
+        /// <summary>A command line Defender detected (ClickFix) can contain "; ": it stays one resource: item.</summary>
+        [Fact]
+        public void CommandLineWithSemicolonsIsOneItem()
+        {
+            var r = Security.Resources(@"CmdLine:_C:\Program Files\Git\bin\bash.exe -c a; b; } || true; process: C:\Program Files\Git\bin\bash.exe, pid:5:1; C:\x\y.exe");
+            Assert.Equal(new[] { ("resource", @"CmdLine:_C:\Program Files\Git\bin\bash.exe -c a; b; } || true"), ("process", @"C:\Program Files\Git\bin\bash.exe, pid:5:1"), ("file", @"C:\x\y.exe") }, r);
+        }
+
+        /// <summary>Defender logs a detection again when it finds another file: one SUMMARY line with every file.</summary>
+        [Fact]
+        public void SameFindingAgainAddsItsSubLines()
+        {
+            using (var c = new Ctx(new Options()))
+            {
+                var t = DateTime.UtcNow.AddHours(-1);
+                c.Find(t, "Defender detected: X", new List<(string Key, string Value)> { ("file", @"C:\a.html") });
+                c.Find(t.AddMilliseconds(300), "Defender detected: X", new List<(string Key, string Value)> { ("file", @"C:\b.html"), ("file", @"C:\a.html") });
+                Assert.Equal(new[] { ("file", @"C:\a.html"), ("file", @"C:\b.html") }, c.FindingMore["Defender detected: X"]);
+            }
+        }
+    }
+
+    public class NativeMessagingTests
+    {
+        const string Cmd = @"C:\WINDOWS\system32\cmd.exe";
+        const string Pipes = @" < \\.\pipe\chrome.nativeMessaging.in.1688307a2c675a72 > \\.\pipe\chrome.nativeMessaging.out.1688307a2c675a72";
+
+        [Fact]
+        public void TheBrowsersCommandLineNamesTheHost() =>
+            Assert.Equal(@"C:\Program Files\Malwarebytes\Anti-Malware\mbambgnativemsg.exe", Processes.NativeMessagingHost(Cmd,
+                Cmd + @" /d /s /c """"C:\Program Files\Malwarebytes\Anti-Malware\mbambgnativemsg.exe"" chrome-extension://ihcjicgdanjaechkgeegckofjjedodee/ --parent-window=0""" + Pipes));
+
+        [Theory]
+        [InlineData(@" /d /s /c """"C:\Program Files\x\host.exe"" chrome-extension://ihcjicgdanjaechkgeegckofjjedodee/ --parent-window=0 & calc.exe""")]   // more commands
+        [InlineData(@" /d /s /c """"C:\Program Files\x\host.exe"" chrome-extension://ihcjicgdanjaechkgeegckofjjedodee/"" & calc.exe")]
+        [InlineData(@" /c powershell -enc AAAA")]
+        public void OtherCommandLinesAreNot(string args) => Assert.Null(Processes.NativeMessagingHost(Cmd, Cmd + args + Pipes));
+
+        [Fact]
+        public void OnlyForCmd() => Assert.Null(Processes.NativeMessagingHost(@"C:\Windows\System32\conhost.exe",
+            @"conhost.exe /d /s /c """"C:\Program Files\x\host.exe"" chrome-extension://ihcjicgdanjaechkgeegckofjjedodee/""" + Pipes));
+    }
+
+    public class DownloadTextTests
+    {
+        [Fact]
+        public void LongUrlsAreCut()
+        {
+            var shortUrl = "https://get.microsoft.com/installer/download/9NKSQGP7F2NH?cid=website_cta_psi";
+            Assert.Equal(shortUrl, Downloads.LongUrl(shortUrl));
+            var signed = "https://release-assets.githubusercontent.com/x?" + new string('a', 1200);
+            Assert.Equal(251, Downloads.LongUrl(signed).Length);
+            Assert.EndsWith("…", Downloads.LongUrl(signed));
+            Assert.Null(Downloads.LongUrl(null));
+        }
+
+        /// <summary>WebCache writes many entries at once (sync): 5+ files of one user with the same second are a batch, not open times.</summary>
+        [Fact]
+        public void WebCacheBatches()
+        {
+            var t = new DateTime(2026, 11, 16, 3, 25, 29, DateTimeKind.Utc);
+            var rows = Enumerable.Range(0, 6).Select(i => (t, "shawn", $@"C:\Users\shawn\Downloads\f{i}.zip"))
+                .Concat(new[] { (t.AddSeconds(1), "shawn", @"C:\Users\shawn\Downloads\g.zip"), (t, "anna", @"C:\Users\anna\Downloads\h.zip") }).ToList();
+            var b = Downloads.WebCacheBatches(rows);
+            Assert.Single(b);
+            Assert.Equal(6, b.Values.Single());
+            Assert.Empty(Downloads.WebCacheBatches(rows.Take(4)));
+        }
+    }
+
+    public class AmcacheNameTests
+    {
+        [Theory]
+        [InlineData("setup.exe", "setup.exe")]
+        [InlineData("msedge_proxy.exe", "msedge_proxy.exe")]          // 16 characters, whole
+        [InlineData("cls-srep_x64.exe", "cls-srep_x64.exe")]
+        [InlineData("onedriveupdaters", "onedriveupdaters…")]         // cut
+        [InlineData("elevation_servic", "elevation_servic…")]
+        [InlineData("onedrivepatcher.", "onedrivepatcher.…")]
+        public void CutNamesGetAnEllipsis(string key, string name) => Assert.Equal(name, Amcache.KeyName(key));
+    }
+
+    public class UpdaterStagingTests
+    {
+        static readonly string Sd = Rules.SystemDrive;
+
+        [Theory]
+        [InlineData(@"\Program Files (x86)\Microsoft\EdgeUpdate\Install\{0E9F471D-FE8C-4A89-883A-DEF43FD7965A}\MicrosoftEdge_X64_158.0.4370.33.exe", @"\Program Files (x86)\Microsoft\EdgeUpdate\Install\{0E9F471D-FE8C-4A89-883A-DEF43FD7965A}\")]
+        [InlineData(@"\Program Files (x86)\BraveSoftware\Update\Install\{B8042044-937D-446E-860D-B9044A5514FD}\brave_installer-delta-x64.exe", @"\Program Files (x86)\BraveSoftware\Update\Install\{B8042044-937D-446E-860D-B9044A5514FD}\")]
+        [InlineData(@"\Windows\SoftwareDistribution\Download\Install\AM_Delta_Patch_1.463.364.0.exe", @"\Windows\SoftwareDistribution\")]
+        [InlineData(@"\Windows\WinSxS\amd64_microsoft-windows-servicingstack_31bf3856ad364e35_10.0.26100.9703_none_a5009b9d7769c1f5\TiWorker.exe", @"\Windows\WinSxS\")]
+        public void Staged(string rel, string root)
+        {
+            Assert.True(Rules.InUpdaterStaging(Sd + rel));
+            Assert.Equal(Sd + root, Rules.StagingRoot(Sd + rel), StringComparer.OrdinalIgnoreCase);
+        }
+
+        [Theory]
+        [InlineData(@"\$WinREAgent\Scratch\09B5A09E-7A01-4403-9986-BF518E6A02B7\DismHost.exe")]   // any user can create C:\ folders
+        [InlineData(@"\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe")]         // the updater itself, not a staged package
+        [InlineData(@"\Users\anna\AppData\Local\Microsoft\EdgeUpdate\Install\{0E9F471D-FE8C-4A89-883A-DEF43FD7965A}\x.exe")]
+        [InlineData(@"\Windows\Temp\SoftwareDistribution\x.exe")]
+        public void NotStaged(string rel) => Assert.False(Rules.InUpdaterStaging(Sd + rel));
+    }
+
+    /// <summary>Ctx.RealCase: the case on disk, gone parts keep theirs.</summary>
+    public class RealCaseTests
+    {
+        /// <summary>
+        /// A gone folder that was looked up before as a part of a file's path (Compatibility Assistant "more:" lines, SOFTWARE "folder:")
+        /// keeps its path: the cache's null for the missing part made it print as "\" (Spor 0.7.1).
+        /// </summary>
+        [Fact]
+        public void GoneFolderAfterAFileInItKeepsItsPath()
+        {
+            var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SporRealCase" + Guid.NewGuid().ToString("N"));
+            System.IO.Directory.CreateDirectory(root);
+            try
+            {
+                using (var c = new Ctx(new Options()))
+                {
+                    var gone = root + @"\Grand Theft Auto V Legacy";
+                    Assert.Equal(gone + @"\GTA5.exe", c.RealCase(gone + @"\GTA5.exe"));
+                    Assert.Equal(gone, c.RealCase(gone));
+                    Assert.Equal(gone, c.RealCase(gone.ToUpperInvariant().Replace(root.ToUpperInvariant(), root)));
+                }
+            }
+            finally { System.IO.Directory.Delete(root, true); }
+        }
     }
 }

@@ -119,9 +119,9 @@ namespace Spor.Tests
         public void BuiltInPublishersAreTheListOfBefore()
         {
             var set = Rules.ParsePublishers(Util.Embedded(Rules.PublishersFile));
-            foreach (var s in new[] { "Microsoft Windows", "Microsoft Corporation", "Google LLC", "Discord Inc.", "Valve", "Docker Inc", "Notion Labs, Inc." })
+            foreach (var s in new[] { "Microsoft Windows", "Microsoft Corporation", "Google LLC", "Discord Inc.", "Valve", "Docker Inc", "Notion Labs, Inc.", "Malwarebytes Inc" })
                 Assert.Contains(s, set);
-            Assert.Equal(34, set.Count);
+            Assert.Equal(36, set.Count);   // 0.7.2: Malwarebytes Inc and Corporation (native-messaging host of its browser extension)
         }
 
         [Fact]

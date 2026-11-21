@@ -6,7 +6,7 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>Spor</AssemblyName>
     <RootNamespace>Spor</RootNamespace>
-    <Version>0.7.1</Version>
+    <Version>0.7.2</Version>
     <Product>Spor</Product>
     <Description>Forensic triage for malware removal helpers</Description>
     <!-- 64-bit on 64-bit Windows: no registry or System32 redirection -->
@@ -35,6 +35,11 @@
   <!-- Well-known publishers (Rules.TrustedSigners) -->
   <ItemGroup>
     <EmbeddedResource Include="resources/publishers.txt" LogicalName="Spor.publishers.txt" />
+  </ItemGroup>
+
+  <!-- Known-noise rules (src/Whitelist.cs) -->
+  <ItemGroup>
+    <EmbeddedResource Include="resources/whitelist.txt" LogicalName="Spor.whitelist.txt" />
   </ItemGroup>
 
   <ItemGroup>
