@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -10,6 +11,34 @@ namespace Spor
 {
     static class Util
     {
+        /// <summary>The built-in text of a data file Spor ships (resources/, embedded as "Spor.&lt;name&gt;"), "" if missing.</summary>
+        public static string Embedded(string name)
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            var res = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith(name, StringComparison.OrdinalIgnoreCase));
+            if (res == null) return "";
+            using (var s = asm.GetManifestResourceStream(res))
+            using (var r = new StreamReader(s)) return r.ReadToEnd();
+        }
+
+        /// <summary>
+        /// A data file: overrideFile next to Spor.exe when it is there (to try changes without a new build), else the built-in one
+        /// (Embedded). Each is parsed by parse; an override that cannot be read or parsed falls back to the built-in file.
+        /// source = the override's path, or null for the built-in file.
+        /// </summary>
+        public static T DataFile<T>(string overrideFile, Func<string, T> parse, out string source)
+        {
+            source = null;
+            try
+            {
+                var dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
+                var file = Path.Combine(dir, overrideFile);
+                if (File.Exists(file)) { var d = parse(File.ReadAllText(file)); source = file; return d; }
+            }
+            catch { }
+            return parse(Embedded(overrideFile));
+        }
+
         public const RegexOptions RX = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
         public static readonly StringComparer IC = StringComparer.OrdinalIgnoreCase;
 

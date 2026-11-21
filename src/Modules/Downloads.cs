@@ -131,7 +131,8 @@ namespace Spor.Modules
                         catch (Exception e) { c.Err.Add($"{ffName} history ({pl}): {e.Message}"); }
                     }
             }
-            c.Out.Comment($"{total} downloads in the browser histories; browsers: " + (browsers.Count > 0 ? string.Join(", ", browsers.Distinct()) : "none found"));
+            c.Out.Comment($"{total} downloads in the browser histories");
+            c.Out.Comment("browsers: " + (browsers.Count > 0 ? string.Join(", ", browsers.Distinct()) : "none found"));
             // The user is a tag of its own ("[anna] [Brave]"), never inside the browser's brackets.
             var dlt = new Table("@time", "[user", "[browser", "!status", "<flags", "*file");
             foreach (var r in rows.OrderBy(r => r.T))
@@ -141,7 +142,10 @@ namespace Spor.Modules
                 dlt.Add(Log.T(r.T), c.MultiUser ? r.User : null, r.Browser, f.Status, Rules.FlagCol(fl), f.Path);
                 dlt.More("from", r.Url);
                 if (!string.IsNullOrEmpty(r.Page) && r.Page != r.Url) dlt.More("page", r.Page);
-                c.Event(r.T, "DL", r.Path, $"{c.U(r.User)}{r.Browser} from {Host(r.Url)}{(string.IsNullOrEmpty(r.Page) ? "" : ", page " + Host(r.Page))}", r.Fl);
+                // the URLs on sub-lines (they make the line too long); the page only when it is not the download URL itself
+                var urls = new List<(string Key, string Value)> { ("from", Host(r.Url)) };
+                if (!string.IsNullOrEmpty(r.Page) && !Host(r.Page).Equals(Host(r.Url), StringComparison.OrdinalIgnoreCase)) urls.Add(("page", Host(r.Page)));
+                c.Event(r.T, "DL", r.Path, $"{c.U(r.User)}{r.Browser}", r.Fl, more: urls);
                 if (Rules.Strong(fl).Count > 0) c.Find(r.T, $"download {c.File(r.Path)}{Rules.FlagText(Rules.Strong(fl))} from {r.Url}");
             }
             dlt.WriteTo(c.Out, $"none in the last {c.Opt.Days} days");

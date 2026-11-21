@@ -221,9 +221,12 @@ namespace Spor.Modules
                 else nop.Add(x);
             }
             var scans = new List<(DateTime T, int N, string Top, List<string> Files)>();
-            // per folder: "folder\ => a.exe, b.dll" (entries without path: "(no path) => names")
-            List<string> PerFolder(List<string> l) => l.Distinct(Util.IC).GroupBy(x => x.Contains("\\") ? Util.Folder(x) + "\\" : "(no path)", Util.IC)
-                .OrderByDescending(g => g.Count()).Select(g => g.Key + " => " + string.Join(", ", g.Select(x => x.Contains("\\") ? Util.Leaf(x) : x))).ToList();
+            // per folder: "folder\ => a.exe, b.dll" (entries without path: "(no path) => names"), cut into pieces that fit on a sub-line,
+            // each with its folder (a reader takes the folder from every line)
+            List<(string Folder, List<string> Names)> Groups(List<string> l) => l.Distinct(Util.IC).GroupBy(x => x.Contains("\\") ? Util.Folder(x) + "\\" : "(no path)", Util.IC)
+                .OrderByDescending(g => g.Count()).Select(g => (g.Key, g.Select(x => x.Contains("\\") ? Util.Leaf(x) : x).ToList())).ToList();
+            List<string> PerFolder(List<string> l) =>
+                Groups(l).SelectMany(g => Log.Chunks(g.Names, Math.Max(60, Log.ListWidth - g.Folder.Length - 4)).Select(p => g.Folder + " => " + p)).ToList();
             foreach (var kv in hid)
             {
                 var r = fb.Runs[kv.Key - 1]; var l = kv.Value;
@@ -231,8 +234,9 @@ namespace Spor.Modules
                     scans.Add((r[0].Time, l.Count, string.Join(", ", l.GroupBy(x => x.Contains("\\") ? Top(x) : "(no path)", Util.IC).OrderByDescending(g => g.Count()).Take(3).Select(g => g.Key + " (" + g.Count() + ")")), PerFolder(l)));
                 else
                 {
-                    foreach (var fo in PerFolder(l))   // one timeline line per folder, with every file name
-                        c.Event(r[r.Count - 1].Time, "AM", null, text: "install/update: " + fo);
+                    foreach (var g in Groups(l))   // one timeline line per folder, every file name on its files: sub-lines
+                        c.Event(r[r.Count - 1].Time, "AM", null, text: $"install/update: {g.Folder} => {g.Names.Count} files",
+                                more: Log.Chunks(g.Names).Select(p => ("files", p)).ToList());
                 }
             }
 

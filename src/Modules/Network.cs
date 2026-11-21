@@ -82,7 +82,6 @@ namespace Spor.Modules
                         First: g.Min(r => r.First), Last: g.Max(r => r.Last),
                         User: string.Join(", ", g.SelectMany(r => r.User.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries)).Distinct()))).ToList();
             var shown = rows.Where(r => r.IsFile && (!Rules.Whitelist || !Trusted(r.Path) || Rules.Lol.IsMatch(r.Path))).OrderByDescending(r => r.Sent).ThenByDescending(r => r.Last).ToList();
-            var top = rows.Where(r => r.Sent > 0).OrderByDescending(r => r.Sent).Take(5).ToList();
             var st = new Table("first seen", "@last seen", "sent", "received", "[user", "!status", "<flags", "*program");
             int k = 0;
             foreach (var r in shown)
@@ -93,7 +92,6 @@ namespace Spor.Modules
                 if (k++ < 60 || Rules.Strong(fl).Count > 0) c.Event(r.First, "SRU", r.Path, $"SRUM first activity in the window; sent {Cmd.Bytes(r.Sent)} in total");
                 if (r.Sent >= 50L << 20 && !c.SignedOk(r.Path)) c.Find(r.Last, $"{c.File(r.Path)} sent {Cmd.Bytes(r.Sent)} ({r.First:MM-dd} to {r.Last:MM-dd}, SRUM)", "last activity");
             }
-            if (top.Count > 0) c.Out.Wrap("most data sent overall: ", top.Select(r => $"{(r.IsFile ? Rules.Fix(c.RealCase(r.Path)) : r.Path)} {Cmd.Bytes(r.Sent)}"));
             st.WriteTo(c.Out);
         }
 

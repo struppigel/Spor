@@ -72,18 +72,20 @@ namespace Spor
 
         public bool HasUrl => RealUrl(HostUrl) || RealUrl(ReferrerUrl);
 
-        /// <summary>For the log: "from &lt;HostUrl&gt;, referrer &lt;ReferrerUrl&gt;", else the zone alone; null if the stream says nothing.</summary>
-        public string Text
+        /// <summary>For the log: the URLs as "from:" / "referrer:" sub-lines (a line would get too long with them).</summary>
+        public List<(string Key, string Value)> Urls
         {
             get
             {
-                var parts = new List<string>();
-                if (HostUrl != null) parts.Add("from " + HostUrl);
-                if (ReferrerUrl != null && ReferrerUrl != HostUrl) parts.Add("referrer " + ReferrerUrl);
-                if (parts.Count == 0 && Id.HasValue) parts.Add(Id == 3 ? "downloaded from the internet (no URL saved)" : "zone " + Id);
-                return parts.Count > 0 ? string.Join(", ", parts) : null;
+                var l = new List<(string Key, string Value)>();
+                if (HostUrl != null) l.Add(("from", HostUrl));
+                if (ReferrerUrl != null && ReferrerUrl != HostUrl) l.Add(("referrer", ReferrerUrl));
+                return l;
             }
         }
+
+        /// <summary>For the log line, when the stream has no URL: the zone ("downloaded from the internet (no URL saved)", "zone 0"); else null.</summary>
+        public string Text => HostUrl == null && ReferrerUrl == null && Id.HasValue ? (Id == 3 ? "downloaded from the internet (no URL saved)" : "zone " + Id) : null;
     }
 
     /// <summary>

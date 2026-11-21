@@ -42,9 +42,11 @@ time [sources] item [status] => details <==== flags
 Every part except the item is left out when it is empty.
 
 ```
-2026-11-14 14:07:32 [PF DL] C:\Users\anna\Desktop\kprm_3.3.1.exe [gone] => Brave from download.toolslib.net/…, page toolslib.net/… <==== !double-extension
-└─ time (UTC) ────┘ └─────┘ └─ the file ────────────────────────┘ └────┘    └─ details ───────────────────────────────────────┘ └─ flags ────────────┘
-                    sources                                        status
+2026-11-14 14:07:32 [PF DL] C:\Users\anna\Desktop\kprm_3.3.1.exe [gone] => Brave <==== !double-extension
+└─ time (UTC) ────┘ └─────┘ └─ the file ────────────────────────┘ └────┘    └─────┘ └─ flags ────────────┘
+                    sources                                        status   details
+    from: download.toolslib.net/…
+    page: toolslib.net/…
 ```
 
 - **time**: when it happened, in UTC
@@ -61,14 +63,18 @@ Other lines:
 | `==================== Title ====` | Section |
 | `--- title ---` | Sub-section |
 | `(text)` | Comment. `(line: …)` names the parts of the lines below it. `(none…)` means nothing was found. |
-| `    key: value` | Indented, belongs to the line above (`loaded:`, `path:`, `action:`, `dll:`, …) |
+| `    key: value` | Indented, belongs to the line above (`loaded:`, `path:`, `action:`, `dll:`, `program:`, `file:`, `from:`, …). Long details and lists are on these lines, so the line above stays short. |
 
-Persistence lines start with the kind of entry and use `=>` for the program that runs:
+Persistence lines (Run keys, tasks) start with the kind of entry; the program that runs and its arguments are on the lines below:
 
 ```
-2026-11-18 04:50:37 [run] HKU\anna\Software\Microsoft\Windows\CurrentVersion\Run\Discord => C:\Users\anna\AppData\Local\Discord\Update.exe [unsigned], arguments --processStart Discord.exe; value Discord
-└─ key changed ───┘ └kind┘ └─ the Run entry ────────────────────────────────────────┘    └─ what it starts ───────────────────────────────┘ └ status ┘ └ details ─────────────────────────────────────┘
+2026-11-18 04:50:37 [run] HKU\anna\Software\Microsoft\Windows\CurrentVersion\Run\Discord
+└─ key changed ───┘ └kind┘ └─ the Run entry ────────────────────────────────────────┘
+    program: C:\Users\anna\AppData\Local\Discord\Update.exe [unsigned]
+    arguments: --processStart Discord.exe
 ```
+
+Other details on their own lines: a Defender detection's files (`file:`, `process:`), a download's addresses (`from:`, `page:`, `referrer:`), a program's install folder and Uninstall key (`folder:`, `key:`), the names of a folder's new files (`files:`).
 
 ---
 
@@ -77,7 +83,7 @@ Persistence lines start with the kind of entry and use `=>` for the program that
 1. **SUMMARY**: everything Spor flagged.
 2. **TIMELINE**: This allows you to reconstruct what happened, starting with oldest first. Find the first suspicious event, then read what happened before and after.
 3. **The sections**: Contains more details about the entries in the timeline (loaded files, persistence entries, accounts, network use). Look at these to enrich your findings from the summary and timeline.
-4. **FILES**: hash, signature and version of every file in the log, one line each. Use it to look up files, e.g. on VirusTotal.
+4. **FILES**: hash, signature and version of every file in the log: the hash and signature on the line, `file:` (md5, size, times) and `version:` (version resource, certificate thumbprint) below it. Use it to look up files, e.g. on VirusTotal.
 5. **LEGEND**: what every source tag, status word and flag means.
 
 ---
@@ -113,8 +119,10 @@ Not every source means that a file ran. A file that Windows only *recorded* is n
 
 Several execution sources on one line, e.g. `[PF PCA UA BAM]`, are strong evidence. A file that only `[AM]` or `[SC]` saw may never have run.
 
-If several sources see a file within 2 minutes, it is **one** line. A file that was seen many times shows the first and the last time, with `+N more times since …`. Processes of one program with different PIDs stay separate lines when one of them is flagged (Prefetch and BAM go to the nearest of them, a SRUM hour to its run), and a flagged line has the time of the first flagged event. A loader that runs again and again shows its first and its last run as flagged lines, the runs between as `+N more times`.
-If the same file was in folders that only differ in numbers (version folders, dated temp folders), the line says `in N folders that differ only in numbers, all listed below` and every real path follows as an indented `path:` line. **Use these `path:` lines for removal.**
+If several sources see a file within 2 minutes, it is **one** line. A file that was seen many times shows the first and the last time, with `+N more times since …`. Processes of one program with different PIDs stay separate lines when one of them is flagged (Prefetch, BAM and file events go to the nearest of them, a SRUM hour to its run). A flagged line (a flag on an event, `!known-malware` included, or in the file name) has the time of its first flagged event, others the latest. A loader that runs again and again shows its first and its last run as flagged lines, the runs between as `+N more times`.
+If the same file was in folders that only differ in numbers (version folders, dated temp folders), the line says `+N more times (below)` and every real path follows as an indented `path:` line with its own times. **Use these `path:` lines for removal.**
+
+`[SC]` lines say `file modified` (ShimCache keeps the file's modification time, a copied file keeps its old time), `[AM]` lines `Amcache write` (when Windows wrote the entry). Neither proves that the program ran.
 
 ---
 
@@ -215,14 +223,14 @@ Look for **clusters**: a download (`DL`), the file starts (`PF PCA BAM`), new fi
 Programs that ran (PCA, UserAssist, BAM, ShimCache) are in the timeline. The `Compatibility Assistant` list shows programs that ran **at some point**, without a time, and are gone now. Useful for older infections outside the time window.
 
 ### NEW FILES
-Programs, scripts and archives created in the time window in Downloads, Desktop, Documents, Temp, AppData, ProgramData and Public, with the download URL if Windows saved one. A folder with many new files is one line with all names (installers). Downloaded files always get their own line.
+Programs, scripts and archives created in the time window in Downloads, Desktop, Documents, Temp, AppData, ProgramData and Public, with the download URL if Windows saved one. A folder with many new files is one line, its names on `files:` lines below (installers). Downloaded files always get their own line.
 
 `zone 0` (or 1, 2) without a URL on a new program is `!motw-removed`. In folders in Temp, Downloads and the top of AppData, signed programs are checked for **DLL side-loading**: the unsigned DLL gets `!sideload`, the program `side-loads <dll>`. New files over 50 MB are checked for padding (`padded: N MB of byte 0x00`).
 
-This section also lists programs and scripts that look old but whose NTFS change time is recent. A single file like that is flagged (`STP … times set back <==== !timestomped`). A batch of 3 or more such files in one folder within a minute is one line without a flag, because installers and updaters copy files with their original times.
+This section also lists programs and scripts that look old but whose NTFS change time is recent. A single file like that is flagged (`STP … set: B …, M … <==== !timestomped`). A batch of 3 or more such files in one folder within a minute is one line without a flag, because installers and updaters copy files with their original times.
 
 ### TIMESTOMPING
-Files whose timestamps were set, from the NTFS change journal. The journal is a ring buffer, on a busy PC it may only cover a few hours. The log says how far back it goes. Every file has a score and the signals. Round times on programs and scripts in user folders are the interesting ones. A creation time newer than the modification time is not a signal: copying, downloading, extracting and moving to another drive keep the modification time and set a new creation time.
+Files whose timestamps were set, from the NTFS change journal. The journal is a ring buffer, on a busy PC it may only cover a few hours. The log says how far back it goes (`back to <time>`). Files are listed most suspicious first, with their signals; `B` and `M` are the creation and modification time with all 7 fraction digits (`.0000000` = a whole second). Round times on programs and scripts in user folders are the interesting ones. A creation time newer than the modification time is not a signal: copying, downloading, extracting and moving to another drive keep the modification time and set a new creation time.
 
 ### DOWNLOADS AND OPENED FILES
 Browser downloads with the URL and the page, files opened in Explorer, mounted disk images and archives opened with WinRAR or 7-Zip. Malware often comes as ISO or IMG to avoid the "downloaded from the internet" warning.
@@ -293,7 +301,7 @@ Expect these and don't report them as malware without more evidence:
 - `Defender detection history deleted` now and then
 - Disk images mounted by virtual machines (WSL, Docker, Hyper-V)
 - Defender detections of files that the user analyses on purpose, e.g. if they are malware researchers or use security tools
-- Games and tools that ship a script runtime (Ren'Py and Python games, Electron apps, Java tools) with `script runtime` in the timeline, without `!runtime-loader`
+- Games and tools that ship a script runtime (Ren'Py and Python games, Electron apps, Java tools) with `script runtime` in the timeline, without `!runtime-loader`. Electron apps validly signed by a well-known publisher (resources/publishers.txt) are never checked; other Electron apps are, like the other runtimes, because a lot of malware is Electron-based.
 - RUNNING PROCESSES lines for developer tools and per-user programs of smaller publishers
 
 ---

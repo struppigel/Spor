@@ -118,8 +118,13 @@ namespace Spor.Modules
             }
             lt.WriteTo(c.Out);
             if (harmless.Count > 0)
-                c.Out.Comment($"Hidden: {harmless.Values.Sum()} harmless loaded files (-nowhitelist lists them): " +
-                              string.Join(", ", harmless.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")));
+            {
+                // several comment lines, cut between the kinds (a kind's text can contain ", " itself)
+                var kinds = harmless.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}").ToList();
+                kinds[0] = $"Hidden: {harmless.Values.Sum()} harmless loaded files (-nowhitelist lists them): " + kinds[0];
+                var parts = Log.Chunks(kinds, 190);
+                for (int i = 0; i < parts.Count; i++) c.Out.Comment(parts[i] + (i < parts.Count - 1 ? "," : ""));
+            }
 
             var common = cnt.Where(kv => kv.Value >= Many).OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).ToList();
             if (common.Count > 0)

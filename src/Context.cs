@@ -180,6 +180,14 @@ namespace Spor
 
         public void Find(string text) => Findings.Add((null, Module, text));
         public void Find(DateTime? t, string text) => Findings.Add((t, Module, text));
+        /// <summary>A finding with indented "key: value" sub-lines under its SUMMARY line (a Defender detection's files, ...).</summary>
+        public void Find(DateTime? t, string text, List<(string Key, string Value)> more)
+        {
+            Findings.Add((t, Module, text));
+            if (more != null && more.Count > 0 && !FindingMore.ContainsKey(text)) FindingMore[text] = more;
+        }
+        /// <summary>Sub-lines of a finding, by its text (Find with sub-lines).</summary>
+        public readonly Dictionary<string, List<(string Key, string Value)>> FindingMore = new Dictionary<string, List<(string Key, string Value)>>();
         /// <summary>
         /// A finding whose time is not when something happened: when = what the time is ("file modified", "key changed", ...).
         /// Not written to the line (the summary's tag and text stay as parsers know them); the summary's comment and the LEGEND explain the times.

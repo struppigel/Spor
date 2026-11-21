@@ -2,6 +2,7 @@ using System;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -52,10 +53,11 @@ namespace Spor.Modules
         public void Execute(Ctx ctx)
         {
             c = ctx;
-            c.Out.Comment($"Files whose timestamps were set in the last {c.Opt.Days} days (NTFS change journal), listed from score {MinScore}: +4 creation time before the real creation,");
+            c.Out.Comment($"Files whose timestamps were set in the last {c.Opt.Days} days (NTFS change journal), most suspicious first, from {MinScore} points: +4 creation time before the real creation,");
             c.Out.Comment("+3 round creation time, +1 millisecond-only creation time, +1 round modification time, +1 both times over 7 days old" +
                           (Rules.Whitelist ? "; only programs, scripts, shortcuts, archives and disk images." : "."));
-            var t = new Table("@info changed", "score", "!status", "created", "modified", "*file");
+            c.Out.Comment("B = creation (born) time, M = modification time, as the file has them now.");
+            var t = new Table("@info changed", "!status", "B", "M", "*file");
             var found = new List<(DateTime Changed, int Score, string Path, string Status, DateTime Created, DateTime Modified, List<string> Signals)>();
             foreach (var d in DriveInfo.GetDrives())
             {
@@ -66,18 +68,23 @@ namespace Spor.Modules
             }
             foreach (var x in found.OrderByDescending(x => x.Score).ThenByDescending(x => x.Changed))
             {
-                t.Add(Log.T(x.Changed), x.Score.ToString(), x.Status, x.Created.ToString("yyyy-MM-dd HH:mm:ss.fffffff"), x.Modified.ToString("yyyy-MM-dd HH:mm:ss.fffffff"), x.Path);
+                t.Add(Log.T(x.Changed), x.Status, Exact(x.Created), Exact(x.Modified), x.Path);
                 foreach (var s in x.Signals) t.More("signal", s);
                 if (x.Score < MinScore) continue;
                 var fl = new List<string> { "!timestomped" };
-                c.Event(x.Changed, "STP", x.Path, $"timestamps set (score {x.Score}): created {x.Created:yyyy-MM-dd HH:mm:ss.fffffff}, modified {x.Modified:yyyy-MM-dd HH:mm:ss.fffffff}", fl);
+                c.Event(x.Changed, "STP", x.Path, StpDetail(x.Created, x.Modified), fl);
             }
             t.WriteTo(c.Out);
         }
 
+        /// <summary>The timeline detail of a file whose timestamps were set: "set: B created, M modified", full 7-digit fractions (the evidence).</summary>
+        internal static string StpDetail(DateTime created, DateTime modified) => $"set: B {Exact(created)}, M {Exact(modified)}";
+
+        /// <summary>A file time with all 7 fraction digits ("2026-10-27 09:22:42.0000000"), whatever the PC's culture.</summary>
+        static string Exact(DateTime t) => t.ToString("yyyy-MM-dd HH:mm:ss.fffffff", CultureInfo.InvariantCulture);
+
         void Scan(string drive, List<(DateTime, int, string, string, DateTime, DateTime, List<string>)> found)
         {
-            var sw = Stopwatch.StartNew();
             using (var vol = CreateFile(@"\\.\" + drive, 0x80000000, FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, FileMode.Open, 0, IntPtr.Zero))
             {
                 if (vol.IsInvalid) throw new Exception("cannot open the volume (error " + Marshal.GetLastWin32Error() + ")");
@@ -133,19 +140,14 @@ namespace Spor.Modules
                     if (next <= usn) break;
                     usn = next;
                 }
-                var journal = $"{drive} change journal: {records} records{(earliest.HasValue ? " back to " + Log.T(earliest) : "")}, {infoChange.Count} files with changed timestamps";
-                if (earliest.HasValue && earliest > c.Since.AddDays(2))
-                    journal += $"; ATTENTION: it only covers {(DateTime.UtcNow - earliest.Value).TotalHours:N1} hours (ring buffer), older timestomping is not visible";
+                c.Out.Comment($"{drive} change journal: {records} records{(earliest.HasValue ? " back to " + Log.T(earliest) : "")}, {infoChange.Count} files with changed timestamps");
                 bool Tunneled(long id) => named.TryGetValue(id, out var l) && l.Any(x => vacated.TryGetValue(x.Key, out var v) && v.Any(t => t <= x.T.AddSeconds(1) && t >= x.T.AddSeconds(-16)));
-                int tunneled = 0, skippedType = 0;
 
-                int gone = 0, frst = 0;
                 foreach (var kv in infoChange)
                 {
                     var path = PathOf(vol, kv.Key);
-                    if (path == null || !File.Exists(path)) { gone++; continue; }
-                    var m = Rules.DrivePath.Match(path);
-                    if (Rules.Whitelist && (!Types.IsMatch(path) || (c.TrustedFile(path) && Signature.Applies(path)))) { skippedType++; continue; }   // signed executables in Windows / Program Files
+                    if (path == null || !File.Exists(path)) continue;   // deleted since
+                    if (Rules.Whitelist && (!Types.IsMatch(path) || (c.TrustedFile(path) && Signature.Applies(path)))) continue;   // data files, signed executables in Windows / Program Files
                     DateTime ct, mt;
                     try { ct = File.GetCreationTimeUtc(path); mt = File.GetLastWriteTimeUtc(path); } catch { continue; }
                     int score = 0; var sig = new List<string>();
@@ -155,8 +157,8 @@ namespace Spor.Modules
                     {
                         if (ct < cr.AddDays(-1))
                         {
-                            if (Tunneled(kv.Key)) tunneled++;   // safe-save: the name was replaced within 15 s, NTFS kept the old creation time
-                            else { score += 4; sig.Add($"creation time {ct:yyyy-MM-dd HH:mm:ss} is before the file was actually created ({cr:yyyy-MM-dd HH:mm:ss}, change journal)"); }
+                            // not when tunneled: safe-save replaced the name within 15 s, NTFS kept the old creation time
+                            if (!Tunneled(kv.Key)) { score += 4; sig.Add($"creation time {Log.T(ct)} is before the file was actually created ({Log.T(cr)}, change journal)"); }
                         }
                     }
                     else if (score > 0 && ct < kv.Value.AddDays(-7) && mt < kv.Value.AddDays(-7))
@@ -164,16 +166,9 @@ namespace Spor.Modules
                         score += 1; sig.Add("both times are more than 7 days before the timestamp change");
                     }
                     if (score < (Rules.Whitelist ? MinScore : 1)) continue;
-                    if (Rules.Whitelist && FrstSqlite(path, kv.Value)) { frst++; continue; }
+                    if (Rules.Whitelist && FrstSqlite(path, kv.Value)) continue;   // FRST's own SQLite DLLs (C:\FRST\bin)
                     found.Add((kv.Value, score, c.F(path).Path, c.F(path).Status, ct, mt, sig));
                 }
-                // one line per drive: what was read and what was left out
-                var left = new List<string>();
-                if (gone > 0) left.Add($"{gone} deleted since");
-                if (skippedType > 0 && Rules.Whitelist) left.Add($"{skippedType} data files or signed programs in Windows / Program Files");
-                if (frst > 0) left.Add($"{frst} FRST SQLite DLLs (C:\\FRST\\bin)");
-                if (tunneled > 0) left.Add($"{tunneled} NTFS tunneling (safe-save, normal)");
-                c.Out.Comment(journal + (left.Count > 0 ? "; not scored: " + string.Join(", ", left) : "") + $" ({sw.Elapsed.TotalSeconds:N1} s)");
             }
         }
 

@@ -151,7 +151,6 @@ namespace Spor.Modules
             int per = c.Opt.PerDir, withUrl = 0;
             // folders with a new program: padding next to one (same folder or the folder above) is a strong sign
             var programDirs = new HashSet<string>(found.Where(f => Exec.IsMatch(f.F.Name)).Select(f => f.F.DirectoryName), Util.IC);
-            var lines = new List<(DateTime T, string Text)>();
             foreach (var g in found.GroupBy(f => f.F.DirectoryName, Util.IC))
             {
                 var all = g.OrderBy(f => f.F.CreationTimeUtc).Select(f => new NewFile { F = f.F, Zone = Ads.Origin(f.F.FullName) }).ToList();
@@ -175,21 +174,23 @@ namespace Spor.Modules
                 foreach (var f in flagged.Concat(single))
                 {
                     if (f.HasUrl) withUrl++;
-                    c.Event(f.F.CreationTimeUtc, "NEW", f.F.FullName, Details(f), f.Flags.Count > 0 ? f.Flags : null, noHash: f.Padded);
+                    var urls = f.Zone?.Urls;
+                    c.Event(f.F.CreationTimeUtc, "NEW", f.F.FullName, Details(f), f.Flags.Count > 0 ? f.Flags : null, noHash: f.Padded,
+                            more: urls != null && urls.Count > 0 ? urls : null);
                 }
                 var others = rest.Except(single).ToList();
                 if (others.Count > 0)
                 {
                     var names = others.Select(f => f.F.Name).ToList();
                     var ordered = names.Where(n => n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)).Concat(names).Distinct(Util.IC);   // programs first
-                    var text = $"{c.RealCase(g.Key)}\\ => {others.Count} new files: {string.Join(", ", ordered)}";
-                    c.Event(others[0].F.CreationTimeUtc, "NEW", null, text: text);
-                    lines.Add((others[0].F.CreationTimeUtc, text));
+                    // the names on files: sub-lines (an installer unpacks hundreds)
+                    c.Event(others[0].F.CreationTimeUtc, "NEW", null, text: $"{c.RealCase(g.Key)}\\ => {others.Count} new files",
+                            more: Log.Chunks(ordered).Select(p => ("files", p)).ToList());
                 }
             }
             c.Out.Comment($"Checked {nfiles} files in {ndirs} folders ({sw.Elapsed.TotalSeconds:N1} s): {found.Count} executables, scripts or archives created in the last {c.Opt.Days} days, {withUrl} of them with a download URL.");
             Backdated(back);
-            c.Out.Comment("They are in the timeline (NEW). A folder with more than " + per + " new files is one line with all names (installers, updates); files with a download URL always get their own line.");
+            c.Out.Comment("They are in the timeline (NEW). A folder with more than " + per + " new files is one line, its names on files: lines (installers, updates); files with a download URL always get their own line.");
             c.Out.Hidden(qk, "new files");
         }
 
@@ -201,7 +202,6 @@ namespace Spor.Modules
         void Backdated(List<(FileInfo F, DateTime Ch)> back)
         {
             var cand = back.Where(b => !Rules.Whitelist || !Signature.Applies(b.F.FullName) || !c.SignedOk(b.F.FullName)).ToList();
-            int signedSkipped = back.Count - cand.Count, flagged = 0, batches = 0;
             // batch = same folder tree (three levels below AppData\Local|Roaming, ProgramData or the profile) and change times within 60 s
             string Root(string p)
             {
@@ -221,23 +221,18 @@ namespace Spor.Modules
                 {
                     if (Rules.Whitelist && x.Count >= 3)
                     {
-                        batches++;
                         foreach (var fo in x.GroupBy(b => b.F.DirectoryName, Util.IC))
-                            c.Event(fo.Max(b => b.Ch), "STP", null, text: $"{Rules.Fix(fo.Key)}\\ => {fo.Count()} files written with older timestamps (installer or update): " +
-                                                                            string.Join(", ", fo.Select(b => Rules.Fix(b.F.Name))));
+                            c.Event(fo.Max(b => b.Ch), "STP", null, text: $"{Rules.Fix(fo.Key)}\\ => {fo.Count()} files written with older timestamps (installer or update)",
+                                    more: Log.Chunks(fo.Select(b => Rules.Fix(b.F.Name))).Select(p => ("files", p)).ToList());
                         continue;
                     }
                     foreach (var b in x)
                     {
-                        flagged++;
-                        c.Event(b.Ch, "STP", b.F.FullName, $"times set back: created {b.F.CreationTimeUtc:yyyy-MM-dd HH:mm:ss.fffffff}, modified {b.F.LastWriteTimeUtc:yyyy-MM-dd HH:mm:ss.fffffff}, " +
-                                $"but NTFS change time {b.Ch:yyyy-MM-dd HH:mm:ss}", new List<string> { "!timestomped" });
+                        // the line's time is the NTFS change time (when the times were set)
+                        c.Event(b.Ch, "STP", b.F.FullName, Timestomp.StpDetail(b.F.CreationTimeUtc, b.F.LastWriteTimeUtc), new List<string> { "!timestomped" });
                     }
                 }
             }
-            if (back.Count > 0)
-                c.Out.Comment($"{back.Count} programs or scripts look old (whole-second creation time) but their NTFS change time is recent: {flagged} flagged !timestomped, " +
-                              $"{back.Count - flagged - signedSkipped} in {batches} installer/update batches (3+ files in one folder tree within a minute, unflagged), {signedSkipped} validly signed (not counted). All are in the timeline (STP) except the signed ones.");
         }
     }
 }

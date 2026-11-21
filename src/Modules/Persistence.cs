@@ -99,8 +99,9 @@ namespace Spor.Modules
 
         void RunKeys()
         {
-            c.Out.Sub("Run keys (all entries)", "time = when the key was last changed (Windows stores no time per entry)");
-            var rt = new Table("@time", "[kind", "!status", "<flags", "*entry", ">program", "arguments", "value");
+            c.Out.Sub("Run keys (all entries)", "time = when the key was last changed (Windows stores no time per entry)\n" +
+                      "program: = what the entry starts (with its status), arguments: = its arguments, value: = the value name when it has a backslash");
+            var rt = new Table("@time", "[kind", "<flags", "*entry");
             var keys = new List<(string Name, RegistryKey Root, string Path)>();
             foreach (var sub in new[] { @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", @"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
                                         @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce",
@@ -133,12 +134,17 @@ namespace Spor.Modules
                             c.Observe("run", n, t, runItem); c.Observe("cmd", cmd, t, runItem);
                             if (Rules.DrivePath.IsMatch(prog ?? "")) c.Observe("path", prog, t);
                             progs.Add(n);
-                            // value: the value name as stored (it can contain backslashes, so it cannot be cut from the entry reliably)
-                            rt.Add(Log.T(t), kind, pf.Status, Rules.FlagCol(fl), k.Name + "\\" + Rules.Fix(n), pf.Path, Rules.Fix(Cmd.Args(cmd)), Rules.Fix(n));
+                            // the entry on the line, what it starts below; the value name only when it has a backslash (then it cannot be cut
+                            // from the entry reliably), else it is the entry's last part
+                            rt.Add(Log.T(t), kind, Rules.FlagCol(fl), k.Name + "\\" + Rules.Fix(n));
+                            rt.More("program", Log.Item(pf.Path, pf.Status));
+                            rt.More("arguments", Rules.Fix(Cmd.Args(cmd)));
+                            if (n.Contains("\\")) rt.More("value", Rules.Fix(n));
                             foreach (var m in Modules(prog)) rt.More("module", m);
                             if (Rules.Strong(fl).Count > 0) c.Find(t, $"Run entry {Rules.Fix(n)} = {c.File(prog)}{Rules.FlagText(fl)}", "key changed");
                         }
-                        c.Event(t, "AUT", null, text: $"{k.Name} changed (now: {string.Join(", ", progs)})");
+                        // the values it has now on now: sub-lines (a Run key can have dozens)
+                        c.Event(t, "AUT", null, text: $"{k.Name} changed ({progs.Count} values now)", more: Log.Chunks(progs).Select(p => ("now", p)).ToList());
                     }
                 }
                 catch (Exception e) { c.Err.Add(k.Name + ": " + e.Message); }
@@ -247,8 +253,8 @@ namespace Spor.Modules
         {
             var root = Path.Combine(c.WinDir, @"System32\Tasks");
             c.Out.Sub(Rules.Whitelist ? "Scheduled tasks, except Microsoft tasks that run trusted programs" : "Scheduled tasks",
-                "created / changed = task file times; action: = further actions of the task; info: hidden, author");
-            var tt = new Table("@created", "[kind", "changed", "!status", "<flags", "*task", ">program", "arguments");
+                "created / changed = task file times; program: / arguments: = the task's first action, action: = further actions; info: hidden, author");
+            var tt = new Table("@created", "[kind", "changed", "<flags", "*task");
             var trows = new List<(DateTime T, string[] F, List<string> More)>();
             IEnumerable<string> files;
             try { files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).ToList(); }
@@ -299,12 +305,15 @@ namespace Spor.Modules
                     var hidden = x.SelectSingleNode("//t:Settings/t:Hidden", ns)?.InnerText == "true";
                     var first = acts.FirstOrDefault();
                     var changed = (fi.LastWriteTimeUtc - fi.CreationTimeUtc).TotalMinutes > 2;
-                    var more = acts.Skip(1).Select(a => "action: " + Log.Item(a.Path, a.Status, a.Args.Length > 0 ? "arguments " + a.Args : null, Rules.FlagCol(a.Fl))).ToList();
+                    // the first action on program: / arguments: lines (the line itself would get too long)
+                    var more = new List<string> { "program: " + Log.Item(first.Path ?? "(no action)", first.Status) };
+                    if (!string.IsNullOrEmpty(first.Args)) more.Add("arguments: " + first.Args);
+                    more.AddRange(acts.Skip(1).Select(a => "action: " + Log.Item(a.Path, a.Status, a.Args.Length > 0 ? "arguments " + a.Args : null, Rules.FlagCol(a.Fl))));
                     var info = string.Join(", ", new[] { hidden ? "hidden" : null, string.IsNullOrEmpty(author) ? null : "author " + author }.Where(v => v != null));
                     if (info.Length > 0) more.Add("info: " + info);
                     foreach (var a in acts) more.AddRange(Modules(a.Prog).Select(m => "module: " + m));
-                    trows.Add((fi.CreationTimeUtc, new[] { Log.T(fi.CreationTimeUtc), "task", changed ? Log.T(fi.LastWriteTimeUtc) : "-", first.Status ?? "-", Rules.FlagCol(first.Fl),
-                                                           Rules.Fix(name), first.Path ?? "(no action)", first.Args ?? "" }, more));
+                    trows.Add((fi.CreationTimeUtc, new[] { Log.T(fi.CreationTimeUtc), "task", changed ? Log.T(fi.LastWriteTimeUtc) : "-", Rules.FlagCol(first.Fl),
+                                                           Rules.Fix(name) }, more));
                     if (first.Prog != null && Rules.DrivePath.IsMatch(first.Prog))
                     {
                         c.Event(fi.CreationTimeUtc, "TSK", first.Prog, $"task {name} created");

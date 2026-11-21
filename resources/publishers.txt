@@ -1,0 +1,41 @@
+# Spor well-known publishers: signers whose VALID signature makes a file known good.
+# Used by: the timeline whitelist (such files are counted, not listed), RUNNING PROCESSES (per-user programs),
+# SOFTWARE (!from-web), and Electron apps (no !runtime-loader check for these signers).
+# Revoked / invalid / expired signatures never count.
+# Columns (tab-separated): signer (the certificate's name, case-insensitive), note (optional).
+# Spor.publishers.txt next to Spor.exe replaces this list (to try a signer without a new build).
+
+Microsoft Windows	Windows itself
+Microsoft Corporation
+Microsoft Windows Publisher	Windows components
+Microsoft 3rd Party Application Component	drivers and components Microsoft signs for others
+Google LLC	Chrome
+Mozilla Corporation	Firefox
+Brave Software, Inc.	Brave
+Opera Norway AS	Opera
+Vivaldi Technologies AS	Vivaldi
+Apple Inc.
+Adobe Inc.
+Intel Corporation	drivers
+Advanced Micro Devices, Inc.	drivers
+NVIDIA Corporation	drivers
+Realtek Semiconductor Corp.	drivers
+Valve Corp.	Steam
+Valve	Steam
+Epic Games Inc.	Epic Games Launcher
+Discord Inc.	Electron
+Zoom Video Communications, Inc.
+Zoom Communications, Inc.
+Spotify AB
+Dropbox, Inc
+Dropbox, Inc.
+GitHub, Inc.	GitHub Desktop (Electron)
+Docker Inc	Docker Desktop (Electron)
+Lenovo
+Dell Inc
+HP Inc.
+Logitech Inc
+Logitech
+Anthropic, PBC	Claude (Electron)
+Slack Technologies, LLC	Electron
+Notion Labs, Inc.	Electron

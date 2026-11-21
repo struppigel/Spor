@@ -6,7 +6,7 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>Spor</AssemblyName>
     <RootNamespace>Spor</RootNamespace>
-    <Version>0.6.1</Version>
+    <Version>0.7.0</Version>
     <Product>Spor</Product>
     <Description>Forensic triage for malware removal helpers</Description>
     <!-- 64-bit on 64-bit Windows: no registry or System32 redirection -->
@@ -30,6 +30,11 @@
   <!-- Autodetect: known-malware patterns (src/Autodetect.cs) -->
   <ItemGroup>
     <EmbeddedResource Include="resources/autodetect.txt" LogicalName="Spor.autodetect.txt" />
+  </ItemGroup>
+
+  <!-- Well-known publishers (Rules.TrustedSigners) -->
+  <ItemGroup>
+    <EmbeddedResource Include="resources/publishers.txt" LogicalName="Spor.publishers.txt" />
   </ItemGroup>
 
   <ItemGroup>

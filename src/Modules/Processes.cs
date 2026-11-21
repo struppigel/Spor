@@ -36,7 +36,7 @@ namespace Spor.Modules
             int self = Process.GetCurrentProcess().Id;
             int checkedCount = 0, noAccess = 0;
             var hidden = new Dictionary<string, int>(Util.IC);
-            var t = new Table("@started", "[pid", "*program", "!status", "=parent", "command line", "<flags");
+            var t = new Table("@started", "[pid", "*program", "!status", "=parent", "command line", "arguments", "<flags");
             foreach (var p in procs.OrderBy(p => p.Created ?? DateTime.MaxValue).ThenBy(p => p.Pid))
             {
                 if (p.Pid == self || p.Pid <= 4 || string.IsNullOrEmpty(p.Path) || !Rules.DrivePath.IsMatch(p.Path)) continue;
@@ -70,7 +70,8 @@ namespace Spor.Modules
                     if (Rules.TrustedSigners.Contains(who)) { hidden[who] = (hidden.TryGetValue(who, out var n) ? n : 0) + 1; continue; }
                 }
                 var f = c.F(path);
-                t.Add(Log.T(p.Created), p.Pid.ToString(), f.Path, f.Status, ChainText(chain, wmi, p.Created, c.ProcessStarts), Rules.Fix(Util.Clip(p.CommandLine)), Rules.FlagCol(flags));
+                var (cl, args) = CommandOrArgs(new[] { p.Path, path }, Util.Clip(p.CommandLine));
+                t.Add(Log.T(p.Created), p.Pid.ToString(), f.Path, f.Status, ChainText(chain, wmi, p.Created, c.ProcessStarts), Rules.Fix(cl), Rules.Fix(args), Rules.FlagCol(flags));
                 foreach (var h in hits) { t.More("module", Sideload.ModuleLine(c, h)); Sideload.Events(c, h); }
                 foreach (var m in badMods.Where(m => !hits.Any(h => h.Dll.Path.Equals(m, StringComparison.OrdinalIgnoreCase))))
                     t.More("module", c.File(m));
@@ -88,6 +89,27 @@ namespace Spor.Modules
                 c.Out.Comment($"Hidden: {hidden.Values.Sum()} programs installed per user, validly signed by well-known publishers (-nowhitelist lists them): " +
                               string.Join(", ", hidden.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key} {kv.Value}")));
             t.WriteTo(c.Out);
+        }
+
+        /// <summary>
+        /// (pure) (command line, arguments) for a process line, one of them null: the arguments alone when the command line starts with the
+        /// program's own path (quoted or not, any case; it is the line's item already), both null when there are none; else the whole
+        /// command line (another spelling of the path, "..\" in it, a different program).
+        /// </summary>
+        internal static (string CommandLine, string Arguments) CommandOrArgs(IEnumerable<string> programPaths, string cmd)
+        {
+            var s = (cmd ?? "").Trim();
+            if (s.Length == 0) return (null, null);
+            foreach (var p in programPaths.Where(p => !string.IsNullOrEmpty(p)))
+            {
+                string rest = null;
+                if (s.StartsWith("\"" + p + "\"", StringComparison.OrdinalIgnoreCase)) rest = s.Substring(p.Length + 2);
+                else if (s.StartsWith(p, StringComparison.OrdinalIgnoreCase) && (s.Length == p.Length || s[p.Length] == ' ')) rest = s.Substring(p.Length);
+                if (rest == null || (rest.Length > 0 && rest[0] != ' ')) continue;
+                rest = rest.Trim();
+                return (null, rest.Length > 0 ? rest : null);
+            }
+            return (s, null);
         }
 
         /// <summary>The processes now: Win32_Process (with parents and command lines), else the bare process list.</summary>

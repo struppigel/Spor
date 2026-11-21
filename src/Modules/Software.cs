@@ -64,7 +64,8 @@ namespace Spor.Modules
                 catch { }
                 finally { e.Dispose(); }
             }
-            var t2 = new Table("@last", "[operation", "*package", "=display name", "first", "times", "from", "source", "full trust", "signer", "!status", "<flags", "folder");
+            // signer and folder are long (a GUID, the package's full name again): sub-lines
+            var t2 = new Table("@last", "[operation", "*package", "=display name", "first", "times", "from", "source", "full trust", "!status", "<flags");
             int hidden = 0;
             // the package now: its own folder, or (removed / updated) the newest folder of the same app (name + publisher ID) seen in the log
             string Family(string pkg) { var m = Regex.Match(pkg, @"^([^_]+)_.*_([a-z0-9]{13})$", Util.RX); return m.Success ? m.Groups[1].Value + "_" + m.Groups[2].Value : pkg; }
@@ -102,22 +103,30 @@ namespace Spor.Modules
                 // the package's install folder (FRST "Packages:" names it); for a package that is gone, the folder it had
                 var folder = dir ?? Path.Combine(Ctx.Env("ProgramFiles") ?? @"C:\Program Files", "WindowsApps", o.Pkg);
                 t2.Add(Log.T(o.T), o.Op + (o.Failed ? " FAILED " + o.Err : ""), Rules.Fix(o.Pkg), Rules.Fix(o.Name), o.N > 1 ? Log.T(o.First) : "-", o.N.ToString(),
-                       Rules.Fix(o.From), Rules.Fix(o.Src), o.Full ? "yes" : "-", dir != null ? now.Signer : fam.Signer != "-" ? fam.Signer + " (newer version)" : "-", now.Status, Rules.FlagCol(fl),
-                       Rules.Fix(folder));
-                c.Event(o.T, "INS", null, "folder " + Rules.Fix(folder), fl.Count > 0 ? fl : null,
+                       Rules.Fix(Source(o.From)), Rules.Fix(Source(o.Src)), o.Full ? "yes" : "-", now.Status, Rules.FlagCol(fl));
+                var signer = dir != null ? now.Signer : fam.Signer != "-" ? fam.Signer + " (newer version)" : "-";
+                if (signer != "-") t2.More("signer", signer);
+                t2.More("folder", Rules.Fix(folder));
+                c.Event(o.T, "INS", null, null, fl.Count > 0 ? fl : null,
                         text: $"Store app {o.Op.ToLowerInvariant()}{(o.Failed ? " FAILED" : "")}: {Rules.Fix(o.Pkg)}" + (o.Name.Length > 0 ? $" ({Rules.Fix(o.Name)})" : "") +
-                              (o.Src.Length > 0 ? ", from " + Rules.Fix(o.Src) : ""));
+                              (o.Src.Length > 0 ? ", from " + Rules.Fix(Source(o.Src)) : ""),
+                        more: new List<(string Key, string Value)> { ("folder", Rules.Fix(folder)) });
             }
             if (hidden > 0) c.Out.Comment($"{hidden} operations on Microsoft packages (Store and Windows updates, also failed ones) not listed; -nowhitelist lists them.");
             t2.WriteTo(c.Out, "no Store or MSIX app operations in the time window" + (hidden > 0 ? " except Microsoft's own" : ""));
         }
+
+        /// <summary>(pure) Where a package came from, for the log: a Windows Update URL ("x-windowsupdate://GUID/GUID/hash") as "Windows Update".</summary>
+        internal static string Source(string s) =>
+            s != null && s.StartsWith("x-windowsupdate://", StringComparison.OrdinalIgnoreCase) ? "Windows Update" : s;
 
         void Installed()
         {
             c.Out.Sub($"Installed programs, installed or updated in the last {c.Opt.Days} days (Uninstall keys)",
                 "time = when the entry was last written (install or update); install date = the day the installer wrote (if any).\n" +
                 "program = the uninstaller, or the program the entry shows as its icon; its status says whether it is signed.");
-            var t = new Table("@time", "[scope", "*name", "version", "publisher", "install date", "folder", ">program", "!status", "<flags", "key", "hidden");
+            // folder and key on sub-lines (folder:, key:): the line would get too long with them
+            var t = new Table("@time", "[scope", "*name", "version", "publisher", "install date", ">program", "!status", "<flags", "hidden");
             // Prefix = the key as FRST writes it in Addition's "Installed Programs" lines: HKLM\...\<subkey>, HKLM-x32\...\<subkey>, HKU\<SID>\...\<subkey>
             var keys = new List<(string Scope, RegistryKey Root, string Path, string Prefix)>
             {
@@ -127,7 +136,7 @@ namespace Spor.Modules
             foreach (var h in c.Hives) keys.Add(("user " + h.User, h.Root, @"Software\Microsoft\Windows\CurrentVersion\Uninstall", @"HKU\" + h.P.Sid + @"\...\"));
             var rows = new List<(DateTime T, string Scope, string Name, string Ver, string Pub, string Date, string Folder, string Prog, string Status, List<string> Fl, string Key, bool Hidden)>();
             int total = 0;
-            var batch = new Dictionary<int, (string Names, List<string> Keys)>();   // line index -> names and keys of a grouped install
+            var batch = new Dictionary<int, List<string>>();   // line index -> key: lines of a grouped install (each with its entry's name and version)
             foreach (var (scope, root, path, prefix) in keys)
             {
                 try
@@ -186,29 +195,52 @@ namespace Spor.Modules
                 bool clean = g.All(r => r.Fl.Count == 0 && (r.Status == "-" || r.Status == "gone"));
                 if (g.Count >= 4 && clean)
                 {
-                    var tl = g.Max(r => r.T); var names = string.Join(", ", g.Select(r => (r.Name + " " + r.Ver).Trim()));
+                    var tl = g.Max(r => r.T);
                     lines.Add((tl, new[] { Log.T(tl), g[0].Scope, $"{g.Count} entries from {(g[0].Pub.Length > 0 ? g[0].Pub : "no publisher")}", "-", "-", "-", "-", "-", "-", "-", "-", "-" }));
                     // each key: sub-line carries its entry's own name and version (an FRST Installed Programs line can match one entry)
                     string KeyLine(string key, string name, string ver) =>
                         key + (name.Length > 0 ? "; name " + name : "") + (ver.Length > 0 ? "; version " + ver : "");
-                    batch[lines.Count - 1] = (names, g.Select(r => KeyLine(r.Key, r.Name, r.Ver)).ToList());
-                    c.Event(tl, "INS", null, text: $"installed or updated: {g.Count} entries from {(g[0].Pub.Length > 0 ? g[0].Pub : "no publisher")}: {names}",
+                    // no list of names: every key: line names its entry
+                    batch[lines.Count - 1] = g.Select(r => KeyLine(r.Key, r.Name, r.Ver)).ToList();
+                    c.Event(tl, "INS", null, text: $"installed or updated: {g.Count} entries from {(g[0].Pub.Length > 0 ? g[0].Pub : "no publisher")}",
                             more: g.Select(r => ("key", KeyLine(r.Key, r.Name, r.Ver))).ToList());
                     continue;
                 }
                 foreach (var r in g)
                 {
                     lines.Add((r.T, new[] { Log.T(r.T), r.Scope, r.Name, r.Ver, r.Pub, r.Date, r.Folder, r.Prog, r.Status, Rules.FlagCol(r.Fl), r.Key, r.Hidden ? "yes" : "-" }));
-                    c.Event(r.T, "INS", null, "key " + r.Key, r.Fl.Count > 0 ? r.Fl : null,
+                    c.Event(r.T, "INS", null, null, r.Fl.Count > 0 ? r.Fl : null, more: new List<(string Key, string Value)> { ("key", r.Key) },
                             text: $"installed or updated: {r.Name} {r.Ver}".TrimEnd() + (r.Pub.Length > 0 ? $" ({r.Pub})" : "") + (r.Scope.StartsWith("user") ? ", per user" : ""));
                 }
             }
             foreach (var (l, i) in lines.Select((l, i) => (l, i)).OrderBy(x => x.l.T))
             {
-                t.Add(l.F);
-                if (batch.TryGetValue(i, out var b)) { t.More("programs", b.Names); foreach (var k in b.Keys) t.More("key", k); }
+                // F: time, scope, name, version, publisher, install date, folder, program, status, flags, key, hidden
+                t.Add(l.F[0], l.F[1], l.F[2], l.F[3], l.F[4], l.F[5], l.F[7], l.F[8], l.F[9], l.F[11]);
+                if (batch.TryGetValue(i, out var keyLines)) foreach (var k in keyLines) t.More("key", k);
+                else
+                {
+                    if (l.F[6] != "-") t.More("folder", l.F[6]);
+                    if (l.F[10] != "-") t.More("key", l.F[10]);
+                }
             }
             t.WriteTo(c.Out);
+        }
+
+        /// <summary>
+        /// The data of a Windows Installer 1033 / 1034 event: product name, version, (language,) status, manufacturer, in this order;
+        /// null when the event has fewer fields or no name. The message text is localized, the data is not.
+        /// </summary>
+        static (string Name, string Version, string Status, string Maker)? MsiData(System.Diagnostics.Eventing.Reader.EventRecord e)
+        {
+            try
+            {
+                var p = e.Properties;
+                if (p == null || p.Count < 5) return null;
+                string V(int i) { var s = Util.Clip(p[i].Value); return s == "(NULL)" ? "" : s; }
+                return V(0).Length > 0 ? (V(0), V(1), V(3), V(4)) : ((string, string, string, string)?)null;
+            }
+            catch { return null; }
         }
 
         /// <summary>Windows Installer events: exact install and removal times, also for software that is gone now.</summary>
@@ -227,11 +259,17 @@ namespace Spor.Modules
                 string user = null;
                 try { user = e.UserId != null ? Who(e.UserId.Value) : null; } catch { }
                 if (!seen.Add(Log.T(tm) + "|" + msg)) { e.Dispose(); continue; }
+                // 1033 / 1034: the event data (name, version, language, status, manufacturer), the same in every Windows language;
+                // the English labels of the message only as a fallback
+                var data = (e.Id == 1033 || e.Id == 1034) ? MsiData(e) : null;
                 string F(string n) { var m = Regex.Match(msg, n + @":\s*(.*?)\.(\s+[A-Z][\w ]+:|\s*$)"); return m.Success ? m.Groups[1].Value.Trim() : ""; }
                 var what = e.Id == 1033 ? "installed" : e.Id == 1034 ? "removed" : "install FAILED";
-                var name = F("Product Name"); var st = F("(?:Installation|Removal) success or error status");
+                var name = data?.Name ?? F("Product Name");
+                var ver = data?.Version ?? F("Product Version");
+                var maker = data?.Maker ?? F("Manufacturer");
+                var st = data?.Status ?? F("(?:Installation|Removal) success or error status");
                 var text = name.Length > 0
-                    ? $"{what}: {name} {F("Product Version")}".TrimEnd() + (F("Manufacturer").Length > 0 ? $" ({F("Manufacturer")})" : "") + (st.Length > 0 && st != "0" ? $", status {st} (failed)" : "")
+                    ? $"{what}: {name} {ver}".TrimEnd() + (maker.Length > 0 ? $" ({maker})" : "") + (st.Length > 0 && st != "0" ? $", status {st} (failed)" : "")
                     : $"{what}: " + Regex.Replace(msg, @"^Product:\s*", "", RegexOptions.IgnoreCase);
                 var code = ProductCode(e);   // = the product's Uninstall subkey (FRST: HKLM\...\{GUID})
                 t.Add(Log.T(tm), e.Id.ToString(), text, user, name, code);

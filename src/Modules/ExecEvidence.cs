@@ -187,8 +187,7 @@ namespace Spor.Modules
             // ---- details ----
             var o = c.Opt;
             c.Out.Comment(creations);
-            c.Out.Comment($"Read PCA {npca}, UserAssist {nua}, BAM {nbam}, ShimCache {nshim}, Compatibility Assistant {ncas}; programs run in the last {o.Days} days" +
-                          $"{(Rules.Whitelist ? " outside trusted locations" : "")} are in the timeline (PCA, UA, BAM), ShimCache files modified then too (SC).");
+            c.Out.Comment($"Read PCA {npca}, UserAssist {nua}, BAM {nbam}, ShimCache {nshim}, Compatibility Assistant {ncas}");
             var notes = new List<string>();
             if (oldLol > 0) notes.Add($"Hidden: {oldLol} ShimCache entries of validly signed LOLBins in trusted locations (Windows updates; -nowhitelist lists them).");
             if (shimNote.Length > 0) notes.Add(shimNote.Trim());

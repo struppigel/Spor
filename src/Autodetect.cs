@@ -89,24 +89,12 @@ namespace Spor
         /// <summary>The embedded database, or Spor.autodetect.txt next to Spor.exe instead (to try new patterns without a new build).</summary>
         static Db Load()
         {
-            try
-            {
-                var dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
-                var file = Path.Combine(dir, OverrideFile);
-                if (File.Exists(file)) { var d = Parse(File.ReadAllText(file)); d.Source = file; return d; }
-            }
-            catch { }
-            return Parse(Embedded());
+            var d = Util.DataFile(OverrideFile, Parse, out var source);
+            if (source != null) d.Source = source;
+            return d;
         }
 
-        public static string Embedded()
-        {
-            var asm = Assembly.GetExecutingAssembly();
-            var name = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith("autodetect.txt", StringComparison.OrdinalIgnoreCase));
-            if (name == null) return "";
-            using (var s = asm.GetManifestResourceStream(name))
-            using (var r = new StreamReader(s)) return r.ReadToEnd();
-        }
+        public static string Embedded() => Util.Embedded(OverrideFile);
 
         /// <summary>
         /// Tab-separated rows: kind, match, family, note, example, FenrisHub rule ids. match: "=text" (the whole value),

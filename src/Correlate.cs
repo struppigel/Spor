@@ -94,6 +94,11 @@ namespace Spor
         internal static List<string> FirstLineSigns(RuntimeFolder r, List<(DateTime? Run, List<string> Notes)> notes) =>
             FolderSigns(r).Concat(notes.Where(n => n.Run == null).SelectMany(n => n.Notes)).ToList();
 
+        /// <summary>(pure) An Electron launcher validly signed by a well-known publisher (Rules.TrustedSigners): not checked for loader signs.</summary>
+        internal static bool KnownGoodElectron(string kind, Signature.Result sg) =>
+            kind == "Electron" && sg != null && sg.Valid
+            && Rules.TrustedSigners.Contains((sg.Signer ?? "").Replace(" (catalog)", "").Replace(" (package)", ""));
+
         public static void Run(Ctx c)
         {
             try { RuntimeLaunchers(c); }
@@ -155,10 +160,11 @@ namespace Spor
                 if (!trees.TryGetValue(dir, out var tree)) trees[dir] = tree = Tree(dir);
                 var kind = Rules.ScriptRuntime(exe, tree.Select(t => t.Rel));
                 if (kind == null) continue;
-                // Electron apps of well-known publishers are everywhere (Discord, VS Code, Slack, with updaters and helpers):
-                // they keep the normal whitelist and are never !runtime-loader
-                bool electron = kind == "Electron";
-                if (!electron) c.RuntimeLaunchers.Add(exe);
+                // Electron apps of well-known publishers are everywhere (Discord, VS Code, Slack, with updaters and helpers): validly
+                // signed by one of them, they keep the normal whitelist and are never !runtime-loader. Any other Electron app is checked
+                // like the other runtimes: a lot of malware is Electron-based.
+                bool knownGood = KnownGoodElectron(kind, Signature.Check(exe));
+                if (!knownGood) c.RuntimeLaunchers.Add(exe);
 
                 var containers = tree.Where(t => Rules.ScriptContainer.IsMatch(t.Rel) && !Rules.RuntimeLibFolder.IsMatch(t.Rel)).ToList();
                 var containerDirs = new HashSet<string>(containers.Select(t => t.F.DirectoryName), Util.IC);
@@ -190,7 +196,7 @@ namespace Spor
                                           .Where(x => x.Run != null)
                                           .Select(x => (x.Path, x.Run.Value)).Distinct().ToList(),
                 };
-                var signals = electron ? new List<string>() : Signals(r);
+                var signals = knownGood ? new List<string>() : Signals(r);
                 var notes = signals.Count > 0 ? RunNotes(r) : new List<(DateTime? Run, List<string> Notes)>();
 
                 // the script files on the launcher's first line: hidden ones first, then the biggest containers

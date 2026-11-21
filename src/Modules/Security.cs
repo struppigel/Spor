@@ -37,6 +37,33 @@ namespace Spor.Modules
             return string.Join("; ", parts);
         }
 
+        /// <summary>
+        /// (pure) The items of a detection's cleaned Path field ("a; b; process: C:\x.exe, pid:5:123; pid:5,ProcessStart:456"), one per sub-line:
+        /// file: a file (also "x.zip->inner.exe"), process: a process (with its pid), resource: anything else (registry key, ...).
+        /// A "pid:N,ProcessStart:M" piece of a process already listed is left out.
+        /// </summary>
+        internal static List<(string Key, string Value)> Resources(string paths)
+        {
+            var parts = (paths ?? "").Split(new[] { "; " }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+            var pids = new HashSet<string>(parts.Where(x => x.StartsWith("process: ", StringComparison.OrdinalIgnoreCase))
+                                                .Select(x => Regex.Match(x, @"\bpid:(\d+)").Groups[1].Value).Where(x => x.Length > 0));
+            var res = new List<(string, string)>();
+            foreach (var x in parts)
+            {
+                var pm = Regex.Match(x, @"^pid:(\d+)[,:]", Util.RX);
+                if (x.StartsWith("process: ", StringComparison.OrdinalIgnoreCase)) res.Add(("process", x.Substring("process: ".Length)));
+                else if (pm.Success && pids.Contains(pm.Groups[1].Value)) continue;
+                else if (pm.Success) res.Add(("process", x));
+                else if (Rules.DrivePath.IsMatch(x) || x.StartsWith(@"\\", StringComparison.Ordinal)) res.Add(("file", x));
+                else res.Add(("resource", x));
+            }
+            return res.Distinct().ToList();
+        }
+
+        /// <summary>A process: item ("C:\x.exe, pid:5:123") is the process named (C:\x.exe).</summary>
+        static bool SameProcess(string item, string proc) =>
+            item.Equals(proc, StringComparison.OrdinalIgnoreCase) || item.StartsWith(proc + ",", StringComparison.OrdinalIgnoreCase);
+
         /// <summary>Files a detection names that still exist get hashed (listed in FILES); "x.zip->inner.exe" = the archive.</summary>
         void HashNamed(string paths)
         {
@@ -60,6 +87,7 @@ namespace Spor.Modules
             {
                 var m = Ev.Msg(e); var t = e.TimeCreated?.ToUniversalTime();
                 string text; var fl = new List<string>(); bool find = true;
+                List<(string Key, string Value)> more = null;
                 switch (e.Id)
                 {
                     case 1006: case 1007: case 1008: case 1015: case 1116: case 1117: case 1118: case 1119:
@@ -67,8 +95,13 @@ namespace Spor.Modules
                             find = e.Id != 1117 && e.Id != 1007;   // "action taken" repeats the detection
                             var what = e.Id == 1116 || e.Id == 1006 || e.Id == 1015 ? "detected" : e.Id == 1117 || e.Id == 1007 ? "action taken" : "action FAILED";
                             var name = Ev.Field(m, "Name"); var path = CleanPath(Ev.Field(m, "Path")); var act = Ev.Field(m, "Action"); var proc = Ev.Field(m, "Process Name");
-                            text = $"Defender {what}: {name} => {path}" + (string.IsNullOrEmpty(act) || act == "Not Applicable" ? "" : $"; action {act}") +
-                                   (string.IsNullOrEmpty(proc) || proc == "Unknown" ? "" : $"; process {proc}");
+                            // the line: the threat and what was done; every detected item on a sub-line of its own
+                            more = Resources(path).Select(x => (x.Key, Rules.Fix(x.Value))).ToList();
+                            var rest = new List<string>();
+                            if (!string.IsNullOrEmpty(act) && act != "Not Applicable") rest.Add("action " + act);
+                            // the process that touched the file, unless it is the detected process itself
+                            if (!string.IsNullOrEmpty(proc) && proc != "Unknown" && !more.Any(x => x.Key == "process" && SameProcess(x.Value, proc))) rest.Add("process " + proc);
+                            text = $"Defender {what}: {name}" + (rest.Count > 0 ? " => " + string.Join("; ", rest) : "");
                             if (e.Id == 1118 || e.Id == 1119 || e.Id == 1008) fl.Add("!not-removed");
                             HashNamed(path);
                             break;
@@ -100,8 +133,9 @@ namespace Spor.Modules
                 }
                 text = Rules.Fix(text);
                 et.Add(Log.T(t), e.Id.ToString(), Rules.FlagCol(fl), text);
-                c.Event(t, "DEF", null, text: text, flags: fl);
-                if (find && fl.Count == 0) c.Find(t, text);   // flagged events are in the summary through the timeline
+                if (more != null) foreach (var x in more) et.More(x.Key, x.Value);
+                c.Event(t, "DEF", null, text: text, flags: fl, more: more);
+                if (find && fl.Count == 0) c.Find(t, text, more);   // flagged events are in the summary through the timeline
                 e.Dispose();
             }
             if (purged.Count > 0)

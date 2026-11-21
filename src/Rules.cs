@@ -84,17 +84,31 @@ namespace Spor
         public static readonly Regex DrivePath = new Regex(@"^([a-z]:)(\\.*)$", O);
 
         /// <summary>
-        /// Well-known publishers: with the whitelist on, timeline lines of files with a VALID signature from one of these (and no flags)
-        /// are hidden and only counted. Revoked/invalid/expired signatures are never hidden.
+        /// Well-known publishers (resources/publishers.txt, or Spor.publishers.txt next to Spor.exe): with the whitelist on, timeline lines
+        /// of files with a VALID signature from one of these (and no flags) are hidden and only counted; Electron apps they sign get no
+        /// !runtime-loader check. Revoked/invalid/expired signatures never count.
         /// </summary>
-        public static readonly HashSet<string> TrustedSigners = new HashSet<string>(new[] {
-            "Microsoft Windows", "Microsoft Corporation", "Microsoft Windows Publisher",
-            "Microsoft 3rd Party Application Component", "Google LLC", "Mozilla Corporation", "Brave Software, Inc.", "Opera Norway AS", "Vivaldi Technologies AS",
-            "Apple Inc.", "Adobe Inc.", "Intel Corporation", "Advanced Micro Devices, Inc.", "NVIDIA Corporation", "Realtek Semiconductor Corp.",
-            "Valve Corp.", "Valve", "Epic Games Inc.", "Discord Inc.", "Zoom Video Communications, Inc.", "Zoom Communications, Inc.", "Spotify AB",
-            "Dropbox, Inc", "Dropbox, Inc.", "GitHub, Inc.", "Docker Inc", 
-            "Lenovo", "Dell Inc", "HP Inc.", "Logitech Inc", "Logitech", "Anthropic, PBC", "Slack Technologies, LLC", "Notion Labs, Inc."
-        }, System.StringComparer.OrdinalIgnoreCase);
+        public static HashSet<string> TrustedSigners => trusted ?? (trusted = Util.DataFile(PublishersFile, ParsePublishers, out publishersSource));
+        static HashSet<string> trusted;
+        static string publishersSource;
+        public const string PublishersFile = "Spor.publishers.txt";
+
+        /// <summary>Where the publisher list comes from when it is not the built-in one (the override file's path), else null.</summary>
+        public static string PublishersSource { get { var _ = TrustedSigners; return publishersSource; } }
+
+        /// <summary>(pure) The signers of a publishers file: the first tab-separated column of each line; '#' lines are comments.</summary>
+        internal static HashSet<string> ParsePublishers(string text)
+        {
+            var set = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in (text ?? "").Split('\n'))
+            {
+                var line = raw.TrimEnd('\r');
+                if (line.TrimStart().StartsWith("#")) continue;
+                var signer = line.Split('\t')[0].Trim();
+                if (signer.Length > 0) set.Add(signer);
+            }
+            return set;
+        }
 
         /// <summary>
         /// Defender definition update packages that Windows Update downloads and runs: C:\Windows\SoftwareDistribution\Download\Install\AM_Delta_Patch_1.2.3.4.exe.
@@ -361,7 +375,7 @@ namespace Spor
             "!sideload = unsigned DLL next to a validly signed program that imports it (DLL side-loading); the line names the program and any proxy evidence",
             "!proxy-exec = started through a Windows program that launches programs for others (forfiles /c, pcalua -a, conhost --headless, cmd /c call, ...), from outside Windows and Program Files; on the launcher's own 4688/SYSMON line: pointed at a program outside them that runs as its own process (not a batch file cmd runs)",
             "!padded = new file inflated with one repeated byte against scanner and sandbox size limits: a program (its overlay) or data next to a new program",
-            "!runtime-loader = new launcher of a script runtime (Python/Ren'Py, AutoIt, Node.js, Java, Lua) with loader signs in its folder: padded or encrypted random-named data, a hidden file next to its scripts, a program it started, or a !motw-removed file near a run",
+            "!runtime-loader = new launcher of a script runtime (Python/Ren'Py, AutoIt, Node.js, Electron unless signed by a well-known publisher, Java, Lua) with loader signs in its folder: padded or encrypted random-named data, a hidden file next to its scripts, a program it started, or a !motw-removed file near a run",
             "!known-malware = matches a pattern of a known malware family (Autodetect, resources/autodetect.txt); the line names the family",
             "!renamed-program = hint: a signed program under a random-looking or lure name that is not its original name (in SUMMARY only with a strong flag nearby)",
             "!invisible-char = invisible character in the name, shown as <U+XXXX>: anywhere one never used in names (zero-width space, Hangul filler, Braille blank, ...); on USB drives any (also no-break space)",

@@ -55,6 +55,27 @@ namespace Spor
         /// <summary>Always "yyyy-MM-dd HH:mm:ss" with ":" and the Gregorian calendar, whatever the PC's culture.</summary>
         public static string T(DateTime? t) => t.HasValue ? t.Value.ToString(TimeFmt, CultureInfo.InvariantCulture) : "-";
 
+        /// <summary>Longest "a, b, c" piece of a list on one sub-line (the key and indent come on top).</summary>
+        public const int ListWidth = 150;
+
+        /// <summary>
+        /// (pure) A list cut into ", "-joined pieces of at most `width` characters, never inside an item (an item longer than that is a
+        /// piece of its own). For long lists on several "    key: a, b, c" sub-lines instead of one very long line.
+        /// </summary>
+        public static List<string> Chunks(IEnumerable<string> items, int width = ListWidth)
+        {
+            var res = new List<string>();
+            var cur = "";
+            foreach (var it in items)
+            {
+                if (string.IsNullOrEmpty(it)) continue;
+                if (cur.Length > 0 && cur.Length + 2 + it.Length > width) { res.Add(cur); cur = ""; }
+                cur = cur.Length == 0 ? it : cur + ", " + it;
+            }
+            if (cur.Length > 0) res.Add(cur);
+            return res;
+        }
+
         /// <summary>"(prefix item, item, ...)" as one comment line.</summary>
         public void Wrap(string prefix, IEnumerable<string> items) => Comment(prefix + string.Join(", ", items));
 

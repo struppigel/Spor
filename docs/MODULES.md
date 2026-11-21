@@ -60,7 +60,7 @@ A validly signed program under a random-looking or lure name that differs from i
 ## timestomp
 
 Files whose timestamps were set in the time window, read from the NTFS change journal of every fixed NTFS drive.
-Every file gets a score and Spor lists files with a score of 3 or more, together with the signals:
+Every file gets a score and Spor lists files with a score of 3 or more, most suspicious first, with their signals (the score itself is not written; `B` and `M` are the creation and modification time):
 
 * +4 if the creation time is more than a day before the journal says the file was created. Not counted if NTFS tunneling explains it: when a program saves a file by writing a new one and renaming it over the old name within 15 seconds, NTFS keeps the old creation time. Browsers and Electron apps do that all the time.
 * +3 if the creation time is in whole seconds, which is what SetFileTime tools write
@@ -138,7 +138,7 @@ The volume serials and drive letters of USB drives (now mounted, from ReadyBoost
 
 ## Script-runtime launchers (all modules)
 
-After the modules ran, Spor looks at every program on the timeline outside Windows and Program Files: does it ship a script runtime (Ren'Py/Python, AutoIt, Node.js, Electron, Java, Lua)? Malware ships a legitimate runtime and keeps its code in data files, so the launcher's signature says nothing. Such a launcher is never hidden by the signer whitelist (except Electron apps), its first timeline line says `script runtime <kind>` and lists the script containers and hidden files as `script:` lines. A new launcher folder with loader signs gets `!runtime-loader` (see LOG-FORMAT.md).
+After the modules ran, Spor looks at every program on the timeline outside Windows and Program Files: does it ship a script runtime (Ren'Py/Python, AutoIt, Node.js, Electron, Java, Lua)? Malware ships a legitimate runtime and keeps its code in data files, so the launcher's signature says nothing. Such a launcher is never hidden by the signer whitelist (except Electron apps validly signed by a well-known publisher, `resources/publishers.txt`: they are not checked at all), its first timeline line says `script runtime <kind>` and lists the script containers and hidden files as `script:` lines. A new launcher folder with loader signs gets `!runtime-loader` (see LOG-FORMAT.md).
 
 ## Autodetect (all modules)
 

@@ -24,7 +24,8 @@ namespace Spor.Tests
         {
             var z = Ads.ParseZone("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://example.com/a.zip\r\n");
             Assert.True(z.HasUrl);
-            Assert.Equal("from https://example.com/a.zip", z.Text);
+            Assert.Equal(new[] { ("from", "https://example.com/a.zip") }, z.Urls);
+            Assert.Null(z.Text);   // the URLs go on sub-lines, the line says nothing more
         }
 
         [Fact]
@@ -32,7 +33,8 @@ namespace Spor.Tests
         {
             var z = Ads.ParseZone("[ZoneTransfer]\nZoneId=3\nReferrerUrl=https://example.com/page\nHostUrl=https://cdn.example.com/a.zip\n");
             Assert.True(z.HasUrl);
-            Assert.Equal("from https://cdn.example.com/a.zip, referrer https://example.com/page", z.Text);
+            Assert.Equal(new[] { ("from", "https://cdn.example.com/a.zip"), ("referrer", "https://example.com/page") }, z.Urls);
+            Assert.Null(z.Text);
         }
 
         [Theory]
@@ -56,6 +58,7 @@ namespace Spor.Tests
             Assert.Null(z.Id);
             Assert.False(z.HasUrl);
             Assert.Null(z.Text);
+            Assert.Empty(z.Urls);
         }
 
         [Fact]
