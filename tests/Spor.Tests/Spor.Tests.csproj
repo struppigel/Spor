@@ -15,7 +15,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\Spor.csproj" />
+    <!-- SporTests=true: a separate build of Spor with internals visible to the tests (see Spor.csproj) -->
+    <ProjectReference Include="..\..\Spor.csproj" AdditionalProperties="SporTests=true" />
   </ItemGroup>
 
 </Project>

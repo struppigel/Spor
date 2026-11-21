@@ -99,7 +99,9 @@ namespace Spor
             open = new Button { Text = "Open log", AutoSize = true, MinimumSize = new Size(110, 32), Enabled = false };
             scan.Click += (s, e) => StartScan();
             open.Click += (s, e) => { if (logPath != null) Program.OpenLog(logPath); };
-            fb.Controls.Add(scan); fb.Controls.Add(open);
+            var about = new Button { Text = "About", AutoSize = true, MinimumSize = new Size(110, 32) };
+            about.Click += (s, e) => { using (var f = new AboutForm()) f.ShowDialog(this); };
+            fb.Controls.Add(scan); fb.Controls.Add(open); fb.Controls.Add(about);
             Add(fb);
 
             bar = new ProgressBar { Height = 18, Dock = DockStyle.Fill, Margin = new Padding(0, 10, 0, 4) };

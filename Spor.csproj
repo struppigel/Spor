@@ -7,8 +7,13 @@
     <AssemblyName>Spor</AssemblyName>
     <RootNamespace>Spor</RootNamespace>
     <Version>0.7.2</Version>
+    <!-- Version info shown in Explorer > Properties > Details. AssemblyTitle is the "File description". -->
     <Product>Spor</Product>
-    <Description>Forensic triage for malware removal helpers</Description>
+    <AssemblyTitle>Spor - forensic triage for malware removal helpers</AssemblyTitle>
+    <Description>Collects execution, download, persistence and remote-access evidence into one log file, Spor.txt. Reads only, changes nothing on the system. https://github.com/struppigel/Spor</Description>
+    <Company>Karsten Hahn</Company>
+    <Authors>Karsten Hahn</Authors>
+    <Copyright>Copyright (c) 2026 Karsten Hahn</Copyright>
     <!-- 64-bit on 64-bit Windows: no registry or System32 redirection -->
     <PlatformTarget>AnyCPU</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
@@ -24,6 +29,15 @@
   <ItemGroup>
     <Compile Remove="tests/**" />
     <None Remove="tests/**" />
+  </ItemGroup>
+
+  <!-- The tests build their own copy of Spor (SporTests=true, set by tests/Spor.Tests) with internals
+       visible, in bin\tests and obj\tests. The released Spor.exe has no reference to the tests. -->
+  <PropertyGroup Condition="'$(SporTests)' == 'true'">
+    <OutputPath>bin\tests\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>obj\tests\$(Configuration)\</IntermediateOutputPath>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(SporTests)' == 'true'">
     <InternalsVisibleTo Include="Spor.Tests" />
   </ItemGroup>
 
@@ -35,6 +49,11 @@
   <!-- Well-known publishers (Rules.TrustedSigners) -->
   <ItemGroup>
     <EmbeddedResource Include="resources/publishers.txt" LogicalName="Spor.publishers.txt" />
+  </ItemGroup>
+
+  <!-- Large program icon for the About window (src/AboutForm.cs) -->
+  <ItemGroup>
+    <EmbeddedResource Include="resources/Spor.png" LogicalName="Spor.Spor.png" />
   </ItemGroup>
 
   <!-- Known-noise rules (src/Whitelist.cs) -->
