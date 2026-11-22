@@ -27,7 +27,7 @@ namespace Spor
         public static readonly IModule[] All =
         {
             new Prefetch(), new Amcache(), new ExecEvidence(), new Files(), new Timestomp(), new Downloads(), new Software(), new Persistence(),
-            new Processes(), new Security(), new ClickFix(), new RemoteAccess(), new Network(), new Accounts(), new Usb()
+            new Processes(), new Security(), new ClickFix(), new RemoteAccess(), new Network(), new Accounts(), new Drops(), new Usb()
         };
 
         /// <summary>
@@ -71,6 +71,7 @@ namespace Spor
             ("SC", "ShimCache: time = the file's modification time (not when it ran or arrived: a copied file keeps its old time)"),
             ("NEW", "file created"),
             ("STP", "timestamps set, possibly faked (timestomping)"),
+            ("DRP", "drop folder sweep: a loader project folder in a Windows cache or system folder (time = folder created)"),
             ("DL", "browser download"),
             ("OPN", "file opened in Explorer"),
             ("ISO", "disk image mounted"),
@@ -396,8 +397,11 @@ namespace Spor
             return res;
         }
 
-        /// <summary>Sub-lines the SUMMARY writes under a line: a download's addresses and a Defender detection's items.</summary>
-        static readonly HashSet<string> SummaryKeys = new HashSet<string> { "from", "page", "referrer", "file", "process", "resource" };
+        /// <summary>
+        /// Sub-lines the SUMMARY writes under a line: a download's addresses, a Defender detection's items, the first folder of a drop
+        /// folder's group, and the ShimCache time of a copied file.
+        /// </summary>
+        static readonly HashSet<string> SummaryKeys = new HashSet<string> { "from", "page", "referrer", "file", "process", "resource", "group", "shimcache" };
 
         static Log Timeline(Ctx c, out List<Row> result)
         {
@@ -410,7 +414,8 @@ namespace Spor
             string SignedBy(string path)
             {
                 if (!Rules.Whitelist || !Signature.Applies(path) || Rules.Strong(Rules.Flags(path)).Count > 0 || Rules.Lol.IsMatch(path)
-                    || Rules.Interpreter.IsMatch(path) || Rules.DropLocation(path) || c.RuntimeLaunchers.Contains(c.RealCase(path))) return null;
+                    || Rules.Interpreter.IsMatch(path) || Rules.DropLocation(path) || c.RuntimeLaunchers.Contains(c.RealCase(path))
+                    || c.LolbinCopy(path) != null) return null;   // a LOLBin copy (also a validly signed, renamed one) is never hidden
                 var real = c.RealCase(path);
                 if (!File.Exists(real)) real = c.Replacement(real);
                 if (real == null) return null;
@@ -447,6 +452,7 @@ namespace Spor
                     var path = x.OrderByDescending(e => e.T).First().Path;
                     var ex = MergeDetails(x.Select(e => (e.Pid, e.Extra)));
                     ex.InsertRange(0, x.Where(e => e.Known != null).Select(e => e.Known).Distinct());   // the family first
+                    if (c.LolbinCopy(path) is string copy) ex.Add(copy);
                     if (TimeMeaning(x.Select(e => e.Src)) is string tm) ex.Add(tm);   // last, so the other details keep their place
                     bool last = x == cl[cl.Count - 1];
                     if (dropped > 0 && last)
@@ -456,7 +462,7 @@ namespace Spor
                     var row = new Row
                     {
                         T = LineTime(x), Src = string.Join(" ", x.Select(e => e.Src).Distinct().OrderBy(Order)), Status = f.Status, Obj = f.Path,
-                        Details = string.Join("; ", ex), Flags = Rules.Flags(path).Concat(x.Where(e => e.Flags != null).SelectMany(e => e.Flags)).Distinct().ToList(),
+                        Details = string.Join("; ", ex), Flags = c.WithLolbinCopy(path, Rules.Flags(path).Concat(x.Where(e => e.Flags != null).SelectMany(e => e.Flags))).Distinct().ToList(),
                         // sub-lines of file events too (script files of a runtime launcher, ...)
                         More = MergeMore(x.Where(e => e.More != null).SelectMany(e => e.More)),
                     };
@@ -501,7 +507,7 @@ namespace Spor
         {
             log.W();
             log.Heading("SUMMARY - flagged items; details in the sections below");
-            log.Comment("time = when it happened, except: ShimCache = the file's modification time (a copied file keeps its old time), Amcache = when Windows wrote the entry.");
+            log.Comment("time = when it happened, except: ShimCache = the file's modification time (a copied file keeps its old time; a copy seen otherwise has it as a shimcache: detail), Amcache = when Windows wrote the entry.");
             log.Comment("Also not when it happened: Run keys and services = when the key was last changed, tasks and Startup items = file created, log and config files = file last written.");
             // hints (Rules.Hints) count only with a strong flag on the same line or in the same folder
             var strongFolders = new HashSet<string>(rows.Where(r => Rules.Strong(r.Flags).Count > 0 && Rules.DrivePath.IsMatch(r.Obj ?? ""))

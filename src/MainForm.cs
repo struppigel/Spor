@@ -99,9 +99,7 @@ namespace Spor
             open = new Button { Text = "Open log", AutoSize = true, MinimumSize = new Size(110, 32), Enabled = false };
             scan.Click += (s, e) => StartScan();
             open.Click += (s, e) => { if (logPath != null) Program.OpenLog(logPath); };
-            var about = new Button { Text = "About", AutoSize = true, MinimumSize = new Size(110, 32) };
-            about.Click += (s, e) => { using (var f = new AboutForm()) f.ShowDialog(this); };
-            fb.Controls.Add(scan); fb.Controls.Add(open); fb.Controls.Add(about);
+            fb.Controls.Add(scan); fb.Controls.Add(open);
             Add(fb);
 
             bar = new ProgressBar { Height = 18, Dock = DockStyle.Fill, Margin = new Padding(0, 10, 0, 4) };
@@ -109,6 +107,16 @@ namespace Spor
             // so a long status text wraps instead of resizing the window
             status = new Label { AutoSize = false, Dock = DockStyle.Fill, Height = Font.Height * 2 + 6, Text = "Ready.", Margin = new Padding(0, 2, 0, 0) };
             Add(bar); Add(status);
+
+            // About: a small underlined label at the bottom right, not a button next to Scan
+            var about = new LinkLabel
+            {
+                Text = "About", AutoSize = true, Anchor = AnchorStyles.Right, Margin = new Padding(0, 2, 0, 0),
+                Font = new Font(Font.FontFamily, Font.Size * 0.9f), LinkBehavior = LinkBehavior.AlwaysUnderline,
+                LinkColor = SystemColors.GrayText, ActiveLinkColor = SystemColors.GrayText, VisitedLinkColor = SystemColors.GrayText,
+            };
+            about.LinkClicked += (s, e) => { using (var f = new AboutForm()) f.ShowDialog(this); };
+            Add(about);
             AcceptButton = scan;
 
             // after the first layout the window keeps its size: nothing that changes during the scan may resize it

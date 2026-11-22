@@ -23,7 +23,7 @@ Without options Spor opens its window. With options it scans without a window:
   -profile NAME    which modules run: default (all except usb), usb (USB worm: prefetch, exec, files, persistence,
                    processes, usb), all
   -modules LIST    comma-separated modules instead of a profile: prefetch, amcache, exec, files, timestomp, downloads,
-                   software, persistence, processes, defender, clickfix, remote, network, accounts, usb
+                   software, persistence, processes, defender, clickfix, remote, network, accounts, drops, usb
   -algo NAME       hash algorithm: SHA256 (default), SHA1 (to compare with Amcache), MD5
   -maxmb N         don't hash files over N MB (default 500)
   -nohash          don't hash files (signatures are still checked)

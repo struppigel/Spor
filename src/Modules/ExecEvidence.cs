@@ -140,7 +140,7 @@ namespace Spor.Modules
                         if (e.P.IndexOf('\t') >= 0) continue;   // packaged (Store) apps
                         var p = c.Long(e.P);
                         if (!seen.Add(p)) continue;
-                        var f = Rules.Flags(p);
+                        var f = c.WithLolbinCopy(p, Rules.Flags(p));   // a LOLBin copy outside its folders: also older entries
                         if (f.Count == 0 && (!e.M.HasValue || e.M.Value < c.Since)) continue;   // only files modified in the last Days days (+ flagged)
                         if (!Keep(p)) continue;
                         shim.Add(new Row { N = e.N, P = p, M = e.M, F = f });
@@ -178,7 +178,8 @@ namespace Spor.Modules
                     if (Rules.DrivePath.IsMatch(x.P ?? "")) c.Event(x.M, "SC", x.P, null, x.F);
                     else c.Event(x.M, "SC", null, null, x.F, text: "ShimCache entry without a folder: " + Rules.Fix(x.P));
                 }
-                else c.Find(x.M, c.File(x.P), "ShimCache: file modified", x.F);   // flagged, older
+                // flagged, older: Correlate writes it, or makes it a detail of later evidence when the file is a copy (FoldCopiedShimCache)
+                else c.PendingShim.Add((x.M, c.Module, x.P, c.File(x.P), "ShimCache: file modified", x.F));
             }
 
             var creations = ProcessCreations();

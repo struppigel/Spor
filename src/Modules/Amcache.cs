@@ -193,6 +193,9 @@ namespace Spor.Modules
                 string via = null;
                 if (p.Length == 0 && sha.Length > 0 && bySha.TryGetValue(sha, out var sp)) { p = sp; via = "path from an entry with the same SHA1"; }
                 var fl = Rules.Flags(p, n);
+                // a copy of MSBuild, RegAsm, wscript, ... outside its folders (by the name or the original name Amcache recorded)
+                if (p.Length > 0 && (Rules.CopiedLolbin(n) || Rules.CopiedLolbin(e.S("OriginalFileName"))) && c.LolbinCopy(p, e.S("OriginalFileName")) != null)
+                    fl.Add(Rules.LolbinCopyFlag);
                 if (Rules.Whitelist && fl.Contains("!lolbin") && (IsScan(run) || (p.Length > 0 && (Pf.IsMatch(p) || Serviced(p, e.Time)))))
                     fl.Remove("!lolbin");
                 // no path (name = key name, cut to 16 chars by Windows): show only files not belonging to an installed program (ProgramId ...ffff)

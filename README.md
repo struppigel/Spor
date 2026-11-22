@@ -25,7 +25,8 @@ Spor started as a set of my PowerShell snippets for malware removal help.
 * Script-runtime launchers (Ren'Py/Python, AutoIt, Node.js, Java, Lua) with their script files, and loader signs around them
 * Browser downloads, files opened in Explorer, mounted ISO/IMG/VHD files, WinRAR and 7-Zip history
 * Timestomping detection from the NTFS change journal
-* Software installed, updated or removed: Uninstall keys, Windows Installer events, Store/MSIX apps
+* Software installed, updated or removed: Uninstall keys, Windows Installer events, Store/MSIX apps; cached Windows Installer packages that run a script host from a LocalAppData install
+* Drop folder sweep without other evidence: loader project folders (PavinLoader: copied MSBuild.exe, .wsf, large .resx, dummy project files) in Windows cache folders and LocalAppData vendor folders, grouped by creation time; LOLBin copies outside their folders
 * Persistence with times: Run keys, services, scheduled tasks (also deleted ones), Startup folders, WMI subscriptions
 * Defender detections, exclusions, setting changes and cloud lookups, cleared event logs
 * ClickFix traces: Run dialog, Explorer address bar, PowerShell history
@@ -107,7 +108,7 @@ src/Sqlite.cs            read-only SQLite reader for browser history
 src/Ese.cs               ESE databases through esent.dll (SRUM, WebCache)
 src/Helpers.cs           Zone.Identifier, .lnk parser, event log queries, command lines
 src/Util.cs              text files, folder walk, formatting
-src/Modules/*.cs         one class per module (Usb.cs: the USB worm scan)
+src/Modules/*.cs         one class per module (Usb.cs: the USB worm scan; Drops.cs: the drop folder sweep)
 ```
 
 ## Author

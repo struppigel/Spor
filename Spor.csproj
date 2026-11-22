@@ -6,7 +6,7 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>Spor</AssemblyName>
     <RootNamespace>Spor</RootNamespace>
-    <Version>0.7.2</Version>
+    <Version>0.8.0</Version>
     <!-- Version info shown in Explorer > Properties > Details. AssemblyTitle is the "File description". -->
     <Product>Spor</Product>
     <AssemblyTitle>Spor - forensic triage for malware removal helpers</AssemblyTitle>

@@ -111,6 +111,7 @@ Not every source means that a file ran. A file that Windows only *recorded* is n
 | `OPN` | Recent folder, WebCache | **opened** in Explorer |
 | `ISO` | VHDMP log | disk image (ISO, IMG, VHD) **mounted** |
 | `ARC` | WinRAR and 7-Zip history | archive opened or extracted |
+| `DRP` | DROP FOLDERS sweep | a **loader project folder exists**, found by its files alone (no other evidence needed); the time is when the folder was created |
 | `INS` | Uninstall keys, Windows Installer log | software **installed, updated or removed** |
 | `AUT` `SVC` `TSK` `STA` `DRV` | Run keys, services, tasks, Startup folder, drivers | **persistence** created or changed |
 | `DEF` `LOG` `USR` | Defender, event logs, accounts | detections, setting changes, cleared logs, account changes |
@@ -126,6 +127,7 @@ If several sources see a file within 2 minutes, it is **one** line. A file that 
 If the same file was in folders that only differ in numbers (version folders, dated temp folders), the line says `+N more times in between (all paths below)` and every real path follows as an indented `path:` line with its own times. **Use these `path:` lines for removal.**
 
 `[SC]` lines say `file modified` (ShimCache keeps the file's modification time, a copied file keeps its old time), `[AM]` lines `Amcache write` (when Windows wrote the entry). Neither proves that the program ran.
+When a copied file was seen by another source too, there is no `[SC]` line at the old time: the other source's line has a `shimcache: file modified <time> (before it was created: a copy keeps the original's time)` line instead.
 
 ---
 
@@ -155,6 +157,8 @@ If the same file was in folders that only differ in numbers (version folders, da
 | `!invisible-char` | an invisible character in the name, shown as `<U+00A0>` etc. Outside USB DRIVES only characters never used in names (zero-width space, Hangul filler, Braille blank, ...); on USB drives any, also a no-break space | High for programs and for folders on USB drives: USB worms hide the user's files and their copy in a folder named like that. A no-break space or ideographic space outside USB drives is shown as `<U+00A0>` / `<U+3000>` but not flagged: Persian, Japanese and web-page-titled names use them. |
 | `!in-folder-named-like-file` | `x.exe\evil.dll`, `app.exe.local\x.dll` | High, DLL hijacking |
 | `!renamed-lolbin` | a Windows tool under another name (original name from Amcache) | High |
+| `!lolbin-copy` | a copy of MSBuild, InstallUtil, RegAsm, RegSvcs, AddInProcess, aspnet_compiler, wscript, cscript or mshta outside its usual folders (found by its original name, so also renamed) | High, especially with a signature that does not hold (`file changed after signing`), the Hidden attribute or in a Windows cache folder: PavinLoader runs its `.wsf` with a copied MSBuild.exe. A validly signed copy in AppData can be a portable build tool; ask. |
+| `!msi-script-action` | a cached Windows Installer package installs into `AppData\Local\<Vendor>\<Product>` and runs wscript, cscript, cmd, PowerShell or mshta (or a script of its own) as a custom action | High. RenLoader's fake vendor apps (`Realtek\Card Reader Helper`, `NVIDIA\PhysX Runtime`) start PavinLoader so. The line has the product code: remove the product, and the install folder. |
 | `!suspicious` | a command that downloads or runs code (Run dialog, address bar, PowerShell history) | High, typical for **ClickFix** (fake CAPTCHA: "press Win+R, Ctrl+V, Enter") |
 | `!kept-despite-warning` | the browser warned and the user kept the download | Medium to high |
 | `!timestomped` | file timestamps were probably faked | Medium to high for programs and scripts. Read the signals. |
@@ -253,6 +257,8 @@ Store and MSIX apps are listed with the operation (Add, Register, Remove or FAIL
 
 A removal right before you got the log can mean that the user or the malware already uninstalled something.
 
+**Cached Windows Installer packages** lists only packages flagged `!msi-script-action`, with their custom actions (`custom action:`) and install folder (`folder:`). Removal tools delete the cached package, so ask for the first log of a case when this matters.
+
 ### RUNNING PROCESSES
 Programs running now from outside Windows and Program Files, unsigned ones, LOLBins and interpreters with suspicious arguments, and processes with an unsigned module from outside Windows and Program Files (`module:` lines). `parent a.exe (pid) < b.exe (pid)` is the parent chain, nearest first; `pid N (exited)` means that parent is gone; `(exited, was X.exe)` names it from a process creation event (4688/Sysmon). A program started through a proxy-execution launcher is `!proxy-exec`; side-loaded DLLs are `module:` lines with `!sideload`.
 
@@ -291,6 +297,11 @@ Only with the **USB worm** or **All** profile. A typical USB worm infection look
 - sometimes `autorun.inf` (`!autorun`), a fake `RECYCLER` folder (`!hidden-system`), or a folder that Explorer shows as something else (`!clsid-folder`)
 
 Read the **Shortcuts** sub-section for the command line, and FILES for the hashes of the worm's copy and of everything else on the stick. On the PC, look for the worm's copy in PERSISTENCE and RUNNING PROCESSES, and for runs from USB volumes in the timeline (`on USB drive <label>`). "MountPoints2" and "USB storage devices" tell you which sticks were plugged in and when, so you know which other sticks to clean.
+
+### DROP FOLDERS
+PavinLoader project folders that Spor found by sweeping Windows cache and system folders (WebCache, INetCache, Explorer, Caches, Notifications, Protect, Crypto, Themes, Libraries, the SYSTEM account's too) and `AppData\Local\<Vendor>\<Product>`, **without any other evidence**. A copy that never ran has no task, no ShimCache and no SRUM entry and would be missed otherwise. Typical folder: a copied `MSBuild.exe` (`!lolbin-copy`, invalid signature), a `.wsf`, a 20-30 MB `Resources.resx` and dummy files (`.sln`, `.csproj`, `.props`, `README.md`, `LICENSE`, `settings_853.cfg`, ...), sometimes hidden.
+
+Folders created within seconds of each other are **one group**: every member has a `group:` line naming the first folder. Remove **every** folder of the group, together with the tasks that start the `.wsf` and the MSI app that dropped them (SOFTWARE, `!msi-script-action`). Folders listed with `created N s after ...` and no flag were only created at the same time: look before you remove them.
 
 ### FILES and AMCACHE FILES
 Three lines per file: the hash, signature status and signer; `file:` with md5, size, the created and modified times in the PC's **local** time (like FRST, so you can compare the two logs) and the SHA1 that Amcache recorded; `version:` with the version information and the certificate thumbprint. If the Amcache SHA1 differs from the file now, the file was replaced after Windows recorded it.

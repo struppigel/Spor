@@ -32,6 +32,8 @@ namespace Spor
         public static readonly Regex Risky = new Regex(
             @"^\\WINDOWS\\(TEMP|TASKS|DEBUG|TRACING|SYSTEMTEMP|REGISTRATION\\CRMLOG|PLA\\(REPORTS|RULES|TEMPLATES)|SERVICEPROFILES\\[^\\]+\\APPDATA)\\" +
             @"|^\\WINDOWS\\(SYSTEM32|SYSWOW64)\\(TASKS|TASKS_MIGRATED|COM\\DMP|FXSTMP|SPOOL\\(DRIVERS\\COLOR|PRINTERS|SERVERS)|MICROSOFT\\CRYPTO\\RSA\\MACHINEKEYS|LOGFILES|WDI\\LOGFILES)\\" +
+            // the SYSTEM account's profile: malware running as SYSTEM drops there (PavinLoader: ...\systemprofile\...\INetCache)
+            @"|^\\WINDOWS\\(SYSTEM32|SYSWOW64)\\CONFIG\\SYSTEMPROFILE\\APPDATA\\" +
             @"|\\STARTUP\\", O);
 
         /// <summary>
@@ -73,6 +75,59 @@ namespace Spor
         /// <summary>LOLBins: listed even in System32.</summary>
         public static readonly Regex Lol = new Regex(
             @"\\(REGASM|REGSVCS|MSBUILD|INSTALLUTIL|CSC|VBC|JSC|ADDINPROCESS(32)?|ASPNET_COMPILER|SCHTASKS|MSHTA|WSCRIPT|CSCRIPT|REGSVR32|RUNDLL32|CERTUTIL|CERTREQ|BITSADMIN|WMIC|POWERSHELL|POWERSHELL_ISE|PWSH|MSIEXEC|FORFILES|PCALUA|CMSTP|ODBCCONF|MSDT|HH|MAVINJECT|CONTROL|MSXSL|IEEXEC|PRESENTATIONHOST|SCRIPTRUNNER|SYNCAPPVPUBLISHINGSERVER|FINGER|EXTRAC32|EXPAND|DESKTOPIMGDOWNLOADER|WSL|BASH|CURL|INFDEFAULTINSTALL|REGINI|ATBROKER|DFSVC|MSCONFIG|WUAUCLT|XWIZARD|VERCLSID|CMD)\.EXE$", O);
+
+        /// <summary>
+        /// LOLBins whose copies malware runs from its own folders (PavinLoader's MSBuild.exe next to a .wsf, RegAsm.exe, ...), by
+        /// original name, and the folders where Windows, the .NET Framework and Visual Studio keep them (path without the drive).
+        /// </summary>
+        static readonly (Regex Name, Regex Home)[] LolbinHomes =
+        {
+            (new Regex(@"^MSBUILD\.EXE$", O),
+             new Regex(@"^\\WINDOWS\\(MICROSOFT\.NET\\FRAMEWORK(64|ARM64)?\\|WINSXS\\)|^\\PROGRAM FILES( \(X86\))?\\(MICROSOFT VISUAL STUDIO|MSBUILD)\\", O)),
+            (new Regex(@"^(INSTALLUTIL|REGASM|REGSVCS|ADDINPROCESS(32)?|ASPNET_COMPILER)\.EXE$", O),
+             new Regex(@"^\\WINDOWS\\(MICROSOFT\.NET\\FRAMEWORK(64|ARM64)?\\|WINSXS\\)", O)),
+            (new Regex(@"^(WSCRIPT|CSCRIPT|MSHTA)\.EXE$", O),
+             new Regex(@"^\\WINDOWS\\(SYSTEM32|SYSWOW64|SYSARM32|WINSXS)\\", O)),
+        };
+
+        /// <summary>True for a name LolbinCopy checks (MSBuild.exe, RegAsm.exe, wscript.exe, ...), in any case.</summary>
+        public static bool CopiedLolbin(string name) => LolbinHomes.Any(h => h.Name.IsMatch((name ?? "").Trim()));
+
+        /// <summary>
+        /// The Windows folders PavinLoader drops its project folders into: in a profile (also the SYSTEM account's), and ProgramData's
+        /// Caches. The drops module sweeps them (Modules/Drops.cs).
+        /// </summary>
+        public static readonly Regex WindowsCache = new Regex(
+            @"\\APPDATA\\LOCAL\\MICROSOFT\\WINDOWS\\(WEBCACHE|EXPLORER|CACHES|INETCACHE|NOTIFICATIONS)\\" +
+            @"|\\APPDATA\\ROAMING\\MICROSOFT\\(PROTECT|CRYPTO|WINDOWS\\THEMES|WINDOWS\\LIBRARIES)\\|^[A-Z]:\\PROGRAMDATA\\MICROSOFT\\WINDOWS\\CACHES\\", O);
+
+        public const string LolbinCopyFlag = "!lolbin-copy";
+
+        /// <summary>
+        /// (pure) A copy of a LOLBin outside its usual folders (LolbinHomes), found by its original name (version resource) or else its
+        /// file name: "copy of MSBuild.exe outside its usual folders; invalid signature; hidden; in a Windows cache folder", or null.
+        /// A validly signed copy in Windows or Program Files is no finding (Visual Studio, build tools, bundled SDKs). sig = the signature
+        /// status ("valid", "invalid", "unsigned", ...; null when unknown, e.g. the file is gone).
+        /// </summary>
+        public static string LolbinCopy(string path, string originalName, string sig, bool hidden)
+        {
+            var m = DrivePath.Match(path ?? "");
+            if (!m.Success) return null;
+            var leaf = path.Substring(path.LastIndexOf('\\') + 1);
+            var name = CopiedLolbin(originalName) ? originalName.Trim() : CopiedLolbin(leaf) ? leaf : null;
+            if (name == null) return null;
+            var home = LolbinHomes.First(h => h.Name.IsMatch(name)).Home;
+            bool sysDrive = m.Groups[1].Value.Equals(SystemDrive, System.StringComparison.OrdinalIgnoreCase);
+            // its own folder: on the system drive, or validly signed on another one (Visual Studio installed on D:)
+            if (home.IsMatch(m.Groups[2].Value) && (sysDrive || sig == "valid")) return null;
+            if (sig == "valid" && InTrustedLocation(path)) return null;
+            var parts = new List<string> { "copy of " + name + " outside its usual folders" };
+            if (!string.Equals(name, leaf, System.StringComparison.OrdinalIgnoreCase)) parts[0] += " (named " + leaf + ")";
+            if (sig != null && sig != "valid") parts.Add(sig == "unsigned" || sig == "no access" ? sig : sig + " signature");
+            if (hidden) parts.Add("hidden");
+            if (WindowsCache.IsMatch(path)) parts.Add("in a Windows cache folder");
+            return string.Join("; ", parts);
+        }
 
         /// <summary>Path inside a folder named like a file, e.g. ab.exe\evil.dll or app.exe.local\x.dll.</summary>
         public static readonly Regex Disg = new Regex(@"\.(EXE|DLL|SCR|LOCAL)\\", O);
@@ -417,7 +472,9 @@ namespace Spor
             "!hidden-system = hidden and system item on a removable drive (not a Windows folder), e.g. a fake RECYCLER folder",
             "!clsid-folder = folder named x.{GUID} or with a desktop.ini that sets a CLSID: Explorer shows it as something else",
             "!ads = alternate data stream (other than Zone.Identifier) on a file of a drive",
-            "!explorer-hiding = Explorer settings tampered so hidden files cannot be shown (SHOWALL CheckedValue, NoFolderOptions)"
+            "!explorer-hiding = Explorer settings tampered so hidden files cannot be shown (SHOWALL CheckedValue, NoFolderOptions)",
+            "!lolbin-copy = copy of MSBuild, InstallUtil, RegAsm, RegSvcs, AddInProcess, aspnet_compiler, wscript, cscript or mshta (by original name) outside its usual folders, and not validly signed in Windows / Program Files",
+            "!msi-script-action = cached Windows Installer package that installs into a LocalAppData folder and runs a script host, cmd, PowerShell or a script it installs as a custom action"
         };
     }
 }

@@ -220,13 +220,67 @@ namespace Spor
         /// A finding with flags, written like every other item line: "item => details &lt;==== !flags" (details left out when null).
         /// Up to Spor 0.7.1 the flags were inside the text ("x.pdf.lnk  !double-extension  (loaded by y.exe)").
         /// </summary>
-        public void Find(DateTime? t, string item, string details, List<string> flags)
+        public void Find(DateTime? t, string item, string details, List<string> flags) => FindAs(Module, t, item, details, flags);
+
+        /// <summary>A finding with flags and sub-lines (a drop folder and its group: line).</summary>
+        public void Find(DateTime? t, string item, string details, List<string> flags, List<(string Key, string Value)> more) =>
+            FindAs(Module, t, item, details, flags, more);
+
+        /// <summary>Find with flags for another module than the running one (findings Correlate decides on after all modules).</summary>
+        public void FindAs(string module, DateTime? t, string item, string details, List<string> flags, List<(string Key, string Value)> more = null)
         {
             var text = string.IsNullOrEmpty(details) ? item : item + " => " + details;
-            Findings.Add((t, Module, text));
+            Findings.Add((t, module, text));
+            if (more != null && more.Count > 0)
+            {
+                if (FindingMore.TryGetValue(text, out var hadMore)) hadMore.AddRange(more.Where(m => !hadMore.Contains(m)));
+                else FindingMore[text] = new List<(string Key, string Value)>(more);
+            }
             if (flags == null || flags.Count == 0) return;
-            var key = Module + "\n" + text;
+            var key = module + "\n" + text;
             FindingFlags[key] = FindingFlags.TryGetValue(key, out var had) ? had.Union(flags).ToList() : flags.Distinct().ToList();
+        }
+
+        /// <summary>
+        /// ShimCache findings of flagged files modified before the time window (ExecEvidence). Correlate writes them after all modules:
+        /// a copied file keeps the original's modification time, so with later evidence of the file its time becomes a detail of that
+        /// evidence instead of a SUMMARY line at the old time (Correlate.FoldCopiedShimCache).
+        /// </summary>
+        public readonly List<(DateTime? T, string Module, string Path, string Item, string Details, List<string> Flags)> PendingShim =
+            new List<(DateTime?, string, string, string, string, List<string>)>();
+
+        readonly Dictionary<string, string> lolbinCopies = new Dictionary<string, string>(Util.IC);
+
+        /// <summary>
+        /// Rules.LolbinCopy for a file on disk (its original name, signature and Hidden attribute), cached: "copy of MSBuild.exe outside its
+        /// usual folders; ...", or null. fallbackOriginal: the original name another source recorded (Amcache), for a file that is gone.
+        /// </summary>
+        public string LolbinCopy(string p, string fallbackOriginal = null)
+        {
+            if (string.IsNullOrEmpty(p) || !Rules.DrivePath.IsMatch(p)) return null;
+            var real = RealCase(p);
+            var key = real + "|" + fallbackOriginal;   // a gone file is decided by the original name it is given
+            if (lolbinCopies.TryGetValue(key, out var r)) return r;
+            string orig = fallbackOriginal, sig = null;
+            bool hidden = false;
+            if (System.IO.File.Exists(real))
+            {
+                if (Regex.IsMatch(real, @"\.exe$", Util.RX)) orig = Signature.Names(real).Original ?? fallbackOriginal;
+                if (Rules.CopiedLolbin(orig) || Rules.CopiedLolbin(Util.Leaf(real)))   // only these get the signature check here
+                {
+                    sig = Signature.Check(real).Status;
+                    try { hidden = (System.IO.File.GetAttributes(real) & FileAttributes.Hidden) != 0; } catch { }
+                }
+            }
+            return lolbinCopies[key] = Rules.LolbinCopy(real, orig, sig, hidden);
+        }
+
+        /// <summary>The flags of a file with !lolbin-copy added when LolbinCopy finds one (a new list).</summary>
+        public List<string> WithLolbinCopy(string p, IEnumerable<string> flags)
+        {
+            var f = (flags ?? Enumerable.Empty<string>()).ToList();
+            if (LolbinCopy(p) != null && !f.Contains(Rules.LolbinCopyFlag)) f.Add(Rules.LolbinCopyFlag);
+            return f;
         }
         /// <summary>Flags of a finding (Find with flags), by module and text.</summary>
         public readonly Dictionary<string, List<string>> FindingFlags = new Dictionary<string, List<string>>();

@@ -31,6 +31,7 @@ A profile is a set of modules. In the window, choose it in the "Profile" list (t
 | `remote`      | REMOTE ACCESS                | capability store, remote access tool logs and configs                   |
 | `network`     | NETWORK                      | SRUM, connections, DNS cache                                            |
 | `accounts`    | ACCOUNTS                     | local accounts, Security log                                            |
+| `drops`       | DROP FOLDERS                 | file system: Windows cache folders of every profile, LocalAppData vendor folders |
 | `usb`         | USB DRIVES                   | drive contents, autorun.inf, shortcuts, Explorer settings, MountPoints2, USBSTOR, setupapi.dev.log, Partition/Diagnostic and Kernel-PnP events, Recent shortcuts |
 
 ## prefetch
@@ -85,6 +86,7 @@ Software installed, updated or removed in the time window:
 * Uninstall keys of the machine and of every user: name, version, publisher, install date, folder, the program with its signature status, the registry key, and whether the entry is hidden
 * Windows Installer events: installs, failed installs and removals with exact times, also for software that is gone now. With product name and MSI product code.
 * Store and MSIX apps: added, registered, removed or failed, where the package came from, whether it runs with full trust, its signature now and its install folder
+* Cached Windows Installer packages (`C:\Windows\Installer\*.msi`, opened read-only, whatever their age): a package whose Directory table installs into a LocalAppData folder and whose CustomAction table starts `wscript`, `cscript`, `cmd`, `powershell` or `mshta`, or a script file the package installs itself, is listed with its product name, version, publisher, product code, custom actions and install folder, and gets `!msi-script-action`. RenLoader's fake vendor apps (`Realtek\Card Reader Helper`, `NVIDIA\PhysX Runtime`) start PavinLoader this way, and removal tools delete the cached package, so it may only be in the first log. All other packages are counted.
 
 Apps installed from a web page (App Installer, `ms-appinstaller:` links) get the flag `!from-web`.
 The timeline has one `INS` line per install: a Windows Installer event is left out when the Uninstall key of the same product code has a line within 5 minutes, a failed 1033 next to its 11708 too, and the operations of one Store install within 2 minutes (provision, add, register) are one line.
@@ -125,6 +127,15 @@ Traces of remote access tools: AnyDesk, TeamViewer, ScreenConnect, Splashtop, Ra
 
 Local accounts (admin or not, enabled, password set, last sign-in, hidden from the sign-in screen), the members of Administrators, and account changes from the Security log, e.g. an account was created or added to a group.
 
+## drops
+
+A sweep that needs no evidence. PavinLoader drops identical **project folders** into Windows cache and system folders: a copied `MSBuild.exe` (its signature broken), a `.wsf` that a scheduled task starts with `wscript`, a 20-30 MB `Resources.resx` (the payload) and dummy developer files (`.sln`, `.csproj`, `.targets`, `.props`, `README.md`, ...). A copy that never ran is named by no evidence source, so every scan lists these folders:
+
+* down to 2 folder levels below `WebCache`, `Explorer`, `Caches`, `INetCache` and `Notifications` (`AppData\Local\Microsoft\Windows`), `Protect`, `Crypto`, `Windows\Themes` and `Windows\Libraries` (`AppData\Roaming\Microsoft`) of every profile, also the SYSTEM account's (`System32\config\systemprofile`), and `ProgramData\Microsoft\Windows\Caches`. There any project file, an `MSBuild.exe` (by name or original name), a `.wsf` / `.vbs` or a `build.cmd` makes the folder a match: no developer project lives there.
+* the vendor folders 1 and 2 levels below `AppData\Local` (not `Temp` and `Packages`), where RenLoader's MSI apps put their copy (`Realtek\Card Reader Helper`). There the layout must be complete: `MSBuild.exe` with a `.wsf`, or project files with a `.resx` over 5 MB, an `MSBuild.exe`, a `.wsf` or a `.cmd` / `.bat`.
+
+Hidden and system items are read, reparse points are not entered. Matches get `!known-malware` (family PavinLoader). Matches created within 10 seconds of each other are one group, and two more kinds of folder join it: folders of the sweep with at least 4 of its file names (one of them a developer, script or program file), and folders in `AppData\Local`, `Roaming` and `LocalLow` (4 levels, not `Packages`) created within 10 seconds of a match, which finds copies outside the swept folders. Every member but the first has a `group:` line naming the first. Programs, scripts and `.resx` files are on `entry:` lines and in FILES; LOLBin copies among them get `!lolbin-copy`. Matches, folders with the same names and time-found folders that hold a developer, script or program file go to SUMMARY (and to the timeline as `DRP` when created in the time window); other time-found folders (a browser cache of the same seconds) are listed in the section only. Nothing is hidden by the whitelist.
+
 ## usb
 
 Not in the default profile; run it with the `usb` or `all` profile. For USB worms, which hide the user's files in a hidden folder (often named with a no-break space or another invisible character) and put a shortcut with a folder icon in their place.
@@ -140,6 +151,12 @@ Not in the default profile; run it with the `usb` or `all` profile. For USB worm
 * **Files opened from removable drives**: Recent and Office Recent shortcuts whose target was on a removable drive, with the volume serial and label
 
 The volume serials and drive letters of USB drives (now mounted, from ReadyBoost, from Recent shortcuts) are used after all modules: timeline lines of files on them get `on USB drive <label> (serial <serial>)`. By volume serial always (also Prefetch paths of volumes that are not mounted, `\VOLUME{...-SERIAL}`); by drive letter (`on USB drive E: <label>`) only for events at or after the last connect of the device that has the letter now (USBSTOR, 2 minutes slack), because before that the letter may have been another stick or a DVD. Without a known connect time there is no note.
+
+## LOLBin copies (all modules)
+
+Copies of `MSBuild.exe`, `InstallUtil.exe`, `RegAsm.exe`, `RegSvcs.exe`, `AddInProcess.exe`, `aspnet_compiler.exe`, `wscript.exe`, `cscript.exe` and `mshta.exe` outside their usual folders get `!lolbin-copy`, wherever a file is shown on the timeline, in ShimCache, in Amcache (also by the original name Amcache recorded) and in DROP FOLDERS. They are found by the original name in the version resource, so a renamed copy is found too. A validly signed copy in Windows or Program Files is not flagged; the line says what makes a copy stronger (a signature that does not hold, the Hidden attribute, a Windows cache folder). Such a copy is never hidden by the signer whitelist.
+
+A copied file keeps the original's modification time, which ShimCache records. When another source saw the file and it was created after that time, the ShimCache time becomes a `shimcache:` detail of that source's line instead of a line (or a SUMMARY line) of its own at the old time.
 
 ## Script-runtime launchers (all modules)
 
@@ -162,15 +179,16 @@ What each flag means: LOG-FORMAT.md. Flags from the file name are set wherever a
 | `!lolbin`, `!double-extension`, `!in-folder-named-like-file`, `!RLO`, `!invisible-char`, `!log-syntax-in-name` | every module, from the file name |
 | `!usb-worm-lnk`, `!disguised-icon`, `!autorun`, `!hidden-system`, `!clsid-folder`, `!ads`, `!explorer-hiding` | `usb` |
 | `!renamed-lolbin`, `!unsigned`, `!outside-driver-folders` | `amcache` |
+| `!lolbin-copy` | timeline, `exec` (ShimCache), `amcache`, `drops` |
 | `!timestomped` | `files`, `timestomp` |
 | `!motw-removed`, `!padded` | `files` |
 | `!sideload` | `files`, `persistence`, `processes` |
 | `!renamed-program` (hint) | `files`, `persistence`, `processes` |
 | `!proxy-exec` | `processes`, `exec` (process creation events) |
 | `!runtime-loader` | after all modules (script-runtime launchers) |
-| `!known-malware` | after all modules (Autodetect) |
+| `!known-malware` | after all modules (Autodetect), `drops` (loader project folders) |
 | `!kept-despite-warning` | `downloads` |
-| `!from-web` | `software` |
+| `!from-web`, `!msi-script-action` | `software` |
 | `!com-hijack` | `persistence` |
 | `!defender-off`, `!defender-exclusion`, `!not-removed`, `!log-cleared` | `defender` |
 | `!suspicious` | `clickfix` |

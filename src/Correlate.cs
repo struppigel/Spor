@@ -101,13 +101,66 @@ namespace Spor
 
         public static void Run(Ctx c)
         {
+            ShimCopies(c);
             try { RuntimeLaunchers(c); }
             catch (Exception e) { c.Err.Add("script-runtime check: " + e.Message); }
             try { UsbDrives(c); }
             catch (Exception e) { c.Err.Add("USB drive check: " + e.Message); }
         }
 
-        static readonly Regex VolumePath = new Regex(@"^\\VOLUME\{[0-9a-f]+-([0-9a-f]{8})\}", Util.RX);
+        /// <summary>The detail a folded ShimCache time gets after its time.</summary>
+        internal const string CopiedNote = "(before it was created: a copy keeps the original's time)";
+
+        /// <summary>
+        /// (pure) ShimCache times of copied files. ShimCache records a file's modification time, and a copy keeps the original's (a
+        /// PavinLoader MSBuild.exe copied in November shows its July build time). A file with a ShimCache time (an SC event, or a pending
+        /// finding from before the time window), other evidence (any other source) and a creation time later than that modification
+        /// time (2 s slack; proof that it is a copy) loses its SC events; the earliest other event gets the time as a "shimcache:" detail,
+        /// so the line is sorted by when the file was really seen. Returns the indexes of the pending findings that stay findings.
+        /// </summary>
+        internal static List<int> FoldCopiedShimCache(List<TEvent> events, IList<(DateTime? T, string Path)> pending, Func<string, DateTime?> created)
+        {
+            var shim = events.Where(e => e.Src == "SC" && e.Path != null).Select(e => (e.Path, T: (DateTime?)e.T))
+                             .Concat(pending.Select(p => (p.Path, p.T)))
+                             .Where(x => x.Path != null && x.T.HasValue).GroupBy(x => x.Path, Util.IC);
+            var folded = new HashSet<string>(Util.IC);
+            foreach (var g in shim)
+            {
+                var modified = g.Min(x => x.T.Value);
+                var others = events.Where(e => e.Src != "SC" && e.Path != null && e.Path.Equals(g.Key, StringComparison.OrdinalIgnoreCase))
+                                   .OrderBy(e => e.T).ToList();
+                if (others.Count == 0) continue;
+                var cr = created(g.Key);
+                if (!cr.HasValue || cr.Value <= modified.AddSeconds(2)) continue;
+                events.RemoveAll(e => e.Src == "SC" && e.Path != null && e.Path.Equals(g.Key, StringComparison.OrdinalIgnoreCase));
+                var first = others[0];
+                // a new list: modules may share theirs between events
+                first.More = (first.More ?? new List<(string Key, string Value)>())
+                             .Concat(new[] { ("shimcache", $"file modified {Log.T(modified)} {CopiedNote}") }).ToList();
+                folded.Add(g.Key);
+            }
+            return Enumerable.Range(0, pending.Count).Where(i => pending[i].Path == null || !folded.Contains(pending[i].Path)).ToList();
+        }
+
+        /// <summary>The pending ShimCache findings (Ctx.PendingShim): folded into later evidence when copied, else written as before.</summary>
+        static void ShimCopies(Ctx c)
+        {
+            var pending = c.PendingShim.ToList();
+            c.PendingShim.Clear();
+            IEnumerable<int> keep;
+            try
+            {
+                DateTime? Created(string p)
+                {
+                    try { var r = c.RealCase(p); return File.Exists(r) ? File.GetCreationTimeUtc(r) : (DateTime?)null; } catch { return null; }
+                }
+                keep = FoldCopiedShimCache(c.Events, pending.Select(p => (p.T, p.Path)).ToList(), Created);
+            }
+            catch (Exception e) { c.Err.Add("ShimCache copy check: " + e.Message); keep = Enumerable.Range(0, pending.Count); }
+            foreach (var i in keep) { var p = pending[i]; c.FindAs(p.Module, p.T, p.Item, p.Details, p.Flags); }
+        }
+
+        static readonly Regex VolumePath =new Regex(@"^\\VOLUME\{[0-9a-f]+-([0-9a-f]{8})\}", Util.RX);
 
         /// <summary>Registry key times can lag behind the connect itself.</summary>
         static readonly TimeSpan ConnectSlack = TimeSpan.FromMinutes(2);

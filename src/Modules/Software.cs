@@ -14,6 +14,8 @@ namespace Spor.Modules
     ///    uninstaller; time = when the key was last written (install or update)
     ///  - Windows Installer events (Application log, MsiInstaller 1033/1034/11707/11724): installs and removals with exact times,
     ///    also of software that is gone now.
+    ///  - cached Windows Installer packages (C:\Windows\Installer\*.msi) that install into LocalAppData and run a script host, cmd,
+    ///    PowerShell or a script of their own as a custom action (RenLoader's fake vendor apps that start PavinLoader).
     /// Fake installers, bundled adware and remote access tools show up here; per-user installs need no admin rights.
     /// </summary>
     class Software : IModule
@@ -29,6 +31,7 @@ namespace Spor.Modules
             c = ctx;
             Installed();
             Msi();
+            Cached();
             Store();
         }
 
@@ -344,6 +347,130 @@ namespace Spor.Modules
             s = (s ?? "").Trim().Trim('"').Trim();
             if (Regex.IsMatch(s, @"^[a-z]:/", Util.RX)) s = s.Replace('/', '\\');
             return s.TrimEnd('\\');
+        }
+
+        /// <summary>Script hosts and shells a custom action can start.</summary>
+        static readonly Regex ScriptHost = new Regex(@"(^|[\\/""\s\]])(wscript|cscript|cmd|powershell|pwsh|mshta)(\.exe)?(?=[\s""]|$)", Util.RX);   // "]": [SystemFolder]cmd.exe
+        static readonly Regex ScriptFile = new Regex(@"\.(wsf|vbs|vbe|js|jse|hta|ps1|cmd|bat)$", Util.RX);
+        /// <summary>A formatted file reference in a custom action: [#FileKey] (its path) or [!FileKey] (its short path).</summary>
+        static readonly Regex FileRef = new Regex(@"\[[#!]([^\]]+)\]");
+
+        /// <summary>The long name of an MSI name ("SHORT~1.EXE|Long name.exe"; DefaultDir: "target:source").</summary>
+        static string MsiLong(string n)
+        {
+            n = (n ?? "").Split(':')[0];
+            var bar = n.IndexOf('|');
+            return bar >= 0 ? n.Substring(bar + 1) : n;
+        }
+
+        internal sealed class MsiHit
+        {
+            public List<string> Actions = new List<string>();   // "Action: command"
+            public List<string> Folders = new List<string>();   // below LocalAppDataFolder, e.g. "Realtek\Card Reader Helper"
+        }
+
+        /// <summary>
+        /// (pure) A cached package that installs into LocalAppDataFolder (one or more folders below it, e.g. Vendor\Product) and has a
+        /// custom action that starts wscript, cscript, cmd, PowerShell or mshta, or a script file the package installs itself (a JScript
+        /// or VBScript action from an installed file, or a command that names one): its actions and folders, else null. The tables as
+        /// the package has them: CustomAction (Action, Type, Source, Target), Directory (Directory, Directory_Parent, DefaultDir),
+        /// File (File, FileName).
+        /// </summary>
+        internal static MsiHit MsiSuspicious(IList<string[]> actions, IList<string[]> dirs, IList<string[]> files)
+        {
+            var fileNames = files.Where(f => f.Length >= 2).GroupBy(f => f[0]).ToDictionary(g => g.Key, g => MsiLong(g.First()[1]));
+            var hit = new MsiHit();
+            foreach (var a in actions.Where(a => a.Length >= 4))
+            {
+                int.TryParse(a[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var type);
+                int kind = type & 0x3F;
+                var text = (a[2] + " " + a[3]).Trim();
+                bool own = FileRef.Matches(text).Cast<Match>().Any(m => fileNames.TryGetValue(m.Groups[1].Value, out var fn) && ScriptFile.IsMatch(fn))
+                           || fileNames.Values.Any(fn => ScriptFile.IsMatch(fn) && text.IndexOf(fn, StringComparison.OrdinalIgnoreCase) >= 0);
+                // 21 / 22: JScript / VBScript from a file the package installs (Source = its File key)
+                bool scriptFromFile = (kind == 21 || kind == 22) && fileNames.ContainsKey(a[2]);
+                if (kind == 35 || !(ScriptHost.IsMatch(text) || own || scriptFromFile)) continue;   // 35 = sets a folder, runs nothing
+                var shown = FileRef.Replace(text, m => fileNames.TryGetValue(m.Groups[1].Value, out var fn) ? "[" + fn + "]" : m.Value);
+                hit.Actions.Add(a[0] + ": " + Util.Clip(shown));
+            }
+            if (hit.Actions.Count == 0) return null;
+            var parent = dirs.Where(d => d.Length >= 3).GroupBy(d => d[0]).ToDictionary(g => g.Key, g => (Parent: g.First()[1], Name: MsiLong(g.First()[2])));
+            var folders = new List<string>();
+            foreach (var d in parent.Keys)
+            {
+                var names = new List<string>();
+                var cur = d;
+                for (int i = 0; i < 20 && cur != null && cur != "LocalAppDataFolder" && parent.TryGetValue(cur, out var x); i++)
+                {
+                    if (x.Name != "." && x.Name.Length > 0) names.Insert(0, x.Name);
+                    cur = string.IsNullOrEmpty(x.Parent) || x.Parent == cur ? null : x.Parent;
+                }
+                if (cur == "LocalAppDataFolder" && names.Count > 0) folders.Add(string.Join("\\", names));
+            }
+            // the deepest folders only (Vendor\Product, not also Vendor)
+            hit.Folders = folders.Distinct(Util.IC).Where(f => !folders.Any(o => o.StartsWith(f + "\\", StringComparison.OrdinalIgnoreCase)))
+                                 .OrderBy(f => f, Util.IC).Take(5).ToList();
+            return hit.Folders.Count > 0 ? hit : null;
+        }
+
+        public const string MsiFlag = "!msi-script-action";
+
+        static DateTime? Created(string p) { try { return File.GetCreationTimeUtc(p); } catch { return null; } }
+
+        /// <summary>
+        /// Cached Windows Installer packages (C:\Windows\Installer\*.msi, opened read-only) that MsiSuspicious flags. Removal tools delete
+        /// these packages, so they may only be there on the first scan. Only flagged packages are listed; all are counted.
+        /// </summary>
+        void Cached()
+        {
+            var dir = Path.Combine(c.WinDir, "Installer");
+            c.Out.Sub(@"Cached Windows Installer packages (C:\Windows\Installer)",
+                "Packages that install into LocalAppData and run a script host, cmd, PowerShell or a script of their own as a custom action.\n" +
+                "RenLoader's fake vendor apps start PavinLoader this way. Read only. Time = when Windows cached the package (UTC).");
+            string[] msis;
+            try { msis = Directory.GetFiles(dir, "*.msi"); }
+            catch (Exception e) { c.Err.Add("cached packages: " + e.Message); msis = new string[0]; }
+            var t = new Table("@cached", "[kind", "*package", "!status", "name", "version", "publisher", "product code", "<flags");
+            int read = 0, failed = 0;
+            var flags = new List<string> { MsiFlag };
+            foreach (var (path, created) in msis.Select(m => (Path: m, Created: Created(m))).OrderBy(x => x.Created ?? DateTime.MaxValue).ThenBy(x => x.Path, Util.IC))
+            {
+                List<List<string[]>> tb;
+                try
+                {
+                    tb = Native.MsiTables(path, "SELECT `Property`, `Value` FROM `Property`", "SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`",
+                                         "SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`", "SELECT `File`, `FileName` FROM `File`");
+                }
+                catch (Exception e) { c.Err.Add("cached package " + path + ": " + e.Message); tb = null; }
+                if (tb == null) { failed++; continue; }
+                read++;
+                var hit = MsiSuspicious(tb[1], tb[2], tb[3]);
+                if (hit == null) continue;
+                var props = tb[0].Where(r => r.Length >= 2).GroupBy(r => r[0]).ToDictionary(g => g.Key, g => g.First()[1]);
+                string P(string k) => props.TryGetValue(k, out var v) ? Util.Clip(v) : "";
+                var name = P("ProductName"); var ver = P("ProductVersion"); var maker = P("Manufacturer"); var code = P("ProductCode");
+                var f = c.F(path);
+                t.Add(Log.T(created), "cached msi", f.Path, f.Status, name, ver, maker, code, Rules.FlagCol(flags));
+                foreach (var a in hit.Actions) t.More("custom action", a);
+                var shownFolders = new List<string>();
+                foreach (var rel in hit.Folders)
+                {
+                    var real = c.Profiles.Select(p => Path.Combine(p.Path, @"AppData\Local", rel)).Where(Directory.Exists).ToList();
+                    foreach (var r in real) { var shown = Rules.Fix(c.RealCase(r)) + "\\"; t.More("folder", shown); shownFolders.Add(shown); }
+                    if (real.Count == 0) t.More("install folder", @"[LocalAppDataFolder]\" + Rules.Fix(rel) + "\\");
+                }
+                c.Observe("software", $"{name} | {ver} | {maker}", created, $"{f.Path} ({NameVersion(name, ver)})");
+                foreach (var a in hit.Actions) c.Observe("cmd", a, created, f.Path);
+                var details = new List<string> { "cached Windows Installer package " + NameVersion(name, ver) + (maker.Length > 0 ? " (" + maker + ")" : "") };
+                if (code.Length > 0) details.Add("product code " + code);
+                details.Add("custom action " + hit.Actions[0] + (hit.Actions.Count > 1 ? $" (+{hit.Actions.Count - 1} more)" : ""));
+                details.Add("installs into " + (shownFolders.Count > 0 ? string.Join(", ", shownFolders) : @"[LocalAppDataFolder]\" + Rules.Fix(hit.Folders[0]) + "\\"));
+                c.Find(created, Log.Item(f.Path, f.Status), string.Join("; ", details), flags);
+            }
+            int listed = t.Count;
+            t.WriteTo(c.Out, "no cached package with a script custom action that installs into LocalAppData");
+            c.Out.Comment($"Read {Util.Plural(read, "cached package", "cached packages")}, {listed} with a script custom action into LocalAppData" +
+                          (failed > 0 ? $"; {failed} could not be opened" : "") + ".");
         }
 
         /// <summary>(pure) "name version", the version left out when empty or already in the name ("Antigravity 2.32.1", not "... 2.32.1 2.32.1").</summary>

@@ -351,5 +351,66 @@ namespace Spor
             }
             finally { CloseHandle(h); }
         }
+
+        [DllImport("msi.dll", CharSet = CharSet.Unicode)]
+        static extern uint MsiOpenDatabaseW(string path, IntPtr persist, out IntPtr db);
+        [DllImport("msi.dll", CharSet = CharSet.Unicode)]
+        static extern uint MsiDatabaseOpenViewW(IntPtr db, string query, out IntPtr view);
+        [DllImport("msi.dll")]
+        static extern uint MsiViewExecute(IntPtr view, IntPtr record);
+        [DllImport("msi.dll")]
+        static extern uint MsiViewFetch(IntPtr view, out IntPtr record);
+        [DllImport("msi.dll")]
+        static extern uint MsiRecordGetFieldCount(IntPtr record);
+        [DllImport("msi.dll", CharSet = CharSet.Unicode)]
+        static extern uint MsiRecordGetStringW(IntPtr record, uint field, StringBuilder value, ref uint size);
+        [DllImport("msi.dll")]
+        static extern uint MsiCloseHandle(IntPtr handle);
+
+        /// <summary>
+        /// The rows of some tables of a Windows Installer package, opened read-only (the package is not changed and nothing is
+        /// installed): query -> rows of string fields. A table the package does not have gives no rows. null if the file cannot be
+        /// opened as a package.
+        /// </summary>
+        public static System.Collections.Generic.List<System.Collections.Generic.List<string[]>> MsiTables(string path, params string[] queries)
+        {
+            if (MsiOpenDatabaseW(path, IntPtr.Zero, out var db) != 0) return null;   // IntPtr.Zero = MSIDBOPEN_READONLY
+            try
+            {
+                var res = new System.Collections.Generic.List<System.Collections.Generic.List<string[]>>();
+                foreach (var q in queries) res.Add(MsiRows(db, q));
+                return res;
+            }
+            finally { MsiCloseHandle(db); }
+        }
+
+        static System.Collections.Generic.List<string[]> MsiRows(IntPtr db, string query)
+        {
+            var rows = new System.Collections.Generic.List<string[]>();
+            if (MsiDatabaseOpenViewW(db, query, out var view) != 0) return rows;   // e.g. no such table
+            try
+            {
+                if (MsiViewExecute(view, IntPtr.Zero) != 0) return rows;
+                // at most 10000 rows per table: a cached package's custom actions and folders are far fewer
+                for (int i = 0; i < 10000 && MsiViewFetch(view, out var rec) == 0; i++)
+                    try
+                    {
+                        var n = MsiRecordGetFieldCount(rec);
+                        var row = new string[n];
+                        for (uint f = 1; f <= n; f++)
+                        {
+                            uint size = 256;
+                            var sb = new StringBuilder((int)size);
+                            var rc = MsiRecordGetStringW(rec, f, sb, ref size);
+                            if (rc == 234) { size++; sb = new StringBuilder((int)size); rc = MsiRecordGetStringW(rec, f, sb, ref size); }   // ERROR_MORE_DATA
+                            row[f - 1] = rc == 0 ? sb.ToString() : "";
+                        }
+                        rows.Add(row);
+                    }
+                    finally { MsiCloseHandle(rec); }
+            }
+            finally { MsiCloseHandle(view); }
+            return rows;
+        }
     }
 }
