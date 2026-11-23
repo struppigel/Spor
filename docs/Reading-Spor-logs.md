@@ -2,7 +2,7 @@
 
 This guide is for people who help others with malware problems and use Spor for malware removal. 
 
-Spor only reads. It changes nothing on the PC, so it is safe to ask anyone to run it. 
+Spor only reads. It changes nothing on the PC.
 
 ---
 
@@ -25,8 +25,8 @@ Format:    one item per line: time [sources] item [status] => details <==== flag
 | Line | What to check |
 |---|---|
 | `Run by` | Must say `(administrator)`. Without admin rights most sources are missing. Ask for a new run as administrator. |
-| `Times` | **The times in the log are UTC**: the time at the start of a line and the times in its details. The only exception are the `created` and `modified` times on the `file:` lines in FILES: they are the PC's local time, as FRST shows them, so you can compare them with an FRST log. Use the local time in `Created` to convert UTC when you talk to the user, e.g. 07:49 UTC is 08:49 local. (Up to Spor 0.7.1 this line said only `Times: UTC`; FILES was local time then too.) |
-| `Format` | A short reminder of how a line is built, see section 2. |
+| `Times` | **The times in the log are UTC**: the time at the start of a line and the times in its details. The only exception are the `created` and `modified` times on the `file:` lines in FILES: they are the PC's local time, as FRST shows them, so you can compare them with an FRST log. Use the local time in `Created` to convert UTC |
+| `Format` | A short reminder of how a line is built |
 | `Options` | The time window, 30 days by default. If the infection is older, ask for a run with a longer time window. `whitelist on` means that known good files are hidden, see section 7. |
 | `Error:` lines | Something went wrong before the scan. Sections can also end with `--- Errors ---`. An error means that part may be incomplete. |
 
@@ -34,7 +34,7 @@ The last line, `End of log. Scan took … (prefetch 9.4 s, …)`, lists every mo
 
 ---
 
-## 2. How a line is built
+## 2. Line buildup
 
 Spor logs look as follows:
 
@@ -44,16 +44,16 @@ time [sources] item [status] => details <==== flags
 
 Every part except the item is left out when it is empty.
 
+Example:
+
 ```
 2026-11-14 14:07:32 [PF DL] C:\Users\anna\Desktop\kprm_3.3.1.exe [gone] => Brave <==== !double-extension
-└─ time (UTC) ────┘ └─────┘ └─ the file ────────────────────────┘ └────┘    └─────┘ └─ flags ────────────┘
-                    sources                                        status   details
     from: download.toolslib.net/…
     page: toolslib.net/…
 ```
 
-- **time**: in UTC. Usually when it happened, but not for every source: `[SC]` lines have the file's modification time, `[AM]` lines when Windows wrote the Amcache entry, Run keys and services when the key was last changed, tasks and Startup items when the file was created (see section 4 and SUMMARY in section 8)
-- **[sources]**: which Windows artifacts saw it, see section 4. Several tags mean several independent sources agree.
+- **time**: in UTC. Usually that's when something happened, but it depends on the source: `[SC]` lines have the file's modification time, `[AM]` lines tell when Windows wrote the Amcache entry, Run keys and services when the key was last changed, tasks and Startup items when the file was created (see section 4 and SUMMARY in section 8)
+- **[sources]**: which Windows artifacts saw this entry, see section 4. Several tags means several sources say the same.
 - **item**: a full path, a command or an event text
 - **[status]**: only if something is not normal, see section 5. No status means the file is there and validly signed, or it is not a program.
 - **=> details**: more facts as `name value; name value`
@@ -83,15 +83,21 @@ Other details on their own lines: a Defender detection's files (`file:`, `proces
 
 ## 3. Reading order
 
-1. **SUMMARY**: everything Spor flagged.
-2. **TIMELINE**: This allows you to reconstruct what happened, starting with oldest first. Find the first suspicious event, then read what happened before and after.
+My recommendation: read the summary in full, then read the part of the timeline when the malware was seen to check what happened before and after that.
+
+If you aren't sure whether a file is malicious, PUP or clean, check the files section for detailed information on it, such as hashes which you can lookup on Virustotal.
+
+Wether you read the other sections depends on the type of threat, e.g., for a RAT I would check the remote tools section and the network. If something arrived via Clickfix, check the Clickfix section. Loaded files are mainly interesting for sideloading attacks, such as Hijackloader infection chains. The downloads section is useful to determine URLs of malicious software downloads, and maybe analyze them yourself.
+
+1. **SUMMARY**: note everything Spor flagged.
+2. **TIMELINE**: reconstruct what happened. Find the first suspicious event, then read what happened before and after.
 3. **The sections**: Contains more details about the entries in the timeline (loaded files, persistence entries, accounts, network use). Look at these to enrich your findings from the summary and timeline.
 4. **FILES**: hash, signature and version of every file the log names (with the whitelist on, not of the validly signed files it hides): the hash and signature on the line, `file:` (md5, size, created and modified in the PC's **local** time) and `version:` (version resource, certificate thumbprint) below it. Use it to look up files, e.g. on VirusTotal.
 5. **LEGEND**: what every source tag, status word and flag means.
 
 ---
 
-## 4. Sources: what each tag proves
+## 4. Sources
 
 Not every source means that a file ran. A file that Windows only *recorded* is no proof of an infection.
 
@@ -124,9 +130,9 @@ Not every source means that a file ran. A file that Windows only *recorded* is n
 Several execution sources on one line, e.g. `[PF PCA UA BAM]`, are strong evidence. A file that only `[AM]` or `[SC]` saw may never have run.
 
 If several sources see a file within 2 minutes, it is **one** line. A file that was seen many times shows the first and the last time, with `+N more times since …`. Processes of one program with different PIDs stay separate lines when one of them is flagged (Prefetch, BAM and file events go to the nearest of them, a SRUM hour to its run). A flagged line (a flag on an event, `!known-malware` included, or in the file name) has the time of its first flagged event, others the latest. A loader that runs again and again shows its first and its last run as flagged lines, the runs between as `+N more times`.
-If the same file was in folders that only differ in numbers (version folders, dated temp folders), the line says `+N more times in between (all paths below)` and every real path follows as an indented `path:` line with its own times. **Use these `path:` lines for removal.**
+If the same file was in folders that only differ in numbers (version folders, dated temp folders), the line says `+N more times in between (all paths below)` and every path follows as an indented `path:` line with its own times. 
 
-`[SC]` lines say `file modified` (ShimCache keeps the file's modification time, a copied file keeps its old time), `[AM]` lines `Amcache write` (when Windows wrote the entry). Neither proves that the program ran.
+`[SC]` lines tell you when a file was modified (ShimCache keeps the file's modification time), `[AM]` lines tell when Windows wrote the entry. Neither proves that the program ran.
 When a copied file was seen by another source too, there is no `[SC]` line at the old time: the other source's line has a `shimcache: file modified <time> (before it was created: a copy keeps the original's time)` line instead.
 
 ---
@@ -190,15 +196,9 @@ When a copied file was seen by another source too, there is no `[SC]` line at th
 
 ## 7. The whitelist
 
-With `whitelist on`, Spor hides what is almost always harmless, so that the log stays readable. A folder alone is never enough: a hidden program must also be validly signed. LOLBins, interpreters like python or node, and flagged files are never hidden.
-
-The exceptions, where a signature cannot be checked or says nothing, are narrow and listed here: packages that Edge, Brave, Google Update and Windows Update staged and deleted again (only in their folders in Program Files and Windows), files in `Windows\SoftwareDistribution` for the timestomping checks, empty marker files in .NET's `ProgramData\Microsoft\NetFramework\BreadcrumbStore`, and two Windows tasks whose program feature updates removed (`Location\Notifications`, `UpdateOrchestrator\USO_UxBroker`).
+With `whitelist on`, Spor hides what is almost always harmless, so that the log stays readable. 
 
 Hidden files are counted, e.g. in `(Hidden: …)` lines in the timeline and in `--- Hidden: known-noise locations ---` at the end of a section.
-
-The well-known publishers whose valid signature counts as known good are listed in `resources/publishers.txt`. To try another signer without a new build, put a `Spor.publishers.txt` next to `Spor.exe`: it replaces the built-in list, and the header's `Options` line then ends with `publishers from <path>`.
-
-The known-noise locations and names are listed in `resources/whitelist.txt`: the noise folders of PREFETCH, AMCACHE, EXECUTION EVIDENCE and NEW FILES, the updater staging folders, the folders NEW FILES does not search, and the Windows tasks above. The file says where noise is; the conditions (valid signature, no flags, ...) stay in Spor. A `Spor.whitelist.txt` next to `Spor.exe` replaces it (the `Options` line then says `whitelist from <path>`); one with an error is ignored.
 
 Ask for a run with the whitelist off (uncheck *Whitelist*, or `-nowhitelist`) if:
 
@@ -208,7 +208,7 @@ Ask for a run with the whitelist off (uncheck *Whitelist*, or `-nowhitelist`) if
 
 ---
 
-## 8. Section by section
+## 8. Sections in detail
 
 ### SUMMARY
 Flagged timeline lines (`[timeline …]`) and findings from the sections (`[Persistence]`, `[Defender]`, …), oldest first. Every line is built like any other line, e.g. `[Prefetch] C:\…\x.pdf.lnk => loaded by C:\…\host.exe <==== !double-extension` (up to Spor 0.7.1 the section findings had their flags in the text: `x.pdf.lnk  !double-extension  (loaded by …)`). `!known-malware` names a known malware family: on a timeline line (`known malware <family>: ...` in the details) or as an `[Autodetect]` line for hits that are not files on the timeline. Every line is a starting point, not a verdict.
