@@ -17,6 +17,9 @@
 #   skip-dir         name   NEW FILES: folder names not searched (caches, package folders)
 #   stale-task       task => program   PERSISTENCE: Windows tasks whose System32 program feature updates remove
 #   locked-task      task   PERSISTENCE: Windows tasks only SYSTEM can read (access denied is counted, not an error)
+# Aggressive whitelist (command line -aggressive only; without it the lines are marked, see docs/.WHITELISTING.md):
+#   aggr:pair        regex => signer   per-user apps: a program in this folder, validly signed by exactly this signer
+#   aggr:staging     regex  more updater staging folders (system drive only): NETWORK
 
 # src/Modules/Prefetch.cs (NoiseList)
 noise:prefetch	^\\(\$WINREAGENT|\$WINDOWS\.~BT|\$WINDOWS\.~WS)\\
@@ -119,3 +122,19 @@ stale-task	\Microsoft\Windows\Location\Notifications => LocationNotificationWind
 stale-task	\Microsoft\Windows\UpdateOrchestrator\USO_UxBroker => MusNotification.exe
 
 locked-task	\Microsoft\Windows\Security\Pwdless\IntelligentPwdlessTask
+
+# ---- aggressive whitelist (-aggressive) ----
+# per-user apps (PERSISTENCE Run keys, tasks, Startup; NETWORK): folder => the one signer their programs have. Not Discord:
+# token stealers patch its files and run its exe (fixlists delete the Discord folders).
+aggr:pair	^\\USERS\\[^\\]+\\APPDATA\\LOCAL\\MICROSOFT\\ONEDRIVE\\ => Microsoft Corporation	OneDrive
+aggr:pair	^\\USERS\\[^\\]+\\APPDATA\\ROAMING\\ZOOM\\BIN\\ => Zoom Communications, Inc.	Zoom
+aggr:pair	^\\USERS\\[^\\]+\\APPDATA\\ROAMING\\ZOOM\\BIN\\ => Zoom Video Communications, Inc.	Zoom (older certificate)
+aggr:pair	^\\USERS\\[^\\]+\\APPDATA\\LOCAL\\PROGRAMS\\OPERA( GX)?\\ => Opera Norway AS	Opera
+aggr:pair	^\\USERS\\[^\\]+\\APPDATA\\LOCAL\\SLACK\\ => Slack Technologies, LLC	Slack
+aggr:pair	^\\USERS\\[^\\]+\\APPDATA\\ROAMING\\SPOTIFY\\ => Spotify AB	Spotify
+aggr:pair	^\\USERS\\[^\\]+\\APPDATA\\LOCAL\\VIVALDI\\APPLICATION\\ => Vivaldi Technologies AS	Vivaldi
+aggr:pair	^\\USERS\\[^\\]+\\APPDATA\\LOCAL\\BRAVESOFTWARE\\ => Brave Software, Inc.	Brave (per-user install and updater)
+
+# updaters that unpack into SystemTemp or a versioned Updates folder and delete it afterwards (TIMELINE, NETWORK)
+aggr:staging	^\\WINDOWS\\SYSTEMTEMP\\GOOGLEUPDATER_[^\\]*_UNPACKER_BEGINUNZIPPING\d+_\d+\\	Google updater unpacking Chrome
+aggr:staging	^\\PROGRAM FILES\\COMMON FILES\\MICROSOFT SHARED\\CLICKTORUN\\UPDATES\\[\d.]+\\OFFICECLICKTORUN\.EXE$	Office Click-to-Run update

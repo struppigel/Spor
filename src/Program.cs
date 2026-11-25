@@ -19,6 +19,7 @@ Without options Spor opens its window. With options it scans without a window:
   -days N          time window for Amcache, execution evidence, ShimCache (default 30)
   -nowhitelist     show everything: no trusted folders, no known-noise folders, no Windows servicing,
                    no inbox/Microsoft driver filtering (flags like !lolbin work the same either way)
+  -aggressive      hide more noise (trial: lines it hides are marked in normal logs)
   -noise REGEX     your own known-noise regex, added to each module's list (e.g. \\STEAMAPPS\\COMMON\\)
   -profile NAME    which modules run: default (all except usb), usb (USB worm: prefetch, exec, files, persistence,
                    processes, usb), all
@@ -50,32 +51,11 @@ Without options Spor opens its window. With options it scans without a window:
             }
             AttachConsole(-1);   // command line: write to the console Spor was started from (it is a window program)
             Console.WriteLine();
-            var o = new Options();
+            Options o;
             try
             {
-                for (int i = 0; i < args.Length; i++)
-                {
-                    var a = args[i].TrimStart('-', '/').ToLowerInvariant();
-                    string Val() => i + 1 < args.Length ? args[++i] : throw new ArgumentException("missing value for " + args[i]);
-                    switch (a)
-                    {
-                        case "scan": break;
-                        case "days": o.Days = int.Parse(Val()); break;
-                        case "nowhitelist": case "all": o.Whitelist = false; break;
-                        case "noise": o.ExtraNoise = Val(); new System.Text.RegularExpressions.Regex(o.ExtraNoise); break;
-                        case "profile": o.Profile = Val().ToLowerInvariant(); if (Scanner.ProfileModules(o.Profile) == null) throw new ArgumentException("unknown profile " + o.Profile); break;
-                        case "modules": o.Modules = new HashSet<string>(Val().Split(',').Select(x => x.Trim()), StringComparer.OrdinalIgnoreCase); break;
-                        case "algo": o.Algo = Val().ToUpperInvariant(); if (!new[] { "SHA256", "SHA1", "MD5" }.Contains(o.Algo)) throw new ArgumentException("unknown hash algorithm " + o.Algo); break;
-                        case "maxmb": o.MaxMB = int.Parse(Val()); break;
-                        case "nohash": o.NoHash = true; break;
-                        case "out": o.Out = Val(); break;
-                        case "noopen": o.NoOpen = true; break;
-                        case "help": case "h": case "?": Console.Write(Usage); return 0;
-                        default: throw new ArgumentException("unknown option " + args[i]);
-                    }
-                }
-                if (o.Modules != null)
-                    foreach (var m in o.Modules) if (!Scanner.All.Any(x => x.Id.Equals(m, StringComparison.OrdinalIgnoreCase))) throw new ArgumentException("unknown module " + m);
+                o = Parse(args);
+                if (o == null) { Console.Write(Usage); return 0; }
             }
             catch (Exception e) { Console.Error.WriteLine(e.Message); Console.Error.Write(Usage); return 2; }
 
@@ -86,6 +66,38 @@ Without options Spor opens its window. With options it scans without a window:
             Console.WriteLine("Log: " + path);
             if (!o.NoOpen) OpenLog(path);
             return 0;
+        }
+
+        /// <summary>The options of a command line; null for -help. Throws ArgumentException (or FormatException) on a bad one.</summary>
+        internal static Options Parse(string[] args)
+        {
+            var o = new Options();
+            for (int i = 0; i < args.Length; i++)
+            {
+                var a = args[i].TrimStart('-', '/').ToLowerInvariant();
+                string Val() => i + 1 < args.Length ? args[++i] : throw new ArgumentException("missing value for " + args[i]);
+                switch (a)
+                {
+                    case "scan": break;
+                    case "days": o.Days = int.Parse(Val()); break;
+                    case "nowhitelist": case "all": o.Whitelist = false; break;
+                    case "aggressive": o.Aggressive = true; break;
+                    case "noise": o.ExtraNoise = Val(); new System.Text.RegularExpressions.Regex(o.ExtraNoise); break;
+                    case "profile": o.Profile = Val().ToLowerInvariant(); if (Scanner.ProfileModules(o.Profile) == null) throw new ArgumentException("unknown profile " + o.Profile); break;
+                    case "modules": o.Modules = new HashSet<string>(Val().Split(',').Select(x => x.Trim()), StringComparer.OrdinalIgnoreCase); break;
+                    case "algo": o.Algo = Val().ToUpperInvariant(); if (!new[] { "SHA256", "SHA1", "MD5" }.Contains(o.Algo)) throw new ArgumentException("unknown hash algorithm " + o.Algo); break;
+                    case "maxmb": o.MaxMB = int.Parse(Val()); break;
+                    case "nohash": o.NoHash = true; break;
+                    case "out": o.Out = Val(); break;
+                    case "noopen": o.NoOpen = true; break;
+                    case "help": case "h": case "?": return null;
+                    default: throw new ArgumentException("unknown option " + args[i]);
+                }
+            }
+            if (o.Aggressive && !o.Whitelist) throw new ArgumentException("-aggressive needs the whitelist: not with -nowhitelist");
+            if (o.Modules != null)
+                foreach (var m in o.Modules) if (!Scanner.All.Any(x => x.Id.Equals(m, StringComparison.OrdinalIgnoreCase))) throw new ArgumentException("unknown module " + m);
+            return o;
         }
 
         public static void OpenLog(string path)

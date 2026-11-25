@@ -70,6 +70,20 @@ namespace Spor
 
         public static bool IsRandom(string name) => RandomScore(name) >= 3;
 
+        static readonly Regex Hex = new Regex(@"^[0-9A-F]+$", Util.RX);
+
+        /// <summary>
+        /// A folder of the path (not the file name) with a random-looking name (IsRandom), e.g. AppData\Local\Z0533B4Lo\MVg4zIU\clip\
+        /// where a sideload kit put a validly signed host. Hex names (build ids such as VS Code's 2C33B50B16, hashes) do not count.
+        /// </summary>
+        public static bool RandomFolder(string path)
+        {
+            var parts = (path ?? "").Replace('/', '\\').Split('\\');
+            for (int i = 1; i < parts.Length - 1; i++)   // parts[0] is the drive, the last part the file
+                if (!Hex.IsMatch(parts[i]) && RandomScore(parts[i] + ".x") >= 3) return true;   // ".x": Base strips an extension, keep dots in the name
+            return false;
+        }
+
         public static bool IsLure(string name)
         {
             var lower = Base(name).ToLowerInvariant();

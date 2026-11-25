@@ -111,8 +111,14 @@ namespace Spor.Modules
                         lt.More("loaded", c.FF(r, !NoHash.IsMatch(s), Rules.Strong(Rules.Flags(r))));
                         c.Find(x.Last, c.File(r), "loaded by " + pf2.Path, Rules.Strong(Rules.Flags(r)));   // time = the program's last run
                     }
-                    foreach (var s in rest) lt.More("loaded", c.FF(Real(s), !NoHash.IsMatch(s)));   // every file: the paths are needed for removal
+                    foreach (var s in rest)   // every file: the paths are needed for removal
+                    {
+                        var r = Real(s);
+                        lt.More("loaded", c.FF(r, !NoHash.IsMatch(s)), Aggr.On ? LoadedAggr(x.Path, r) : null);
+                    }
                 }
+                // all its loaded files are noise: the program's line goes too (its runs are in the timeline)
+                if (x.IsRun && lt.LastMoreAllMarked) lt.Aggr("programs whose loaded files are all hidden");
             }
             lt.WriteTo(c.Out);
             if (harmless.Count > 0)
@@ -233,6 +239,77 @@ namespace Spor.Modules
                     var ps = File.Exists(p) ? Signature.Check(p) : null;
                     if (MsSigners.Contains(Who(s)) || (ps != null && ps.Valid && Who(ps).Equals(Who(s), StringComparison.OrdinalIgnoreCase)))
                         return "DLLs in the program's own folder, signed by its publisher or Microsoft";
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // aggressive whitelist (Aggr): loaded files that are noise on top of Harmless
+        static readonly Regex PyEngine = new Regex(@"\.(PY|PYC|PYO|RPY|RPYC|RPYM)$", O);
+        static readonly Regex PyEngineFolder = new Regex(@"^\\(RENPY|LIB\\PYTHON[\d.]*)\\", O);
+        static readonly Regex RenPyLauncher = new Regex(@"\\LIB\\(PY\d?-)?WINDOWS-[^\\]+$", O);   // Ren'Py's real exe: <game>\lib\py3-windows-x86_64\
+        static readonly Regex WinReMount = new Regex(@"^[A-Z]:\\\$WINREAGENT\\SCRATCH\\MOUNT\\", O);
+        static readonly Regex WinReLoader = new Regex(@"^[A-Z]:\\WINDOWS\\(SYSTEM32|WINSXS\\[^\\]+)\\(WIMSERV|DISMHOST)\.EXE$", O);
+        static readonly Regex Browser = new Regex(@"\\(CHROME|MSEDGE|BRAVE|VIVALDI|OPERA)\.EXE$", O);
+        static readonly Regex CrxTemp = new Regex(@"\\APPDATA\\LOCAL\\TEMP\\(CHROMIUMCRX_[^\\]+|SCOPED_DIR[^\\]+\\CRX_INSTALL)\\.*\.JS$", O);
+        static readonly Regex PyInstaller = new Regex(@"\\APPDATA\\LOCAL\\TEMP\\_MEI\d+\\", O);
+        static readonly Regex AppRootRx = new Regex(@"^[A-Z]:\\(PROGRAM FILES( \(X86\))?|PROGRAMDATA|USERS\\[^\\]+\\APPDATA\\(LOCAL|ROAMING)(\\PROGRAMS)?)\\(MICROSOFT\\)?[^\\]+\\", O);
+
+        /// <summary>
+        /// (pure) Which kind of aggressive-whitelist noise a loaded file can be, by its path and the loader's path; LoadedAggr checks
+        /// the signatures. "python": Ren'Py / Python engine files in the game's renpy\ or lib\pythonX\ (not site-packages); "winre":
+        /// the WinRE image Windows servicing mounts; "crx": a browser unpacking an extension; "unpack": a .NET single-file program's or
+        /// a PyInstaller program's own files in Temp; "app": an exe / dll / node in the loader's own app folder.
+        /// </summary>
+        internal static string LoadedKind(string program, string loaded)
+        {
+            if (string.IsNullOrEmpty(program) || string.IsNullOrEmpty(loaded) || !Rules.DrivePath.IsMatch(program) || !Rules.DrivePath.IsMatch(loaded)) return null;
+            var dir = Util.Folder(program);
+            if (RenPyLauncher.IsMatch(dir)) dir = Util.Folder(Util.Folder(dir));
+            if (PyEngine.IsMatch(loaded) && !Rules.Interpreter.IsMatch(program) && loaded.StartsWith(dir + "\\", StringComparison.OrdinalIgnoreCase))
+            {
+                var rest = loaded.Substring(dir.Length);
+                if (PyEngineFolder.IsMatch(rest) && rest.IndexOf(@"\SITE-PACKAGES\", StringComparison.OrdinalIgnoreCase) < 0) return "python";
+            }
+            if (WinReMount.IsMatch(loaded) && WinReLoader.IsMatch(program)) return "winre";
+            if (CrxTemp.IsMatch(loaded) && Browser.IsMatch(program)) return "crx";
+            var name = Path.GetFileNameWithoutExtension(program);
+            if (loaded.IndexOf(@"\APPDATA\LOCAL\TEMP\.NET\" + name + @"\", StringComparison.OrdinalIgnoreCase) >= 0 || PyInstaller.IsMatch(loaded)) return "unpack";
+            var root = AppRootRx.Match(program);
+            if (root.Success && Regex.IsMatch(loaded, @"\.(EXE|DLL|NODE)$", O) && loaded.StartsWith(root.Value, StringComparison.OrdinalIgnoreCase) && !Inject.IsMatch(loaded)
+                && !Aggr.StealerTarget(loaded))
+                return "app";
+            return null;
+        }
+
+        /// <summary>
+        /// (pure) A Ren'Py / Python runtime as RenLoader runs it: under a lure name (Setup.exe from the lure folder, in every case
+        /// so far) or from a drop location. Its engine files stay listed: they show the lure folder.
+        /// </summary>
+        internal static bool LureRuntime(string program) => Rules.DropLocation(program) || Names.IsLure(program);
+
+        /// <summary>
+        /// Why the aggressive whitelist hides a loaded file (Aggr), or null. Never a flagged file; the loader is validly signed for
+        /// "winre", "crx" (by a well-known publisher) and "app" (no drop location, no random-named folder; the loaded file validly
+        /// signed too, a deleted one only when an update replaced it). "python" and "unpack" stay listed when the loaded file is
+        /// flagged; the program itself is listed by the timeline either way.
+        /// </summary>
+        string LoadedAggr(string program, string loaded)
+        {
+            if (Rules.Strong(Rules.Flags(loaded)).Count > 0 || c.MarksOf(loaded).Count > 0) return null;
+            bool LoaderOk() => Rules.Strong(Rules.Flags(program)).Count == 0 && !Rules.DropLocation(program) && !Names.RandomFolder(program) && c.SignedOk(program);
+            try
+            {
+                switch (LoadedKind(program, loaded))
+                {
+                    case "python": return LureRuntime(program) ? null : "Ren'Py / Python engine files of a game";
+                    case "unpack": return Names.RandomFolder(program) ? null : ".NET single-file and PyInstaller files unpacked to Temp";
+                    case "winre": return c.SignedOk(program) ? "WinRE image mounted by Windows servicing" : null;
+                    case "crx": return LoaderOk() && c.ByTrustedSigner(program) ? "browser extensions being unpacked" : null;
+                    case "app":
+                        return LoaderOk() && Signature.Applies(loaded) && c.SignedOk(loaded) && !Names.RandomFolder(loaded)
+                            ? "validly signed files in the program's own app folder" : null;
                 }
             }
             catch { }

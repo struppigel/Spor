@@ -164,6 +164,8 @@ namespace Spor.Modules
             var rows = new List<(DateTime T, string Scope, string Name, string Ver, string Pub, string Date, string Folder, string Prog, string Status, List<string> Fl, string Key, bool Hidden)>();
             int total = 0;
             var batch = new Dictionary<int, List<string>>();   // line index -> key: lines of a grouped install (each with its entry's name and version)
+            var trustedKeys = new HashSet<string>(Util.IC);    // aggressive whitelist: entries whose program is trusted (UninstallAggr)
+            var lineAggr = new Dictionary<int, string>();      // line index -> why -aggressive hides it
             foreach (var (scope, root, path, prefix) in keys)
             {
                 try
@@ -198,6 +200,8 @@ namespace Spor.Modules
                                 var pf = prog.Length > 0 && !msi && Rules.DrivePath.IsMatch(prog) ? c.F(prog) : (msi ? "Windows Installer (msiexec)" : "-", "-");
                                 var folder = InstallFolder(S(k, "InstallLocation"));
                                 var fl = prog.Length > 0 && !msi ? Rules.Flags(prog) : new List<string>();
+                                if (Aggr.On && !msi && fl.Count == 0 && Rules.DrivePath.IsMatch(prog)
+                                    && UninstallAggr(prog, Cmd.Program(S(k, "UninstallString"), c.WinDir), folder)) trustedKeys.Add(prefix + n);
                                 var when = lw ?? idate.Value;
                                 bool hiddenEntry = int.TryParse(Convert.ToString(k.GetValue("SystemComponent")), out var sc) && sc == 1;   // FRST: "Hidden"
                                 rows.Add((when, scope, name, S(k, "DisplayVersion"), S(k, "Publisher"), idate.HasValue ? idate.Value.ToString("yyyy-MM-dd") : "-",
@@ -230,21 +234,32 @@ namespace Spor.Modules
                         key + (name.Length > 0 ? "; name " + name : "") + (ver.Length > 0 ? "; version " + ver : "");
                     // no list of names: every key: line names its entry
                     batch[lines.Count - 1] = g.Select(r => KeyLine(r.Key, r.Name, r.Ver)).ToList();
-                    c.Event(tl, "INS", null, text: $"installed or updated: {g.Count} entries from {(g[0].Pub.Length > 0 ? g[0].Pub : "no publisher")}",
+                    var ge = c.Event(tl, "INS", null, text: $"installed or updated: {g.Count} entries from {(g[0].Pub.Length > 0 ? g[0].Pub : "no publisher")}",
                             more: g.Select(r => ("key", KeyLine(r.Key, r.Name, r.Ver))).ToList());
+                    if (g.All(r => trustedKeys.Contains(r.Key)))
+                    {
+                        lineAggr[lines.Count - 1] = TrustedUninstall;
+                        if (ge != null) ge.Aggr = TrustedUninstall;
+                    }
                     continue;
                 }
                 foreach (var r in g)
                 {
                     lines.Add((r.T, new[] { Log.T(r.T), r.Scope, r.Name, r.Ver, r.Pub, r.Date, r.Folder, r.Prog, r.Status, Rules.FlagCol(r.Fl), r.Key, r.Hidden ? "yes" : "-" }));
-                    c.Event(r.T, "INS", null, null, r.Fl.Count > 0 ? r.Fl : null, more: new List<(string Key, string Value)> { ("key", r.Key) },
+                    var ie = c.Event(r.T, "INS", null, null, r.Fl.Count > 0 ? r.Fl : null, more: new List<(string Key, string Value)> { ("key", r.Key) },
                             text: $"installed or updated: {NameVersion(r.Name, r.Ver)}" + (r.Pub.Length > 0 ? $" ({r.Pub})" : "") + (r.Scope.StartsWith("user") ? ", per user" : ""));
+                    if (trustedKeys.Contains(r.Key))
+                    {
+                        lineAggr[lines.Count - 1] = TrustedUninstall;
+                        if (ie != null) ie.Aggr = TrustedUninstall;
+                    }
                 }
             }
             foreach (var (l, i) in lines.Select((l, i) => (l, i)).OrderBy(x => x.l.T))
             {
                 // F: time, scope, name, version, publisher, install date, folder, program, status, flags, key, hidden
                 t.Add(l.F[0], l.F[1], l.F[2], l.F[3], l.F[4], l.F[5], l.F[7], l.F[8], l.F[9], l.F[11]);
+                if (lineAggr.TryGetValue(i, out var why)) t.Aggr(why);
                 if (batch.TryGetValue(i, out var keyLines)) foreach (var k in keyLines) t.More("key", k);
                 else
                 {
@@ -254,6 +269,61 @@ namespace Spor.Modules
             }
             t.WriteTo(c.Out);
         }
+
+        const string TrustedUninstall = "Uninstall entries of programs in Windows / Program Files validly signed by well-known publishers";
+        const string MsMsi = "Windows Installer installs and removals of Microsoft-signed packages run by SYSTEM";
+
+        /// <summary>
+        /// Aggressive whitelist: an Uninstall entry whose program (icon or uninstaller, not msiexec) passes the trust rule (Windows /
+        /// Program Files on the system drive, valid signature, not a LOLBin) and is signed by a well-known publisher. The publisher
+        /// text of the entry does not count: RenLoader's fake vendor apps claim VIA Technologies, AVerMedia, Corsair.
+        /// </summary>
+        bool UninstallAggr(string prog, string uninstaller, string folder)
+        {
+            // every value the entry has must hold: an Uninstall key is the installer's to write, its icon can be any signed exe
+            bool Ok(string p) => Rules.DrivePath.IsMatch(p ?? "") && !Aggr.StealerTarget(p) && c.TrustedFile(p) && c.ByTrustedSigner(c.RealCase(p));
+            try
+            {
+                bool windowsMsiexec = Regex.IsMatch(uninstaller ?? "", @"^[a-z]:\\windows\\(system32|syswow64)\\msiexec\.exe$", Util.RX)
+                                      && uninstaller.StartsWith(Rules.SystemDrive, StringComparison.OrdinalIgnoreCase);
+                return Ok(prog) && (string.IsNullOrEmpty(uninstaller) || windowsMsiexec || Ok(uninstaller))
+                       && (string.IsNullOrEmpty(folder) || Rules.InTrustedLocation(folder + "\\"));
+            }
+            catch { return false; }
+        }
+
+        /// <summary>(pure) The packed form of a product code Windows Installer uses in the registry ({12345678-ABCD-...} -> 87654321DCBA...).</summary>
+        internal static string PackedGuid(string code)
+        {
+            var h = (code ?? "").Trim('{', '}').Replace("-", "");
+            if (h.Length != 32 || !Regex.IsMatch(h, "^[0-9A-Fa-f]+$")) return null;
+            string Rev(string x) => new string(x.Reverse().ToArray());
+            var res = Rev(h.Substring(0, 8)) + Rev(h.Substring(8, 4)) + Rev(h.Substring(12, 4));
+            for (int i = 16; i < 32; i += 2) res += h[i + 1].ToString() + h[i];
+            return res.ToUpperInvariant();
+        }
+
+        /// <summary>The cached package of an installed product (LocalPackage, machine install) is validly signed by a well-known Microsoft publisher.</summary>
+        bool MsiByMicrosoft(string code)
+        {
+            var packed = PackedGuid(code);
+            if (packed == null) return false;
+            try
+            {
+                using (var k = Registry.LocalMachine.OpenSubKey($@"SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\{packed}\InstallProperties"))
+                {
+                    var pkg = k != null ? S(k, "LocalPackage") : "";
+                    if (pkg.Length == 0 || !File.Exists(pkg)) return false;
+                    var sg = Signature.Check(pkg);
+                    var who = (sg.Signer ?? "").Replace(" (catalog)", "");
+                    return sg.Valid && who.StartsWith("Microsoft", StringComparison.OrdinalIgnoreCase) && Rules.TrustedSigners.Contains(who);
+                }
+            }
+            catch { return false; }
+        }
+
+        /// <summary>(pure) A product name without its version numbers, to pair an update's install with the removal of the old version.</summary>
+        internal static string NameBase(string name) => Regex.Replace(name ?? "", @"\d+(\.\d+)+", "#").Trim();
 
         /// <summary>
         /// The data of a Windows Installer 1033 / 1034 event: product name, version, (language,) status, manufacturer, in this order;
@@ -280,6 +350,8 @@ namespace Spor.Modules
             ev.Reverse();   // listed oldest first
             var t = new Table("@time", "[event", "*what", "=user", "name", "product code");
             var seen = new HashSet<string>(Util.IC);
+            var msInstalls = new List<(DateTime T, string Base)>();                        // aggressive: Microsoft installs that passed
+            var msRemovals = new List<(int Row, DateTime T, string Base, TEvent Ev)>();    // ... removals waiting for their update
             foreach (var e in ev)
             {
                 var tm = e.TimeCreated?.ToUniversalTime();
@@ -303,6 +375,11 @@ namespace Spor.Modules
                     : $"{what}: " + Regex.Replace(msg, @"^Product:\s*", "", RegexOptions.IgnoreCase);
                 var code = ProductCode(e);   // = the product's Uninstall subkey (FRST: HKLM\...\{GUID})
                 t.Add(Log.T(tm), e.Id.ToString(), text, user, name, code);
+                // aggressive whitelist: Windows Update / servicing installs of Microsoft packages (run by SYSTEM, the cached package
+                // validly Microsoft-signed), and the removal of the old version within 10 minutes of such an install
+                bool msCandidate = Aggr.On && !failed && tm.HasValue && user == "SYSTEM" && maker == "Microsoft Corporation" && name.Length > 0;
+                bool msPassed = msCandidate && e.Id == 1033 && MsiByMicrosoft(code);
+                if (msPassed) { t.Aggr(MsMsi); msInstalls.Add((tm.Value, NameBase(name))); }
                 // Autodetect sees a product installed and removed again within the window too (no Uninstall key left to read);
                 // one still installed it has seen through its Uninstall key (one SUMMARY line, not two)
                 if (name.Length > 0 && !failed && (code == null || !uninstallKeys.Contains(code)))
@@ -313,9 +390,17 @@ namespace Spor.Modules
                 bool twin = code != null && tm.HasValue && c.Events.Any(x => x.Src == "INS" && Math.Abs((x.T - tm.Value).TotalMinutes) <= 5
                     && ((x.More != null && x.More.Any(m => m.Key == "key" && m.Value.EndsWith("\\" + code, StringComparison.OrdinalIgnoreCase)) && !failed)
                         || (x.Extra == "product code " + code && failed && (x.Text ?? "").Contains("FAILED"))));
-                if (!twin) c.Event(tm, "INS", null, code != null ? "product code " + code : null, text: "Windows Installer " + text);
+                var te = twin ? null : c.Event(tm, "INS", null, code != null ? "product code " + code : null, text: "Windows Installer " + text);
+                if (msPassed && te != null) te.Aggr = MsMsi;
+                if (msCandidate && e.Id == 1034) msRemovals.Add((t.Count - 1, tm.Value, NameBase(name), te));
                 e.Dispose();
             }
+            foreach (var r in msRemovals)
+                if (msInstalls.Any(i => i.Base.Equals(r.Base, StringComparison.OrdinalIgnoreCase) && Math.Abs((i.T - r.T).TotalMinutes) <= 10))
+                {
+                    t.AggrAt(r.Row, MsMsi);
+                    if (r.Ev != null) r.Ev.Aggr = MsMsi;
+                }
             t.WriteTo(c.Out, "no Windows Installer installs or removals in the time window");
         }
 

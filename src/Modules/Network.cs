@@ -195,6 +195,7 @@ namespace Spor.Modules
                 if (Rules.Whitelist && Rules.InUpdaterStaging(r.Path) && Rules.Strong(fl).Count == 0) { staging++; continue; }
                 var f = c.F(r.Path);
                 st.Add(Log.T(r.First), Log.T(r.Last), Cmd.Bytes(r.Sent), Cmd.Bytes(r.Recv), r.User, f.Status, Rules.FlagCol(fl), f.Path);
+                if (Aggr.On && fl.Count == 0) st.Aggr(NetAggr(r.Path));
                 // timeline: the 60 programs that sent the most (the table lists all)
                 if (k++ < 60 || Rules.Strong(fl).Count > 0) c.Event(r.First, "SRU", r.Path, $"SRUM first activity in the window; sent {Cmd.Bytes(r.Sent)} in total");
                 if (r.Sent >= 50L << 20 && !c.SignedOk(r.Path))
@@ -257,6 +258,26 @@ namespace Spor.Modules
             var b = a.GetAddressBytes();
             if (b.Length == 4) return !(b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168) || (b[0] == 169 && b[1] == 254) || b[0] == 127 || b[0] == 0 || b[0] >= 224 || (b[0] == 100 && b[1] >= 64 && b[1] <= 127));
             return !(a.IsIPv6LinkLocal || a.IsIPv6SiteLocal || a.IsIPv6Multicast || (b[0] & 0xFE) == 0xFC);
+        }
+
+        /// <summary>
+        /// Aggressive whitelist (Aggr) for a SRUM program, or null: updater staging folders (Aggr.Staging); a known per-user app with
+        /// its own signer (Aggr.Pair); a program validly signed by a well-known publisher in an installed program's folder (Uninstall
+        /// keys), outside drop locations and random-named folders, not a LOLBin or interpreter. Never by signer alone: sideload kits
+        /// run Adobe-signed hosts from made-up folders. Never a deleted file other than in staging folders.
+        /// </summary>
+        string NetAggr(string p)
+        {
+            try
+            {
+                if (Aggr.Staging(p)) return "programs in updater staging folders";
+                if (Aggr.StealerTarget(p) || Rules.Lol.IsMatch(p) || Rules.Interpreter.IsMatch(p) || c.LolbinCopy(p) != null || c.MarksOf(p).Count > 0) return null;
+                if (Aggr.Pair(p)) return "known per-user apps, validly signed by their own publisher";
+                if (!Rules.DropLocation(p) && !Names.RandomFolder(p) && c.ByTrustedSigner(p) && c.InInstalledFolder(p))
+                    return "programs of installed apps, validly signed by well-known publishers";
+            }
+            catch { }
+            return null;
         }
 
         void Connections()

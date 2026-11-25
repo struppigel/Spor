@@ -110,6 +110,7 @@ namespace Spor
         public static string Run(Options o, Action<string, int, int> progress)
         {
             Rules.Whitelist = o.Whitelist;
+            Rules.Aggressive = o.Whitelist && o.Aggressive;
             Signature.Reset();   // a new scan in the same window must not reuse old results
             Rules.ExtraNoise = o.ExtraNoise ?? "";
             var mods = Selected(o);
@@ -212,7 +213,7 @@ namespace Spor
             log.W($"Run by:    {Environment.UserName}{(admin ? " (administrator)" : "  -- NOT AS ADMINISTRATOR: most results are missing --")}");
             if (Native.MachineSid() is string msid) log.W($"Machine SID: {msid}");
             log.W($"Users:     {string.Join(", ", c.Profiles.Select(p => p.User))}");
-            log.W($"Options:   last {o.Days} days, whitelist {(Rules.Whitelist ? "on" : "OFF (everything shown)")}{(Rules.ExtraNoise.Length > 0 ? ", extra noise " + Rules.ExtraNoise : "")}, " +
+            log.W($"Options:   last {o.Days} days, whitelist {(Rules.Aggressive ? "aggressive" : Rules.Whitelist ? "on" : "OFF (everything shown)")}{(Rules.ExtraNoise.Length > 0 ? ", extra noise " + Rules.ExtraNoise : "")}, " +
                   (o.NoHash ? "no hashes" : o.Algo + " hashes of files up to " + o.MaxMB + " MB") +
                   (o.Modules != null ? ", only " + string.Join(", ", Selected(o).Select(m => m.Id)) : ", profile " + (ProfileModules(o.Profile) != null ? o.Profile.ToLowerInvariant() : "default")) +
                   (Autodetect.Patterns.Source != "built in" ? ", autodetect patterns from " + Autodetect.Patterns.Source : "") +
@@ -225,7 +226,7 @@ namespace Spor
             foreach (var e in err) log.W("Error:     " + e);
         }
 
-        class Row { public DateTime T; public string Src, Status, Obj, Details; public List<string> Flags; public List<string> Paths = new List<string>(); public List<(string Key, string Value)> More; }
+        class Row { public DateTime T; public string Src, Status, Obj, Details, Aggr; public List<string> Flags, Files; public List<string> Paths = new List<string>(); public List<(string Key, string Value)> More; }
 
         /// <summary>Path with version numbers, dated / numbered / GUID folder names replaced by #, for grouping.</summary>
         static readonly Regex ShapeGuid = new Regex(@"\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?", Util.RX);
@@ -422,7 +423,7 @@ namespace Spor
             string SignedBy(string path)
             {
                 if (!Rules.Whitelist || !Signature.Applies(path) || Rules.Strong(Rules.Flags(path)).Count > 0 || Rules.Lol.IsMatch(path)
-                    || Rules.Interpreter.IsMatch(path) || Rules.DropLocation(path) || c.RuntimeLaunchers.Contains(c.RealCase(path))
+                    || Rules.Interpreter.IsMatch(path) || Rules.DropLocation(path) || Names.RandomFolder(path) || c.RuntimeLaunchers.Contains(c.RealCase(path))
                     || c.LolbinCopy(path) != null) return null;   // a LOLBin copy (also a validly signed, renamed one) is never hidden
                 var real = c.RealCase(path);
                 if (!File.Exists(real)) real = c.Replacement(real);
@@ -469,7 +470,7 @@ namespace Spor
                     var f = c.F(path, !x.All(e => e.NoHash));
                     var row = new Row
                     {
-                        T = LineTime(x), Src = string.Join(" ", x.Select(e => e.Src).Distinct().OrderBy(Order)), Status = f.Status, Obj = f.Path,
+                        T = LineTime(x), Src = string.Join(" ", x.Select(e => e.Src).Distinct().OrderBy(Order)), Status = f.Status, Obj = f.Path, Files = paths,
                         Details = string.Join("; ", ex), Flags = c.WithLolbinCopy(path, Rules.Flags(path).Concat(x.Where(e => e.Flags != null).SelectMany(e => e.Flags))).Distinct().ToList(),
                         // sub-lines of file events too (script files of a runtime launcher, ...)
                         More = MergeMore(x.Where(e => e.More != null).SelectMany(e => e.More)),
@@ -488,7 +489,7 @@ namespace Spor
                 }
             }
             foreach (var e in c.Events.Where(e => e.Path == null))
-                rows.Add(new Row { T = e.T, Src = e.Src, Status = "-", Obj = e.Text, Flags = e.Flags ?? new List<string>(), More = e.More,
+                rows.Add(new Row { T = e.T, Src = e.Src, Status = "-", Obj = e.Text, Flags = e.Flags ?? new List<string>(), More = e.More, Aggr = e.Aggr,
                                    Details = string.Join("; ", new[] { e.Extra, TimeMeaning(new[] { e.Src }) }.Where(s => !string.IsNullOrEmpty(s))) });
             rows = rows.OrderBy(x => x.T).ToList();   // oldest first: read it like a story
 
@@ -505,10 +506,74 @@ namespace Spor
             for (int i = 0; i < hiddenParts.Count; i++)
                 log.Comment((i == 0 ? "Hidden (-nowhitelist lists them): " : "") + hiddenParts[i] + ".");   // each comment line a whole sentence
             var t = new Table("@time", "[sources", "*file or event", "!status", "=details", "<flags");
-            foreach (var r in rows) { t.Add(Log.T(r.T), r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(r.Flags)); foreach (var p in r.Paths) t.More("path", p); if (r.More != null) foreach (var m in r.More) t.More(m.Key, m.Value); }
+            if (Aggr.On) TimelineAggr(c, rows);
+            foreach (var r in rows)
+            {
+                t.Add(Log.T(r.T), r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(r.Flags));
+                t.Aggr(r.Aggr);
+                foreach (var p in r.Paths) t.More("path", p);
+                if (r.More != null) foreach (var m in r.More) t.More(m.Key, m.Value);
+            }
             t.WriteTo(log);
             result = rows;
             return log;
+        }
+
+        /// <summary>A NEW burst's app folder: two levels below AppData or ProgramData (deeper than a drop location), else null.</summary>
+        static readonly Regex BurstRootRx = new Regex(@"^[A-Z]:\\(USERS\\[^\\]+\\APPDATA\\(LOCAL|ROAMING|LOCALLOW)|PROGRAMDATA)\\[^\\]+\\[^\\]+\\", Util.RX);
+        internal const int BurstMin = 5;
+        internal static readonly TimeSpan BurstSpan = TimeSpan.FromMinutes(10);
+
+        /// <summary>
+        /// (pure) The groups of a list of (time, key) that are bursts: BurstMin or more within BurstSpan of the group's first, per key.
+        /// Returns the indexes in bursts.
+        /// </summary>
+        internal static HashSet<int> Bursts(IList<(DateTime T, string Key)> items)
+        {
+            var res = new HashSet<int>();
+            foreach (var g in items.Select((x, i) => (x.T, x.Key, I: i)).Where(x => x.Key != null).GroupBy(x => x.Key, Util.IC))
+            {
+                var l = g.OrderBy(x => x.T).ToList();
+                for (int i = 0; i < l.Count;)
+                {
+                    int j = i;
+                    while (j + 1 < l.Count && l[j + 1].T - l[i].T <= BurstSpan) j++;
+                    if (j - i + 1 >= BurstMin) for (int k = i; k <= j; k++) res.Add(l[k].I);
+                    i = j + 1;
+                }
+            }
+            return res;
+        }
+
+        /// <summary>
+        /// Aggressive whitelist (Aggr) on timeline lines without flags: files in updater staging folders (Rules.InUpdaterStaging), and
+        /// bursts of new executables an app updater writes: BurstMin or more NEW-only lines within BurstSpan in one app folder two levels
+        /// below AppData / ProgramData (no drop location, no random-named folder), each validly signed by the same signer, without
+        /// details (no zone, no download). Text events bring their reason along (TEvent.Aggr).
+        /// </summary>
+        static void TimelineAggr(Ctx c, List<Row> rows)
+        {
+            bool Plain(Row r) => r.Aggr == null && r.Files != null && r.Files.Count > 0 && Aggr.Harmless(r.Flags);
+            foreach (var r in rows.Where(Plain))
+                if (r.Files.All(Aggr.Staging)) r.Aggr = "files in updater staging folders";
+            string Key(Row r)
+            {
+                if (!Plain(r) || r.Src != "NEW" || r.Files.Count != 1 || !string.IsNullOrEmpty(r.Details) || (r.More != null && r.More.Count > 0)
+                    || !(string.IsNullOrEmpty(r.Status) || r.Status == "-")) return null;
+                var p = r.Files[0];
+                var m = BurstRootRx.Match(p);
+                if (!m.Success || Rules.DropLocation(p) || Names.RandomFolder(p) || !Signature.Applies(p)) return null;
+                try
+                {
+                    var real = c.RealCase(p);
+                    if (!File.Exists(real)) return null;
+                    var sg = Signature.Check(real);
+                    return sg.Valid ? m.Value + "|" + (sg.Signer ?? "").Replace(" (catalog)", "") : null;
+                }
+                catch { return null; }
+            }
+            var keys = rows.Select(r => (r.T, Key(r))).ToList();
+            foreach (var i in Bursts(keys)) rows[i].Aggr = "new validly signed files of an app update (5+ in one app folder within 10 minutes, one signer)";
         }
 
         static void Summary(Ctx c, Log log, List<Row> rows)
@@ -689,16 +754,56 @@ namespace Spor
             return (keep, hidden);
         }
 
+        /// <summary>Media, subtitles and images, and the Recycle Bin's $I index files: their hashes say nothing about malware.</summary>
+        static readonly Regex DataFile = new Regex(
+            @"\.(MKV|MP4|AVI|MOV|WMV|M4V|WEBM|M2TS|MPG|MPEG|VOB|FLV|MP3|M4A|FLAC|WAV|OGG|OPUS|AAC|WMA|SRT|ASS|SSA|SUB|IDX|VTT|JPG|JPEG|PNG|GIF|BMP|WEBP|HEIC|TIF|TIFF|NEF|CR2)$" +
+            @"|\\\$RECYCLE\.BIN\\[^\\]+\\\$I[^\\]+$", Util.RX);
+
+        /// <summary>
+        /// (pure) Why the aggressive whitelist leaves a FILES entry out, or null: a file no unmarked line names (only lines -aggressive
+        /// hides name it, or none), or a plain data file. Never a flagged file (path flags, marks such as a Defender detection, LOLBin copy).
+        /// </summary>
+        internal static string FileAggr(string key, bool namedByUnmarked, bool marked)
+        {
+            if (marked || Rules.Strong(Rules.Flags(key)).Count > 0) return null;
+            if (DataFile.IsMatch(key)) return "media, subtitle, image and Recycle Bin index files";
+            if (!namedByUnmarked) return "files only hidden lines name";
+            return null;
+        }
+
+        /// <summary>
+        /// (pure) AMCACHE FILES entries in bulk folders, with the reason: a folder with AmcacheBulk or more entries (toolchains such as
+        /// msys64, Git\usr\bin, R tools: an inventory of a whole folder) of which no unmarked line names one, none flagged or marked.
+        /// </summary>
+        internal static Dictionary<string, string> AmcacheBulkFolders(IEnumerable<string> keys, ISet<string> named, Func<string, bool> marked)
+        {
+            var res = new Dictionary<string, string>(Util.IC);
+            foreach (var g in keys.Where(k => k.LastIndexOf('\\') > 2).GroupBy(k => k.Substring(0, k.LastIndexOf('\\') + 1), Util.IC))
+            {
+                var l = g.ToList();
+                if (l.Count < AmcacheBulk || Rules.DropLocation(l[0]) || Names.RandomFolder(l[0])
+                    || l.Any(k => named.Contains(k) || marked(k) || Rules.Strong(Rules.Flags(k)).Count > 0)) continue;
+                foreach (var k in l) res[k] = "Amcache-only files in " + g.Key;
+            }
+            return res;
+        }
+
+        internal const int AmcacheBulk = 20;
+
         static void Files(Ctx c, Log log)
         {
             var all = c.Sha256.Keys.Concat(c.Signer.Keys).Concat(c.ToHash.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            HashSet<string> shown = null;
+            HashSet<string> shown = null, shownUnmarked = null;
             if (Rules.Whitelist)
             {
                 shown = ShownFiles(log.Lines, all);
+                shownUnmarked = ShownFiles(Aggr.Unmarked(log.Lines), all);   // aggressive: what stays when marked records go
                 // an app execution alias shows the program it starts (its status is that program's)
                 foreach (var (alias, target) in c.AliasTargets())
+                {
                     if (shown.Contains(alias)) shown.Add(target);
+                    if (shownUnmarked.Contains(alias)) shownUnmarked.Add(target);
+                }
             }
             var (files, hidden) = FilesToList(all, k => c.Signer.TryGetValue(k, out var s) ? s : null, shown ?? new HashSet<string>(), Rules.Whitelist);
             if (files.Count > 0 || hidden > 0)
@@ -721,6 +826,7 @@ namespace Spor
                     t.Add(k, h ?? "not hashed", sig);
                     t.More("file", fileLine);
                     t.More("version", versionLine);
+                    if (Aggr.On) t.Aggr(FileAggr(k, shownUnmarked.Contains(k), c.MarksOf(k).Count > 0 || c.LolbinCopy(k) != null));
                 }
                 t.WriteTo(log);
             }
@@ -731,7 +837,14 @@ namespace Spor
                 log.W();
                 log.Heading("AMCACHE FILES - SHA1 from Amcache of files not listed above (the file when Windows recorded it)");
                 var t = new Table("*file", ">sha1");
-                foreach (var kv in amOnly.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)) t.Add(kv.Key, kv.Value.ToUpperInvariant());
+                var bulk = Aggr.On ? AmcacheBulkFolders(amOnly.Select(kv => kv.Key), ShownFiles(Aggr.Unmarked(log.Lines), amOnly.Select(kv => kv.Key)),
+                                                        k => c.MarksOf(k).Count > 0 || c.LolbinCopy(k) != null)
+                                   : new Dictionary<string, string>();
+                foreach (var kv in amOnly.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+                {
+                    t.Add(kv.Key, kv.Value.ToUpperInvariant());
+                    if (bulk.TryGetValue(kv.Key, out var why)) t.Aggr(why);
+                }
                 t.WriteTo(log);
             }
         }

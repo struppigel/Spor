@@ -371,6 +371,29 @@ namespace Spor.Modules
             }
             return args.Length == 0 || args.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).All(t => Regex.IsMatch(t, @"^[-/][\w:-]*$"));
         }
+        static readonly Regex BrowserExe = new Regex(@"\\(CHROME|MSEDGE|BRAVE|VIVALDI|OPERA|FIREFOX)\.EXE$", Util.RX);
+
+        /// <summary>
+        /// Aggressive whitelist (Aggr): a program a Run value, task or Startup item starts that needs no line of its own: on disk, no
+        /// flags, no side-loaded module, harmless arguments, not a browser (analysts delete Edge's AutoLaunch values), and either
+        /// trusted (Windows / Program Files, valid signature, not a LOLBin or interpreter) or a per-user app with its own signer
+        /// (Aggr.Pair: OneDrive, Zoom, ...).
+        /// </summary>
+        bool AggrProgram(string prog, string args, List<string> fl, int modules)
+        {
+            if (string.IsNullOrEmpty(prog) || !Rules.DrivePath.IsMatch(prog) || (fl != null && fl.Count > 0) || modules > 0) return false;
+            if (BrowserExe.IsMatch(prog) || Aggr.StealerTarget(prog) || Rules.ArgsSuspicious(args)) return false;
+            try
+            {
+                var real = c.RealCase(prog);
+                if (!File.Exists(real)) return false;
+                return c.TrustedFile(real) || Aggr.Pair(real);
+            }
+            catch { return false; }
+        }
+
+        const string AggrTrusted = "entries that start a validly signed program in Windows / Program Files or a known per-user app";
+
         readonly HashSet<string> hiddenTasks = new HashSet<string>(Util.IC);
         readonly Dictionary<string, int> publisherTasks = new Dictionary<string, int>(Util.IC);
         int staleTasks, lockedTasks;
@@ -431,6 +454,7 @@ namespace Spor.Modules
                         var kind = k.Path.EndsWith(@"Policies\Explorer\Run", StringComparison.OrdinalIgnoreCase) ? "policy-run"
                                  : k.Path.EndsWith("RunOnce", StringComparison.OrdinalIgnoreCase) ? "runonce" : "run";
                         var progs = new List<string>();
+                        var same = new Dictionary<string, (int Row, List<string> Names)>(StringComparer.OrdinalIgnoreCase);   // aggressive: one line per command
                         foreach (var n in names)
                         {
                             var cmd = Convert.ToString(key.GetValue(n)) ?? "";
@@ -445,9 +469,24 @@ namespace Spor.Modules
                             rt.More("program", Log.Item(pf.Path, pf.Status));
                             rt.More("arguments", Rules.Fix(Cmd.Args(cmd)));
                             if (n.Contains("\\")) rt.More("value", Rules.Fix(n));
-                            foreach (var m in Modules(prog)) rt.More("module", m);
+                            var mods = Modules(prog);
+                            foreach (var m in mods) rt.More("module", m);
+                            if (Aggr.On)
+                            {
+                                var norm = Regex.Replace(cmd.Trim(), @"\s+", " ");
+                                if (same.TryGetValue(norm, out var first)) { rt.Aggr("Run values that start the same command as a value listed in the same key"); first.Names.Add(Rules.Fix(n)); }
+                                else
+                                {
+                                    same[norm] = (rt.Count - 1, new List<string>());
+                                    if (AggrProgram(prog, Cmd.Args(cmd), fl, mods.Count)) rt.Aggr(AggrTrusted);
+                                }
+                            }
                             if (Rules.Strong(fl).Count > 0) c.Find(t, $"Run entry {Rules.Fix(n)} = {c.File(prog)}", null, fl);   // time = key changed
                         }
+                        // aggressive: the values a hidden same-command line had, on the line that stays (fixlists delete each value by name)
+                        if (Aggr.Hide)
+                            foreach (var kv in same.Values.Where(v => v.Names.Count > 0))
+                                foreach (var chunk in Log.Chunks(kv.Names)) rt.MoreAt(kv.Row, "same command", chunk);
                         // the values it has now on now: sub-lines (a Run key can have dozens)
                         c.Event(t, "AUT", null, text: $"{k.Name} changed ({progs.Count} values now)", more: Log.Chunks(progs).Select(p => ("now", p)).ToList());
                     }
@@ -509,6 +548,7 @@ namespace Spor.Modules
             ev.Reverse();   // the newest are read (up to the limit), listed oldest first
             c.Out.Sub("Services installed in the last " + c.Opt.Days + " days (System event 7045)" + (Rules.Whitelist ? ", except signed programs in trusted locations" : ""));
             var it = new Table("@time", "[kind", "account", "!status", "<flags", "*service", ">program");
+            var installs = new Dictionary<string, (int Row, int More, DateTime? Last)>(StringComparer.OrdinalIgnoreCase);   // aggressive: repeats
             foreach (var e in ev)
             {
                 var t = e.TimeCreated?.ToUniversalTime();
@@ -530,6 +570,16 @@ namespace Spor.Modules
                 if (Rules.Whitelist && trusted && Rules.Strong(fl).Count == 0) { e.Dispose(); continue; }
                 bool quietDriver = DriverFlag(kind, prog, fl);
                 it.Add(Log.T(t), kind, acct, pf.Status, Rules.FlagCol(fl), Rules.Fix(name), pf.Path);
+                if (Aggr.On)
+                {
+                    var key = string.Join("|", kind, acct, pf.Status, Rules.FlagCol(fl), name, pf.Path, ip);
+                    if (installs.TryGetValue(key, out var firstInstall))
+                    {
+                        it.Aggr("repeated installs of the same service (the first one is listed)");
+                        installs[key] = (firstInstall.Row, firstInstall.More + 1, t);
+                    }
+                    else installs[key] = (it.Count - 1, 0, t);
+                }
                 it.More("dll", dllLine);
                 // what the service runs, when the program is not all of it (cmd.exe /c ..., a script host and its script)
                 var ipArgs = Cmd.Args(ip);
@@ -549,6 +599,9 @@ namespace Spor.Modules
                 c.Find(t, $"service installed: {Rules.Fix(name)}: {disp}" + (dllLine != null ? ", dll " + dllLine : ""), null, sumFl);
                 e.Dispose();
             }
+            if (Aggr.Hide)
+                foreach (var r in installs.Values.Where(r => r.More > 0))
+                    it.MoreAt(r.Row, "installed again", $"+{r.More} more times, last {Log.T(r.Last)}");
             it.WriteTo(c.Out);
         }
 
@@ -577,7 +630,7 @@ namespace Spor.Modules
             c.Out.Sub(Rules.Whitelist ? "Scheduled tasks, except Microsoft tasks that run trusted programs" : "Scheduled tasks",
                 "created / changed = task file times; program: / arguments: = the task's first action, action: = further actions; info: hidden, author");
             var tt = new Table("@created", "[kind", "changed", "<flags", "*task");
-            var trows = new List<(DateTime T, string[] F, List<string> More)>();
+            var trows = new List<(DateTime T, string[] F, List<string> More, string Aggr)>();
             IEnumerable<string> files;
             try { files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).ToList(); }
             catch (Exception e) { c.Out.None("cannot read " + root + ": " + e.Message); return; }
@@ -650,8 +703,11 @@ namespace Spor.Modules
                     if (acts.Any(a => a.Prog.Length > 0 && !Trusted(a.Prog) && Ctx.BadSig(a.Line)) && !taskFl.Contains("!unsigned")) taskFl.Add("!unsigned");
                     if (hidden && !ms && acts.Any(a => a.Prog.Length > 0 && !Trusted(a.Prog)) && !taskFl.Contains(HiddenTaskFlag)) taskFl.Add(HiddenTaskFlag);
                     var strongFl = Rules.Strong(taskFl);
+                    // aggressive: a task (not hidden) whose every action starts a trusted program or a per-user app (updaters: OneDrive, Zoom, ...)
+                    string taskAggr = Aggr.On && !hidden && acts.Count > 0 && taskFl.Count == 0 && !more.Any(m => m.StartsWith("module: ", StringComparison.Ordinal))
+                                      && acts.All(a => AggrProgram(a.Prog, a.Args, a.Fl, 0)) ? AggrTrusted : null;
                     trows.Add((fi.CreationTimeUtc, new[] { Log.T(fi.CreationTimeUtc), "task", changed ? Log.T(fi.LastWriteTimeUtc) : "-", Rules.FlagCol(taskFl),
-                                                           Rules.Fix(name) }, more));
+                                                           Rules.Fix(name) }, more, taskAggr));
                     // the events without the task's flags: its SUMMARY line is the finding below (one line, not two)
                     if (first.Prog != null && Rules.DrivePath.IsMatch(first.Prog))
                     {
@@ -681,6 +737,7 @@ namespace Spor.Modules
             foreach (var r in trows.OrderBy(r => r.T))
             {
                 tt.Add(r.F);
+                tt.Aggr(r.Aggr);
                 foreach (var m in r.More) { int i = m.IndexOf(": "); tt.More(m.Substring(0, i), m.Substring(i + 2)); }
             }
             tt.WriteTo(c.Out);
@@ -734,7 +791,9 @@ namespace Spor.Modules
                         if (Rules.DrivePath.IsMatch(prog ?? "")) { c.Observe("path", prog, f.CreationTimeUtc); c.Relate(f.FullName, prog); }
                         var ta = Cmd.Args(target);
                         stt.More("target", Log.Item(pf.Path, pf.Status, ta.Length > 0 ? "arguments " + Rules.Fix(ta) : null, Rules.FlagCol(fl)));
-                        foreach (var m in Modules(prog)) stt.More("module", m);
+                        var mods = Modules(prog);
+                        foreach (var m in mods) stt.More("module", m);
+                        if (Aggr.On && Rules.Flags(f.FullName).Count == 0 && AggrProgram(prog, ta, fl, mods.Count)) stt.Aggr(AggrTrusted);
                         if (Rules.Strong(fl).Count > 0 || fl.Contains("!lolbin"))
                         {
                             // a shortcut that starts a Windows tool (mshta, rundll32, ...): at least context, when nothing else flags it

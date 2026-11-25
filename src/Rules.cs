@@ -16,6 +16,9 @@ namespace Spor
 
         public static bool Whitelist = true;
 
+        /// <summary>-aggressive (command line only): records marked by Table.Aggr are hidden instead of marked. See Aggr.</summary>
+        public static bool Aggressive;
+
         /// <summary>User's own noise regex (-noise), appended to each module's noise list.</summary>
         public static string ExtraNoise = "";
 

@@ -35,6 +35,26 @@ namespace Spor.Modules
         /// </summary>
         void Found(DateTime? t, string text, string when = null) => c.Find(t, text, null, Rules.InfoFlag("!remote-access"));
 
+        /// <summary>
+        /// Aggressive whitelist (Aggr) for a webcam / microphone use before the time window, or null: a program that is there and
+        /// trusted (Windows / Program Files, validly signed; a known per-user app; a well-known publisher's program in an installed
+        /// app's folder), or a program that is gone now outside drop locations and random-named folders (old games, uninstalled apps).
+        /// </summary>
+        string OldUseAggr(string p)
+        {
+            try
+            {
+                if (!Rules.DrivePath.IsMatch(p ?? "") || Rules.Flags(p).Count > 0 || c.MarksOf(p).Count > 0 || Rules.Lol.IsMatch(p) || Rules.Interpreter.IsMatch(p)) return null;
+                if (Rules.DropLocation(p) || Names.RandomFolder(p) || Aggr.StealerTarget(p)) return null;
+                var real = c.RealCase(p);
+                if (!File.Exists(real)) return "webcam and microphone use before the time window by programs that are gone now";
+                if (c.TrustedFile(real) || Aggr.Pair(real) || (c.ByTrustedSigner(real) && c.InInstalledFolder(real)))
+                    return "webcam and microphone use before the time window by trusted programs";
+            }
+            catch { }
+            return null;
+        }
+
         public void Execute(Ctx ctx)
         {
             c = ctx;
@@ -96,6 +116,7 @@ namespace Spor.Modules
             {
                 bool open = g.E == null || g.E < g.T; var f = c.F(g.P);
                 wt.Add(Log.T(g.T), open ? "in use now or not stopped cleanly" : Log.T(g.E), g.Cap, g.User, f.Status, f.Path);
+                if (Aggr.On && g.T < c.Since) wt.Aggr(OldUseAggr(g.P));
             }
             if (pkg.Count > 0) c.Out.Wrap("Store apps that used them (any time): ", pkg);
             wt.WriteTo(c.Out);

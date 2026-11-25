@@ -221,6 +221,7 @@ namespace Spor.Modules
                 var f = c.F(x.P);
                 ct.Add(x.User ?? "-", f.Status, Rules.FlagCol(x.F), f.Path);
                 if (Rules.Strong(x.F).Count > 0) c.Find(null, c.File(x.P), "Compatibility Assistant: ran at some point", x.F);
+                else if (Aggr.On && x.F.Count == 0 && Replaced(x.P)) ct.Aggr("programs an update replaced (the newer version next to it is validly signed)");
             }
             ct.WriteTo(c.Out);
             c.Out.Hidden(qk, "entries");
@@ -365,6 +366,23 @@ namespace Spor.Modules
                                                         Names = string.Join(", ", rest.Skip(per).Select(r => Util.Leaf(r.P))) });
             }
             return res;
+        }
+
+        /// <summary>
+        /// Aggressive whitelist: a program that is gone because an update replaced it - the same file, validly signed, in a newer
+        /// version folder next to it (Ctx.Replacement: Discord app-1.0.9267 -> app-1.0.9268, WindowsApps package versions), not in a
+        /// drop location or a random-named folder. Not for a LOLBin copy or an interpreter.
+        /// </summary>
+        bool Replaced(string p)
+        {
+            try
+            {
+                if (Rules.DropLocation(p) || Names.RandomFolder(p) || Aggr.StealerTarget(p) || !Signature.Applies(p) || Rules.Lol.IsMatch(p) || Rules.Interpreter.IsMatch(p)
+                    || c.LolbinCopy(p) != null || c.MarksOf(p).Count > 0) return false;
+                var nw = c.Replacement(c.RealCase(p));
+                return nw != null && !Names.RandomFolder(nw) && Signature.Check(nw).Valid;
+            }
+            catch { return false; }
         }
 
         /// <summary>2 = show, 1 = known noise (counted), 0 = trusted (ignored)</summary>

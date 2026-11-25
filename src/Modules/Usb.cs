@@ -180,6 +180,32 @@ namespace Spor.Modules
         /// <summary>Root files of the system drive that cannot or need not be hashed (page file, hibernation file, ...).</summary>
         static readonly Regex SystemRootFile = new Regex(@"^(pagefile\.sys|hiberfil\.sys|swapfile\.sys|DumpStack\.log(\.tmp)?|bootmgr|BOOTNXT|BOOTSECT\.BAK)$", Util.RX);
 
+        /// <summary>Films, music, subtitles, photos, Blu-ray and DVD structure: a media disk's bulk, no evidence.</summary>
+        static readonly Regex MediaFile = new Regex(
+            @"\.(MKV|MP4|AVI|MOV|WMV|M4V|WEBM|M2TS|MTS|MPG|MPEG|VOB|FLV|MP3|M4A|FLAC|WAV|OGG|OPUS|AAC|WMA|SRT|ASS|SSA|SUB|IDX|SUP|VTT|NFO|JPG|JPEG|PNG|GIF|BMP|WEBP|HEIC|TIF|TIFF|NEF|CR2|MPLS|CLPI|BDMV|BDJO|IFO|BUP)$", Util.RX);
+
+        /// <summary>
+        /// Aggressive whitelist (Aggr) for a drive listing: plain media files (MediaFile), and plain folders whose listed contents are all
+        /// such (or that are not entered: a fixed drive's root folders). Plain = not hidden or system, no invisible character or
+        /// space / dot at the end of the name, no alternate data stream, no details, no flags. Executables, shortcuts, scripts,
+        /// archives, disk images and autorun.inf are never media.
+        /// </summary>
+        Dictionary<Item, string> ListingAggr(List<Item> items)
+        {
+            var res = new Dictionary<Item, string>();
+            bool Plain(Item it) => (it.Attr & (FileAttributes.Hidden | FileAttributes.System)) == 0 && !Unseen(it.Name) && !EdgeName(it.Name)
+                                   && it.Streams.Count == 0 && it.Details.Count == 0 && it.Flags.Count == 0;
+            foreach (var it in items.Where(i => !i.Dir && Plain(i) && MediaFile.IsMatch(i.Name)))
+                res[it] = "media, subtitle and image files and their folders on drives";
+            // deepest folders first, so a folder sees whether its sub-folders are marked
+            foreach (var dir in items.Where(i => i.Dir && Plain(i)).OrderByDescending(i => i.Depth))
+            {
+                var below = items.Where(o => o != dir && o.Path.StartsWith(dir.Path + "\\", StringComparison.OrdinalIgnoreCase)).ToList();
+                if (below.All(res.ContainsKey)) res[dir] = below.Count == 0 ? "folders on drives whose contents are not listed or empty" : "media, subtitle and image files and their folders on drives";
+            }
+            return res;
+        }
+
         List<Item> Contents(Drive d)
         {
             var items = new List<Item>();
@@ -231,6 +257,7 @@ namespace Spor.Modules
                       : network ? "Network drive: the root, folders end with \\. Times UTC. Files are not hashed and their streams not read (that would go over the network)."
                       : "The root of the drive, and the contents of hidden, system or invisible-named root folders (not Windows' own). Times UTC; hashes: FILES.");
             var t = new Table("*item", "!status", "=attributes", "created", "modified", "size", "streams", "=details", "<flags");
+            var aggr = Aggr.On ? ListingAggr(items) : new Dictionary<Item, string>();
             foreach (var it in items)
             {
                 string status = null;
@@ -243,6 +270,7 @@ namespace Spor.Modules
                 var streams = it.Streams.Count > 0 ? string.Join(", ", it.Streams.Select(s => Rules.Fix(s.Name) + " " + s.Size + " bytes")) : null;
                 t.Add(Shown(it.Path) + (it.Dir ? "\\" : ""), status, AttrText(it.Attr), Log.T(it.Created), Log.T(it.Modified), it.Dir ? null : it.Size + " bytes",
                       streams, it.Details.Count > 0 ? string.Join("; ", it.Details) : null, Rules.FlagCol(it.Flags));
+                if (aggr.TryGetValue(it, out var why)) t.Aggr(why);
                 var strong = Rules.Strong(it.Flags);
                 if (strong.Count > 0)
                 {

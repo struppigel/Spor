@@ -13,6 +13,7 @@ namespace Spor
     {
         public int Days = 30;
         public bool Whitelist = true;
+        public bool Aggressive;           // command line -aggressive only (trial, see Aggr): never set by the window
         public string ExtraNoise = "";
         public string Algo = "SHA256";
         public int MaxMB = 500;
@@ -59,6 +60,7 @@ namespace Spor
         public List<(string Key, string Value)> More;   // indented "key: value" lines under a text event (e.g. Uninstall keys of a grouped install)
         public string Known;    // Autodetect: "known malware <family>: <note>", first in the line's details
         public int? Pid;        // process events (PROC, 4688, SYSMON): different processes of one program stay apart when flagged
+        public string Aggr;     // text events: why the aggressive whitelist hides the timeline line (Aggr), else null
     }
 
     /// <summary>Shared state: options, users and hives, timeline, findings, file display and hashes.</summary>
@@ -195,11 +197,14 @@ namespace Spor
         /// <summary>"[user] " if there is more than one user, else "".</summary>
         public string U(string user) => MultiUser && !string.IsNullOrEmpty(user) ? "[" + user + "] " : "";
 
-        public void Event(DateTime? t, string src, string path, string extra = null, List<string> flags = null, string text = null, bool noHash = false,
+        /// <summary>A timeline event; returns it, or null when it is older than the time window (not added).</summary>
+        public TEvent Event(DateTime? t, string src, string path, string extra = null, List<string> flags = null, string text = null, bool noHash = false,
                           List<(string Key, string Value)> more = null, int? pid = null)
         {
-            if (t.HasValue && t.Value >= Since)
-                Events.Add(new TEvent { T = t.Value, Src = src, Path = path, Text = text, Extra = extra, Flags = flags, NoHash = noHash, More = more, Pid = pid });
+            if (!t.HasValue || t.Value < Since) return null;
+            var e = new TEvent { T = t.Value, Src = src, Path = path, Text = text, Extra = extra, Flags = flags, NoHash = noHash, More = more, Pid = pid };
+            Events.Add(e);
+            return e;
         }
 
         /// <summary>
@@ -484,6 +489,52 @@ namespace Spor
             if (!Signature.Applies(real)) return true;
             if (!System.IO.File.Exists(real)) { var nw = Replacement(real); return nw != null && Signature.Check(nw).Valid; }
             return Signature.Check(real).Valid;
+        }
+
+        HashSet<string> installFolders;
+
+        /// <summary>
+        /// The file is in the folder of an installed program (Uninstall keys, machine and per user: InstallLocation, the folders of
+        /// DisplayIcon and of the uninstaller), below it at any depth. For the aggressive whitelist (Aggr): a per-user app's folder,
+        /// not one a sideload kit made up. A drive root or a profile folder itself does not count.
+        /// </summary>
+        public bool InInstalledFolder(string p)
+        {
+            if (installFolders == null)
+            {
+                installFolders = new HashSet<string>(Util.IC);
+                void Add(string f)
+                {
+                    f = (f ?? "").Trim().Trim('"').TrimEnd('\\');
+                    if (!Rules.DrivePath.IsMatch(f) || Rules.DropLocation(f + "\\x") || Names.RandomFolder(f + "\\x")) return;
+                    installFolders.Add(f + "\\");
+                }
+                var keys = new List<(RegistryKey Root, string Path)>
+                {
+                    (Registry.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                    (Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+                };
+                foreach (var h in Hives) keys.Add((h.Root, @"Software\Microsoft\Windows\CurrentVersion\Uninstall"));
+                foreach (var (root, path) in keys)
+                    try
+                    {
+                        using (var u = root.OpenSubKey(path))
+                            if (u != null)
+                                foreach (var n in u.GetSubKeyNames())
+                                    using (var k = u.OpenSubKey(n))
+                                    {
+                                        if (k == null) continue;
+                                        Add(Convert.ToString(k.GetValue("InstallLocation")));
+                                        foreach (var v in new[] { "DisplayIcon", "UninstallString" })
+                                        {
+                                            var prog = Cmd.Program(Regex.Replace(Convert.ToString(k.GetValue(v)) ?? "", @",-?\d+$", ""), WinDir);
+                                            if (Rules.DrivePath.IsMatch(prog ?? "")) Add(Util.Folder(prog));
+                                        }
+                                    }
+                    }
+                    catch { }
+            }
+            return installFolders.Any(f => (p ?? "").StartsWith(f, StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>A file on disk validly signed by a well-known publisher (resources/publishers.txt): Riot's vgk.sys, NordVPN's driver.</summary>

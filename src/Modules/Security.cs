@@ -344,7 +344,10 @@ namespace Spor.Modules
                 text = Rules.Fix(text);
                 et.Add(Log.T(t), e.Id.ToString(), Rules.FlagCol(fl), text);
                 if (more != null) foreach (var x in more) et.More(x.Key, x.Value);
-                c.Event(t, "DEF", null, text: text, flags: fl, more: more);
+                var de = c.Event(t, "DEF", null, text: text, flags: fl, more: more);
+                // aggressive whitelist: each "detection history deleted" event (the SUMMARY line counts them, with the first and last time)
+                const string purgeWhy = "Defender \"detection history deleted\" events (the SUMMARY counts them)";
+                if (e.Id == 1013 && Aggr.On && fl.Count == 0) { et.Aggr(purgeWhy); if (de != null) de.Aggr = purgeWhy; }
                 // flagged events are in the summary through the timeline; a detection is a finding with its flag
                 if (find && fl.Count == 0)
                 {

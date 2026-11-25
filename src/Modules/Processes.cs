@@ -46,6 +46,8 @@ namespace Spor.Modules
             return m.Success ? m.Groups[1].Value : null;
         }
 
+        static readonly Regex ElectronChild = new Regex(@"\s--type=(renderer|gpu-process|utility|crashpad-handler|broker)\b", Util.RX);
+
         public void Execute(Ctx ctx)
         {
             c = ctx;
@@ -96,10 +98,10 @@ namespace Spor.Modules
                     nativeHosts++;
                     continue;
                 }
-                // whitelist: a program installed per user (outside Windows and Program Files, not in a drop location), validly signed by a
+                // whitelist: a program installed per user (outside Windows and Program Files, not in a drop location or random-named folder), validly signed by a
                 // well-known publisher, with nothing else to say: counted, not listed
                 if (Rules.Whitelist && signedOk && !argsBad && badMods.Count == 0 && hits.Count == 0 && flags.All(x => x == "!lolbin")
-                    && !Rules.DropLocation(path) && !Rules.Interpreter.IsMatch(path))
+                    && !Rules.DropLocation(path) && !Names.RandomFolder(path) && !Rules.Interpreter.IsMatch(path))
                 {
                     var who = (Signature.Check(path).Signer ?? "").Replace(" (catalog)", "");
                     if (Rules.TrustedSigners.Contains(who)) { hidden[who] = (hidden.TryGetValue(who, out var n) ? n : 0) + 1; continue; }
@@ -107,9 +109,17 @@ namespace Spor.Modules
                 var f = c.F(path);
                 var (cl, args) = CommandOrArgs(new[] { p.Path, path }, Util.Clip(p.CommandLine));
                 t.Add(Log.T(p.Created), p.Pid.ToString(), f.Path, f.Status, ChainText(chain, wmi, p.Created, c.ProcessStarts), Rules.Fix(cl), Rules.Fix(args), Rules.FlagCol(flags));
+                // aggressive whitelist: an app's own unsigned modules (plugins next to an unsigned program in its folder), an Electron
+                // app's helper processes (the same program started by itself with --type=)
+                bool plainApp = Aggr.On && flags.Count == 0 && hits.Count == 0 && !argsBad && !Rules.DropLocation(path) && !Names.RandomFolder(path)
+                                && !Rules.Lol.IsMatch(path) && !Rules.Interpreter.IsMatch(path) && c.MarksOf(path).Count == 0;
+                if (plainApp && badMods.Count == 0 && chain.Count > 0 && chain[0].Proc != null && ElectronChild.IsMatch(p.CommandLine ?? "")
+                    && path.Equals(c.RealCase(c.Long(chain[0].Proc.Path ?? "")), StringComparison.OrdinalIgnoreCase))
+                    t.Aggr("helper processes an app started from its own program (--type=)");
                 foreach (var h in hits) { t.More("module", Sideload.ModuleLine(c, h)); Sideload.Events(c, h); }
                 foreach (var m in badMods.Where(m => !hits.Any(h => h.Dll.Path.Equals(m, StringComparison.OrdinalIgnoreCase))))
-                    t.More("module", c.File(m));
+                    t.More("module", c.File(m), plainApp && m.StartsWith(Util.Folder(path) + "\\", StringComparison.OrdinalIgnoreCase) && Rules.Flags(m).Count == 0
+                                                && c.MarksOf(m).Count == 0 ? "unsigned modules in the program's own folder" : null);
                 if (mods == null) { t.More("modules", "no access"); noAccess++; }
                 var details = $"running, pid {p.Pid}" + (chain.Count > 0 && chain[0].Proc != null ? ", parent " + chain[0].Proc.Leaf : "");
                 c.Event(p.Created, "PROC", path, details, extra.Count > 0 ? extra : null, pid: p.Pid);

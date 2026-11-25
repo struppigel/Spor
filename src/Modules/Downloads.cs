@@ -21,6 +21,10 @@ namespace Spor.Modules
         // types worth listing with the whitelist on: executables, scripts, archives, disk images, Office files with macros, shortcuts
         static readonly Regex Risky = new Regex(@"\.(exe|dll|scr|com|pif|cpl|sys|msi|msp|msc|msix|appx|appinstaller|application|appref-ms|bat|cmd|ps1|psm1|vbs|vbe|js|jse|jsc|wsf|wsh|wsc|sct|hta|py|pyw|au3|a3x|ahk|jar|jnlp|lnk|url|rdp|library-ms|search-ms|settingcontent-ms|scf|iqy|slk|xll|xlam|zip|rar|7z|cab|iso|img|vhd|vhdx|tar|gz|tgz|xz|bz2|zst|lzh|arj|uue|ace|docm|dotm|xlsm|pptm|ppam|one|chm|svg|htm|html|mht|reg)$", Util.RX);
         static readonly Regex Docs = new Regex(@"\.(pdf|doc|docx|xls|xlsx|ppt|pptx|rtf|odt|txt)$", Util.RX);
+        // aggressive whitelist (Aggr): opened documents (not rtf: exploit documents), Nexus Mods archives
+        static readonly Regex WebDocs = new Regex(@"\.(pdf|doc|docx|xls|xlsx|ppt|pptx|odt|txt|csv)$", Util.RX);
+        static readonly Regex NexusMod = new Regex(@"\.(zip|rar|7z)$", Util.RX);
+        static readonly Regex NexusCdn = new Regex(@"(^|\.)nexus-cdn\.com$", Util.RX);
         Ctx c;
 
         public void Execute(Ctx ctx)
@@ -183,6 +187,7 @@ namespace Spor.Modules
             // The user is a tag of its own ("[anna] [Brave]"), never inside the browser's brackets.
             var dlt = new Table("@time", "[user", "[browser", "!status", "<flags", "*file");
             var keptSeen = new HashSet<string>(Util.IC);
+            var dlSeen = new HashSet<string>(Util.IC);   // aggressive: the same file from the same host again
             foreach (var r in rows.OrderBy(r => r.T))
             {
                 if (r.Fl.Contains(KeptFlag))
@@ -197,6 +202,12 @@ namespace Spor.Modules
                 var fl = Rules.Flags(r.Path).Concat(r.Fl).Distinct().ToList();
                 var f = c.F(r.Path);
                 dlt.Add(Log.T(r.T), c.MultiUser ? r.User : null, r.Browser, f.Status, Rules.FlagCol(fl), f.Path);
+                if (Aggr.On && fl.Count == 0)
+                {
+                    if (!dlSeen.Add(r.Path + "|" + Host(r.Url))) dlt.Aggr("the same file downloaded again from the same host");
+                    else if (NexusMod.IsMatch(r.Path) && NexusCdn.IsMatch(HostOnly(r.Url) ?? "")) dlt.Aggr("mod archives from Nexus Mods (nexus-cdn.com)");
+                }
+                else if (Aggr.On) dlSeen.Add(r.Path + "|" + Host(r.Url));
                 dlt.More("from", LongUrl(r.Url));
                 if (!string.IsNullOrEmpty(r.Page) && r.Page != r.Url) dlt.More("page", LongUrl(r.Page));
                 // the URLs on sub-lines (they make the line too long); the page only when it is not the download URL itself
@@ -370,6 +381,12 @@ namespace Spor.Modules
                 var n = batch.TryGetValue(BatchKey(r.T, r.User), out var bn) ? bn : 0;
                 var note = n > 0 ? $"WebCache batch of {n} entries, not the open time" : "-";
                 wct.Add(Log.T(r.T), r.User, f.Status, note, Rules.FlagCol(Rules.Flags(r.Path)), f.Path);
+                if (Aggr.On && Rules.Flags(r.Path).Count == 0)
+                {
+                    if (WebDocs.IsMatch(r.Path) && !Risky.IsMatch(r.Path)) wct.Aggr("documents opened (pdf, Office, text)");
+                    else if (n > 0 && rows.Any(o => o.Path.Equals(r.Path, StringComparison.OrdinalIgnoreCase) && !batch.ContainsKey(BatchKey(o.T, o.User))))
+                        wct.Aggr("WebCache batch entries of files listed with their own open time");
+                }
                 if (!(Risky.IsMatch(r.Path) || !Rules.Whitelist)) continue;
                 // a batch time only when the file has no real open time of its own
                 if (n > 0 && rows.Any(o => o.Path.Equals(r.Path, StringComparison.OrdinalIgnoreCase) && !batch.ContainsKey(BatchKey(o.T, o.User)))) continue;

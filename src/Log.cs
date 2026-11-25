@@ -106,6 +106,11 @@ namespace Spor
     {
         readonly string[] cols;
         readonly List<(string[] F, List<string> More)> rows = new List<(string[], List<string>)>();
+        readonly Dictionary<int, string> aggr = new Dictionary<int, string>();   // row index -> why -aggressive hides it
+        readonly Dictionary<(int Row, int More), string> aggrMore = new Dictionary<(int, int), string>();   // sub-lines -aggressive hides
+
+        /// <summary>Hidden by -aggressive per reason, in first-seen order (WriteTo adds them up).</summary>
+        public readonly Dictionary<string, int> AggrHidden = new Dictionary<string, int>();
 
         public Table(params string[] columns) { cols = columns; }
         public int Count => rows.Count;
@@ -117,10 +122,56 @@ namespace Spor
             rows.Add((r, new List<string>()));
         }
 
-        /// <summary>Continuation line for the last record: "    key: value".</summary>
-        public void More(string key, string value)
+        /// <summary>
+        /// The last record is noise the aggressive whitelist hides (Aggr): with -aggressive it is counted under `why` instead of
+        /// written (with its sub-lines), else written with Aggr.Mark at the end of its first line. A record with a flag other than
+        /// !lolbin is never marked (safety net).
+        /// </summary>
+        public void Aggr(string why) => AggrAt(rows.Count - 1, why);
+
+        /// <summary>Aggr for the record at `index` (0 = the first one added).</summary>
+        public void AggrAt(int index, string why)
         {
-            if (rows.Count > 0 && !string.IsNullOrEmpty(value)) rows[rows.Count - 1].More.Add(key + ": " + Util.Clip(value));
+            if (!global::Spor.Aggr.On || index < 0 || index >= rows.Count || string.IsNullOrEmpty(why)) return;
+            var f = rows[index].F;
+            for (int i = 0; i < cols.Length; i++)
+                if (Role(cols[i]) == '<' && !global::Spor.Aggr.Harmless(global::Spor.Aggr.FlagsOf(f[i]))) return;
+            aggr[index] = why;
+        }
+
+        /// <summary>True if the last record is marked for the aggressive whitelist.</summary>
+        public bool LastMarked => rows.Count > 0 && aggr.ContainsKey(rows.Count - 1);
+
+        /// <summary>True if the last record has sub-lines and -aggressive hides all of them.</summary>
+        public bool LastMoreAllMarked
+        {
+            get
+            {
+                if (rows.Count == 0) return false;
+                int r = rows.Count - 1, n = rows[r].More.Count;
+                return n > 0 && Enumerable.Range(0, n).All(i => aggrMore.ContainsKey((r, i)));
+            }
+        }
+
+        /// <summary>Continuation line for the last record: "    key: value".</summary>
+        public void More(string key, string value) => More(key, value, null);
+
+        /// <summary>Continuation line for the record at `index` (0 = the first one added).</summary>
+        public void MoreAt(int index, string key, string value)
+        {
+            if (index >= 0 && index < rows.Count && !string.IsNullOrEmpty(value)) rows[index].More.Add(key + ": " + Util.Clip(value));
+        }
+
+        /// <summary>
+        /// Continuation line for the last record; why != null: the aggressive whitelist hides it (see Aggr). The caller checks the
+        /// line's flags (a sub-line has no flags column).
+        /// </summary>
+        public void More(string key, string value, string why)
+        {
+            if (rows.Count == 0 || string.IsNullOrEmpty(value)) return;
+            var l = rows[rows.Count - 1].More;
+            l.Add(key + ": " + Util.Clip(value));
+            if (!string.IsNullOrEmpty(why) && global::Spor.Aggr.On) aggrMore[(rows.Count - 1, l.Count - 1)] = why;
         }
 
         static char Role(string c) => "@[*>!<=".IndexOf(c[0]) >= 0 ? c[0] : ' ';
@@ -171,13 +222,28 @@ namespace Spor
         public void WriteTo(Log log, string none = null)
         {
             if (rows.Count == 0) { log.None(none); return; }
-            log.Comment("line: " + Format());
-            log.W();   // explanations above, data below
-            foreach (var r in rows)
+            bool hide = global::Spor.Aggr.Hide;
+            AggrHidden.Clear();
+            void Count(string why) => AggrHidden[why] = (AggrHidden.TryGetValue(why, out var n) ? n : 0) + 1;
+            if (!hide || aggr.Count < rows.Count)
             {
-                log.W(Line(r.F));
-                foreach (var m in r.More) log.W("    " + m);
+                log.Comment("line: " + Format());
+                log.W();   // explanations above, data below
             }
+            for (int i = 0; i < rows.Count; i++)
+            {
+                bool marked = aggr.TryGetValue(i, out var why);
+                if (marked && hide) { Count(why); continue; }
+                var r = rows[i];
+                log.W(Line(r.F) + (marked ? global::Spor.Aggr.Mark : ""));
+                for (int j = 0; j < r.More.Count; j++)
+                {
+                    bool mm = aggrMore.TryGetValue((i, j), out var mw);
+                    if (mm && hide) { Count(mw); continue; }
+                    log.W("    " + r.More[j] + (mm && !marked ? global::Spor.Aggr.Mark : ""));
+                }
+            }
+            if (global::Spor.Aggr.Comment(AggrHidden) is string c) log.Comment(c);
         }
     }
 }

@@ -133,6 +133,22 @@ namespace Spor.Modules
             return b;
         }
 
+        /// <summary>
+        /// Aggressive whitelist: an entry without path is the same file as one with a path - the same name (not a random one) and
+        /// SHA1 - that passes the trust rule (Windows / Program Files, valid signature, no LOLBin or interpreter: PavinLoader runs
+        /// renamed copies of the real MSBuild, whose SHA1 matches Microsoft's).
+        /// </summary>
+        bool SameTrustedFile(string name, List<string> paths)
+        {
+            if (string.IsNullOrEmpty(name) || Names.IsRandom(name) || Rules.CopiedLolbin(name) || Rules.Lol.IsMatch("\\" + name) || Rules.Interpreter.IsMatch("\\" + name))
+                return false;
+            try
+            {
+                return paths.Any(p => Util.Leaf(p).Equals(name, StringComparison.OrdinalIgnoreCase) && File.Exists(p) && c.TrustedFile(p) && c.LolbinCopy(p) == null);
+            }
+            catch { return false; }
+        }
+
         /// <summary>2 = show, 1 = known noise (counted), 0 = trusted (ignored)</summary>
         int Hot(string p, bool check = false)
         {
@@ -165,12 +181,14 @@ namespace Spor.Modules
             var o = c.Opt;
             var fb = Batch(files); var db = Batch(drv);
             var bySha = new Dictionary<string, string>(Util.IC);
+            var pathsBySha = new Dictionary<string, List<string>>(Util.IC);   // aggressive whitelist: every path entry of a SHA1
             var win = new Dictionary<string, List<DateTime>>(Util.IC);
             int nopath = 0;
             foreach (var e in files)
             {
                 var p = Pth(e); if (p.Length == 0) { nopath++; continue; }
                 var h = Sha(e.G("FileId")); if (h.Length > 0) bySha[h] = p;
+                if (h.Length > 0 && Aggr.On) { if (!pathsBySha.TryGetValue(h, out var ps)) pathsBySha[h] = ps = new List<string>(); ps.Add(p); }
                 var m = Sys.Match(p);
                 if (m.Success) { if (!win.TryGetValue(m.Groups[2].Value, out var l)) win[m.Groups[2].Value] = l = new List<DateTime>(); l.Add(e.Time); }
             }
@@ -298,6 +316,8 @@ namespace Spor.Modules
             {
                 nt.Add(Log.T(x.T), Rules.FlagCol(x.F), x.Sha.ToUpperInvariant(), Rules.Fix(x.I), string.Join(", ", new[] { x.D, x.K }.Where(v => !string.IsNullOrEmpty(v))));
                 if (Rules.Strong(x.F).Count > 0) c.Find(x.T, Rules.Fix(x.I), "Amcache entry without path; entry written", x.F);
+                else if (Aggr.On && x.F.Count == 0 && string.IsNullOrEmpty(x.K) && pathsBySha.TryGetValue(x.Sha, out var same) && SameTrustedFile(x.I, same))
+                    nt.Aggr("entries of a file Amcache also recorded with its path in a trusted location (same name and SHA1)");
             }
             nt.WriteTo(c.Out);
             c.Out.Sub("Inventory scans (not in the timeline)");

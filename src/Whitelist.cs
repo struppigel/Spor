@@ -16,8 +16,8 @@ namespace Spor
 
         /// <summary>The module noise lists (scope "noise:&lt;module&gt;").</summary>
         public static readonly string[] NoiseModules = { "prefetch", "amcache", "exec", "files" };
-        static readonly string[] RegexScopes = { "staging", "script-noise", "breadcrumb" };
-        static readonly string[] NameScopes = { "skip-dir", "stale-task", "locked-task" };
+        static readonly string[] RegexScopes = { "staging", "script-noise", "breadcrumb", "aggr:staging" };
+        static readonly string[] NameScopes = { "skip-dir", "stale-task", "locked-task", "aggr:pair" };
 
         /// <summary>A parsed whitelist file: the values of each scope, in file order.</summary>
         internal sealed class Data
@@ -57,6 +57,12 @@ namespace Spor
                     new Regex(value, Util.RX);   // throws ArgumentException on a bad pattern
                 if (scope.Equals("stale-task", StringComparison.OrdinalIgnoreCase) && StaleTask(value).Program == null)
                     throw new FormatException($"whitelist line {no}: stale-task needs 'task => program'");
+                if (scope.Equals("aggr:pair", StringComparison.OrdinalIgnoreCase))
+                {
+                    var (rx, signer) = StaleTask(value);
+                    if (signer == null) throw new FormatException($"whitelist line {no}: aggr:pair needs 'regex => signer'");
+                    new Regex(rx, Util.RX);
+                }
                 if (!d.Scopes.TryGetValue(scope, out var l)) d.Scopes[scope] = l = new List<string>();
                 l.Add(value);
             }
@@ -88,6 +94,15 @@ namespace Spor
         public static Regex ScriptNoise => scriptNoise ?? (scriptNoise = new Regex(Joined(D, "script-noise"), Util.RX));
         /// <summary>NEW FILES: folders of empty marker files.</summary>
         public static Regex Breadcrumb => breadcrumb ?? (breadcrumb = new Regex(Joined(D, "breadcrumb"), Util.RX));
+
+        static Regex aggrStaging;
+        /// <summary>Aggressive whitelist: more updater staging folders (NETWORK), against the path without its drive.</summary>
+        public static Regex AggrStaging => aggrStaging ?? (aggrStaging = new Regex(Joined(D, "aggr:staging"), Util.RX));
+
+        static List<(Regex Folder, string Signer)> aggrPairs;
+        /// <summary>Aggressive whitelist: per-user app folders (path without its drive) and the one signer of their programs.</summary>
+        public static List<(Regex Folder, string Signer)> AggrPairs =>
+            aggrPairs ?? (aggrPairs = D.Of("aggr:pair").Select(StaleTask).Select(x => (new Regex(x.Task, Util.RX), x.Program)).ToList());
 
         static HashSet<string> skipDirs, lockedTasks;
         static Dictionary<string, string> staleTasks;
