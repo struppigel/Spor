@@ -18,7 +18,7 @@ namespace Spor.Modules
         public string Name => "NEW FILES";
         public string Description => "executables, scripts and archives created recently, with download origin";
 
-        internal static readonly Regex Exec = new Regex(@"\.(exe|dll|scr|com|pif|cpl|sys|ocx|drv|efi|msi|msp|msc|jar|jnlp|xll|xlam|docm|dotm|xlsm|pptm|ppam|appx|msix|appinstaller|application|appref-ms|rdp|library-ms|search-ms|settingcontent-ms|scf|iqy|slk)$", Util.RX);
+        internal static readonly Regex Exec = new Regex(@"\.(exe|dll|node|scr|com|pif|cpl|sys|ocx|drv|efi|msi|msp|msc|jar|jnlp|xll|xlam|docm|dotm|xlsm|pptm|ppam|appx|msix|appinstaller|application|appref-ms|rdp|library-ms|search-ms|settingcontent-ms|scf|iqy|slk)$", Util.RX);
         // scripts: up to 3 folder levels deep (loaders use e.g. AppData\Roaming\x\y\run.vbs), except where scripts are normal
         internal static readonly Regex Script = new Regex(@"\.(bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|jsc|wsf|wsh|wsc|sct|hta|py|pyw|au3|a3x|ahk)$", Util.RX);
         static readonly Regex Shortcut = new Regex(@"\.(lnk|url)$", Util.RX);
@@ -66,6 +66,29 @@ namespace Spor.Modules
         Ctx c;
         Regex noise;
 
+        /// <summary>Folders right below System32 / SysWOW64 created in the time window (NEW FILES reads them).</summary>
+        readonly HashSet<string> newWinDirs = new HashSet<string>(Util.IC);
+
+        public const string NewInWindowsFlag = "!new-in-windows";
+
+        /// <summary>A file inside one of the new folders below System32 / SysWOW64.</summary>
+        bool InNewWindowsFolder(string p) => newWinDirs.Any(d => p.StartsWith(d + "\\", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// A file of Windows itself: a type that carries a signature, validly signed by Microsoft. Not SignedOk: that is also true for
+        /// types without a signature (.node, .js) and for any publisher (OpenJS signs node.exe).
+        /// </summary>
+        internal static bool WindowsSigned(string p)
+        {
+            try
+            {
+                if (!Signature.Applies(p) || !File.Exists(p)) return false;
+                var s = Signature.Check(p);
+                return s.Valid && (s.Signer ?? "").StartsWith("Microsoft", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
         public void Execute(Ctx ctx)
         {
             c = ctx; noise = Rules.Noise(Whitelist.Noise("files"));
@@ -81,6 +104,16 @@ namespace Spor.Modules
             roots.Add((Path.Combine(c.WinDir, "Temp"), true));
             roots.Add((Ctx.Env("ProgramData"), false));
             roots.Add((Ctx.Env("PUBLIC"), true));
+            // what Windows runs after a reset (C:\Recovery\OEM), and folders new in the time window right below System32 / SysWOW64:
+            // malware stages there as SYSTEM (WEEVILPROXY: System32\<task name>\node.exe and its .node addons)
+            roots.Add((Path.Combine(c.SystemDrive + "\\", @"Recovery\OEM"), false));
+            foreach (var sys in new[] { "System32", "SysWOW64" })
+                try
+                {
+                    foreach (var d in new DirectoryInfo(Path.Combine(c.WinDir, sys)).GetDirectories())
+                        if (d.CreationTimeUtc >= c.Since && (d.Attributes & FileAttributes.ReparsePoint) == 0) { roots.Add((d.FullName, false)); newWinDirs.Add(d.FullName); }
+                }
+                catch { }
 
             var seen = new HashSet<string>(Util.IC);
             var found = new List<(FileInfo F, bool Arch)>();
@@ -145,6 +178,8 @@ namespace Spor.Modules
                             qk[k] = qk.TryGetValue(k, out var n) ? n + 1 : 1;
                             continue;
                         }
+                        // a new folder below System32: a Windows update's files are validly signed (hidden); the rest is evidence
+                        if (Rules.Whitelist && InNewWindowsFolder(it.FullName) && WindowsSigned(it.FullName)) continue;
                         found.Add(((FileInfo)it, isArch));
                     }
                 }
@@ -154,6 +189,7 @@ namespace Spor.Modules
             int per = c.Opt.PerDir, withUrl = 0;
             // folders with a new program: padding next to one (same folder or the folder above) is a strong sign
             var programDirs = new HashSet<string>(found.Where(f => Exec.IsMatch(f.F.Name)).Select(f => f.F.DirectoryName), Util.IC);
+            var byRoot = new List<NewFile>();   // the files with their checks done, written per install root below
             foreach (var g in found.GroupBy(f => f.F.DirectoryName, Util.IC))
             {
                 var all = g.OrderBy(f => f.F.CreationTimeUtc).Select(f => new NewFile { F = f.F, Zone = Ads.Origin(f.F.FullName) }).ToList();
@@ -162,6 +198,8 @@ namespace Spor.Modules
                 if (Rules.DropLocation(g.Key + @"\x")) SideLoading(g.Key, all);
                 foreach (var f in all)
                     if (Names.RenamedDetail(c, f.F.FullName) is string renamed) { f.Flags.Add(Names.RenamedFlag); f.Details.Add(renamed); }
+                foreach (var f in all.Where(f => InNewWindowsFolder(f.F.FullName) && !WindowsSigned(f.F.FullName)))
+                    f.Flags.Add(NewInWindowsFlag);   // not Windows' own (also node.exe signed by OpenJS, .node, .js), in a folder new below System32
                 foreach (var f in all.Where(f => padded.ContainsKey(f.F.FullName)))
                 {
                     // the flag on programs and on data next to a new program; else only the detail (a big download can be padded too)
@@ -170,10 +208,19 @@ namespace Spor.Modules
                     var parent = Path.GetDirectoryName(g.Key);
                     if (Exec.IsMatch(f.F.Name) || programDirs.Contains(g.Key) || (parent != null && programDirs.Contains(parent))) f.Flags.Add(Padded.Flag);
                 }
+                byRoot.AddRange(all);
+            }
+            // lines per install root (an update unpacks into dozens of subfolders: one line for all of them, not one per folder)
+            foreach (var g in byRoot.GroupBy(f => InstallRoot(f.F.FullName), Util.IC))
+            {
+                var all = g.OrderBy(f => f.F.CreationTimeUtc).ToList();
                 // a file with a strong flag or a hint (from its name or from the checks above) always gets its own line
                 var flagged = all.Where(f => Rules.Strong(Rules.Flags(f.F.FullName)).Count > 0 || f.Flags.Count > 0).ToList();
                 var rest = all.Except(flagged).ToList();
-                var single = rest.Count <= per ? rest : rest.Where(f => f.HasUrl || f.Padded).ToList();   // every download and padded file keeps its own line
+                // a well-known publisher's validly signed files (an update of an installed program): only their names, never their own line
+                var signedByKnown = Rules.Whitelist ? rest.Where(f => !f.HasUrl && !f.Padded && c.ByTrustedSigner(f.F.FullName)).ToList() : new List<NewFile>();
+                var open = rest.Except(signedByKnown).ToList();
+                var single = open.Count <= per ? open : open.Where(f => f.HasUrl || f.Padded).ToList();   // every download and padded file keeps its own line
                 foreach (var f in flagged.Concat(single))
                 {
                     if (f.HasUrl) withUrl++;
@@ -186,8 +233,11 @@ namespace Spor.Modules
                 {
                     var names = others.Select(f => f.F.Name).ToList();
                     var ordered = names.Where(n => n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)).Concat(names).Distinct(Util.IC);   // programs first
+                    var folders = others.Select(f => f.F.DirectoryName).Distinct(Util.IC).Count();
+                    var known = signedByKnown.Count > 0 ? $", {signedByKnown.Count} validly signed by a well-known publisher" : "";
                     // the names on files: sub-lines (an installer unpacks hundreds)
-                    c.Event(others[0].F.CreationTimeUtc, "NEW", null, text: $"{c.RealCase(g.Key)}\\ => {others.Count} new files",
+                    c.Event(others[0].F.CreationTimeUtc, "NEW", null,
+                            text: $"{c.RealCase(g.Key)}\\ => {others.Count} new files" + (folders > 1 ? $" in {folders} folders" : "") + known,
                             more: Log.Chunks(ordered).Select(p => ("files", p)).ToList());
                 }
             }
@@ -221,8 +271,9 @@ namespace Spor.Modules
                 }
                 foreach (var b in cand)
                 {
-                    // the line's time is the NTFS change time (when the times were set)
+                    // the line's time is the NTFS change time (when the times were set); TIMESTOMPING lists the file too
                     c.Event(b.Ch, "STP", b.F.FullName, Timestomp.StpDetail(b.F.CreationTimeUtc, b.F.LastWriteTimeUtc), new List<string> { "!timestomped" });
+                    c.Backdated.Add((b.F.FullName, b.F.CreationTimeUtc, b.F.LastWriteTimeUtc, b.Ch));
                 }
             }
         }
@@ -231,16 +282,23 @@ namespace Spor.Modules
         /// (pure) Backdated files in batches: the same folder tree (two levels below AppData\Local|Roaming|LocalLow, ProgramData or a
         /// profile folder, else the file's folder) and change times at most 60 s apart.
         /// </summary>
+        /// <summary>
+        /// (pure) The folder tree a file was installed or unpacked into: two levels below AppData\Local|Roaming|LocalLow, ProgramData or
+        /// a profile folder, one level below Program Files, else the file's folder (C:\Users\x\AppData\Local\Kingsoft\WPS Office\...\a.dll
+        /// -> ...\AppData\Local\Kingsoft\WPS Office).
+        /// </summary>
+        internal static string InstallRoot(string p)
+        {
+            foreach (var rx in new[] { @"^(.*?\\AppData\\(Local|Roaming|LocalLow)\\[^\\]+(\\[^\\]+)?)\\", @"^([a-z]:\\ProgramData\\[^\\]+(\\[^\\]+)?)\\",
+                                       @"^([a-z]:\\Program Files( \(x86\))?\\[^\\]+)\\", @"^([a-z]:\\Users\\[^\\]+\\[^\\]+(\\[^\\]+)?)\\" })
+            { var m = Regex.Match(p ?? "", rx, Util.RX); if (m.Success) return m.Groups[1].Value; }
+            return Util.Folder(p);
+        }
+
         internal static List<List<T>> Batches<T>(IEnumerable<T> items, Func<T, string> path, Func<T, DateTime> changed)
         {
-            string Root(string p)
-            {
-                foreach (var rx in new[] { @"^(.*?\\AppData\\(Local|Roaming|LocalLow)\\[^\\]+(\\[^\\]+)?)\\", @"^([a-z]:\\ProgramData\\[^\\]+(\\[^\\]+)?)\\", @"^([a-z]:\\Users\\[^\\]+\\[^\\]+(\\[^\\]+)?)\\" })
-                { var m = Regex.Match(p, rx, Util.RX); if (m.Success) return m.Groups[1].Value; }
-                return Util.Folder(p);
-            }
             var res = new List<List<T>>();
-            foreach (var g in items.GroupBy(b => Root(path(b)), Util.IC))
+            foreach (var g in items.GroupBy(b => InstallRoot(path(b)), Util.IC))
             {
                 List<T> cur = null;
                 foreach (var b in g.OrderBy(changed))

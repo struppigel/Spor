@@ -359,6 +359,8 @@ namespace Spor.Modules
             var fl = new List<string>();
             if (f.Reason != null || (!f.ByTime && Launcher(f))) fl.Add(Autodetect.Flag);
             if (f.Files.Any(x => KeyFile.IsMatch(x.Name) && c.LolbinCopy(Path.Combine(f.Path, x.Name)) != null)) fl.Add(Rules.LolbinCopyFlag);
+            // a folder of a loader folder's group (the same seconds, the same file names) with nothing of its own: context
+            if (Rules.Strong(fl).Count == 0) fl.Add("!drop-group");
             return fl;
         }
 

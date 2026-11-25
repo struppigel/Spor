@@ -178,7 +178,26 @@ What each flag means: LOG-FORMAT.md. Flags from the file name are set wherever a
 |---|---|
 | `!lolbin`, `!double-extension`, `!in-folder-named-like-file`, `!RLO`, `!invisible-char`, `!log-syntax-in-name` | every module, from the file name |
 | `!usb-worm-lnk`, `!disguised-icon`, `!autorun`, `!hidden-system`, `!clsid-folder`, `!ads`, `!explorer-hiding` | `usb` |
-| `!renamed-lolbin`, `!unsigned`, `!outside-driver-folders` | `amcache` |
+| `!renamed-lolbin` | `amcache` |
+| `!outside-driver-folders` | `amcache`, `persistence` (driver services) |
+| `!unsigned` | `amcache` (drivers), `persistence` (auto-start services, scheduled tasks) |
+| `!renamed-persisted`, `!hidden-task`, `!new-service`, `!task-deleted`, `!startup-item` | `persistence` |
+| `!vulnerable-driver`, `!random-name` | every module, from a driver's file name (`amcache`, `persistence`, timeline) |
+| `!remote-access` | `remote`, `network` (DNS cache) |
+| `!account-change` | `accounts` |
+| `!history-deleted` | `defender` |
+| `!disk-image` | `downloads` |
+| `!upload` | `network` (SRUM) |
+| `!reset-hook`, `!reset-config` | `persistence` (Reset and setup hooks) |
+| `!new-in-windows` | `files` |
+| `!local-proxy`, `!proxy` | `network` (Proxy settings) |
+| `!root-cert`, `!custom-root`, `!settings-hidden`, `!settings-changed` | `defender` |
+| `!unpacked-extension`, `!dev-mode` | `downloads` (Browser extensions) |
+| `!drop-group` | `drops` |
+| `!invalid-signature` | every module, when a file's signature is checked (the `[Signature]` SUMMARY lines) |
+| `!interpreter-outside` | `persistence`, `processes` |
+| `!abused-tld` (hint) | `downloads` |
+| `!defender-detected`, `!in-defender-exclusion` | `defender` (on every timeline line of the file) |
 | `!lolbin-copy` | timeline, `exec` (ShimCache), `amcache`, `drops` |
 | `!timestomped` | `files`, `timestomp` |
 | `!motw-removed`, `!padded` | `files` |
@@ -191,7 +210,7 @@ What each flag means: LOG-FORMAT.md. Flags from the file name are set wherever a
 | `!from-web`, `!msi-script-action` | `software` |
 | `!com-hijack` | `persistence` |
 | `!defender-off`, `!defender-exclusion`, `!not-removed`, `!log-cleared` | `defender` |
-| `!suspicious` | `clickfix` |
+| `!suspicious` | `clickfix`, `persistence`, `processes` |
 | `!hidden-account` | `accounts` |
 
 ## Signatures

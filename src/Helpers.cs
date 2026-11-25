@@ -386,30 +386,86 @@ namespace Spor
     {
         static readonly Regex Exe = new Regex(@"^(.*?\.(exe|com|scr|bat|cmd|ps1|vbs|vbe|js|jse|wsf|hta|dll|sys|cpl|msi|lnk|jar))(\s|,|$)", Util.RX);
 
-        /// <summary>The program a command line starts: quoted path, else everything up to the first .exe/.dll/..., else the first word.</summary>
-        public static string Program(string cmd, string winDir)
+        /// <summary>Device prefixes of a path: "\??\C:\x" (registry, services), "\\?\C:\x" (long paths, some services).</summary>
+        static readonly Regex DevicePrefix = new Regex(@"^(\\\?\?\\|\\\\\?\\)(?=[A-Za-z]:\\)");
+
+        /// <summary>The folders of Windows' own PATH, where a bare program name ("powershell", "cmd.exe") is found.</summary>
+        static readonly string[] PathFolders = { "System32", "", @"System32\Wbem", @"System32\WindowsPowerShell\v1.0", @"System32\OpenSSH" };
+
+        /// <summary>
+        /// The program a command line starts: quoted path, else everything up to the first .exe/.dll/..., else (an unquoted
+        /// path with blanks, like Windows reads it) the longest part up to a blank that is a file, else everything up to the
+        /// first switch; a bare name is looked up in Windows' PATH folders, with .exe / .com when it has no extension.
+        /// </summary>
+        public static string Program(string cmd, string winDir) => Program(cmd, winDir, File.Exists);
+
+        /// <summary>(pure with a test `exists`) Program, with `exists` telling whether a file is there.</summary>
+        public static string Program(string cmd, string winDir, Func<string, bool> exists)
         {
             var s = Environment.ExpandEnvironmentVariables((cmd ?? "").Trim());
             if (s.Length == 0) return "";
             string p;
             if (s[0] == '"') { int e = s.IndexOf('"', 1); p = e > 0 ? s.Substring(1, e - 1) : s.Trim('"'); }
-            else { var m = Exe.Match(s); p = m.Success ? m.Groups[1].Value : s.Split(' ')[0]; }
-            p = Regex.Replace(p, @"^\\\?\?\\", "");
+            else { var m = Exe.Match(s); p = m.Success ? m.Groups[1].Value : Unquoted(DevicePrefix.Replace(s, ""), exists); }
+            p = DevicePrefix.Replace(p, "");
             if (p.StartsWith(@"\SystemRoot\", StringComparison.OrdinalIgnoreCase)) p = winDir + p.Substring(11);
             else if (p.StartsWith(@"System32\", StringComparison.OrdinalIgnoreCase) || p.StartsWith(@"SysWOW64\", StringComparison.OrdinalIgnoreCase)) p = Path.Combine(winDir, p);
-            else if (!p.Contains("\\") && Regex.IsMatch(p, @"\.(exe|com)$", Util.RX) && File.Exists(Path.Combine(winDir, "System32", p))) p = Path.Combine(winDir, "System32", p);
+            else if (!p.Contains("\\") && !p.Contains("/") && p.Length > 0) p = OnPath(p, winDir, exists) ?? p;
             return p;
         }
 
-        /// <summary>The arguments after the program in a command line.</summary>
-        public static string Args(string cmd)
+        /// <summary>A bare program name in Windows' PATH folders ("powershell" -> ...\WindowsPowerShell\v1.0\powershell.exe), or null.</summary>
+        static string OnPath(string name, string winDir, Func<string, bool> exists)
+        {
+            var names = Regex.IsMatch(name, @"\.[A-Za-z0-9]{1,4}$") ? new[] { name } : new[] { name + ".exe", name + ".com" };
+            if (names.Length == 1 && !Regex.IsMatch(name, @"\.(exe|com)$", Util.RX)) return null;
+            foreach (var folder in PathFolders)
+                foreach (var n in names)
+                {
+                    var full = Path.Combine(winDir, folder, n);
+                    if (exists(full)) return full;
+                }
+            return null;
+        }
+
+        /// <summary>
+        /// An unquoted command without a known extension: a drive path with blanks is cut where Windows would find the file
+        /// (the longest part up to a blank that exists, also with .exe); when none does (the file is gone), up to the first
+        /// switch (" -x", " /x"), never at the first blank ("C:\Program"). Anything else: its first word.
+        /// </summary>
+        static string Unquoted(string s, Func<string, bool> exists) => UnquotedPart(s, exists).Path;
+
+        /// <summary>Unquoted, and how many characters of `s` the program takes (Windows adds ".exe": "C:\x\bar arg" -> C:\x\bar.exe, 8).</summary>
+        static (string Path, int Length) UnquotedPart(string s, Func<string, bool> exists)
+        {
+            if (!Regex.IsMatch(s, @"^[A-Za-z]:\\") || !s.Contains(" ")) { var w = s.Split(' ')[0]; return (w, w.Length); }
+            string found = null; int len = 0;
+            for (int i = s.IndexOf(' '); ; i = s.IndexOf(' ', i + 1))
+            {
+                var part = i < 0 ? s : s.Substring(0, i);
+                if (exists(part)) { found = part; len = part.Length; }
+                else if (exists(part + ".exe")) { found = part + ".exe"; len = part.Length; }
+                if (i < 0) break;
+            }
+            if (found != null) return (found, len);
+            var sw = Regex.Match(s, @"\s+[-/][A-Za-z]");
+            var p = (sw.Success ? s.Substring(0, sw.Index) : s).TrimEnd();
+            return (p, p.Length);
+        }
+
+        /// <summary>The arguments after the program in a command line (the program cut as Program cuts it).</summary>
+        public static string Args(string cmd) => Args(cmd, File.Exists);
+
+        /// <summary>(pure with a test `exists`) Args.</summary>
+        public static string Args(string cmd, Func<string, bool> exists)
         {
             var s = Environment.ExpandEnvironmentVariables((cmd ?? "").Trim());
             if (s.StartsWith("\"")) { int e = s.IndexOf('"', 1); return e > 0 ? s.Substring(e + 1).Trim() : ""; }
             var m = Exe.Match(s);
             if (m.Success) return s.Substring(m.Groups[1].Length).Trim();
-            int sp = s.IndexOf(' ');
-            return sp > 0 ? s.Substring(sp + 1).Trim() : "";
+            var bare = DevicePrefix.Replace(s, "");
+            var len = UnquotedPart(bare, exists).Length;
+            return bare.Length > len ? bare.Substring(len).Trim() : "";
         }
 
         /// <summary>Exact size in bytes, not rounded, so logs can be compared.</summary>

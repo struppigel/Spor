@@ -22,11 +22,11 @@ namespace Spor.Modules
         public string Description => "Run dialog, Explorer address bar, PowerShell history";
 
         // command interpreters, download/execute patterns, URLs, WebDAV/public-IP UNC paths, captcha/verification text
-        static readonly Regex Sus = new Regex(@"powershell|pwsh|mshta|curl|wget|bitsadmin|certutil|msiexec|rundll32|regsvr32|wscript|cscript|conhost|forfiles|cmd(\.exe)?[""' ]+/[ck]|\b(iwr|irm|iex)\b|invoke-(webrequest|restmethod|expression)|downloadstring|downloadfile|frombase64|\s-e(nc|ncodedcommand)?\s+[a-z0-9+/=]{20}|https?://|\\\\[^\\\s]+@(ssl|\d+)|davwwwroot|\\\\(?!(10|127)\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)\d{1,3}(\.\d{1,3}){3}\\|captcha|verif|robot|human|ray id|cloudflare|(\w\^){3,}", Util.RX);
+        static readonly Regex Sus = new Regex(@"powershell|pwsh|mshta|curl|wget|bitsadmin|certutil|msiexec|rundll32|regsvr32|wscript|cscript|conhost|forfiles|cmd(\.exe)?[""' ]+/[ck]|\b(iwr|irm|iex)\b|invoke-(webrequest|restmethod|expression)|downloadstring|downloadfile|frombase64|\s-e(nc|ncodedcommand)?\s+[a-z0-9+/=]{20}|https?://(?!(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?:[:/]|$))|\\\\[^\\\s]+@(ssl|\d+)|davwwwroot|\\\\(?!(10|127)\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)\d{1,3}(\.\d{1,3}){3}\\|captcha|verif|robot|human|ray id|cloudflare|(\w\^){3,}", Util.RX);
 
         // PowerShell history: commands that download or run code, and common obfuscation (backticks in words, 'a'+'b', [char] codes,
         // reversed strings, gcm i*x, $pshome[4], any -EncodedCommand spelling, long Base64)
-        static readonly Regex PsSus = new Regex(@"(?<![|(])\b(iex|irm|iwr)\b(?![|)])|invoke-(webrequest|restmethod|expression)|\.download(string|file|data)\s*\(|frombase64string\s*\(|net\.webclient|start-bitstransfer\s|\bbitsadmin(\.exe)?\s+/|certutil(\.exe)?\s.*-urlcache|\bmshta(\.exe)?\s+\S|(add|set)-mppreference|(curl|wget)(\.exe)?\s.*https?://|(^|\s)[/\p{Pd}]e[a-z]{0,13}\s+['""]?[a-z0-9+/=]{20}|(^|\s)[/\p{Pd}]w[a-z]{0,10}\s+h[a-z]*\b|\w`\w[^`]*\w`\w|['""][^'""\s]{1,8}['""]\s*\+\s*['""][^'""\s]{1,8}['""]|(\[char\]\s*(0x)?[0-9a-f]+.*){3}|\[\s*-1\s*\.\.\s*-?\d|\b(gcm|get-command|gal|get-alias)\s+[^\s|;]*\*|\$(env:\w+|pshome|shellid)\s*\[\s*\d|\$verbosepreference\.tostring\(\)\s*\[|\$executioncontext\.invokecommand|\[scriptblock\]::create|[a-z0-9+/]{100,}", Util.RX);
+        static Regex PsSus => Rules.PsSus;
 
         // TypedPaths: things a typed path never contains (FileFix pads the command with spaces and hides it behind a # fake path)
         static readonly Regex Shape = new Regex(@"[""|`]|\$\(|\s{4,}|\s#|\s[/\p{Pd}][a-z]", Util.RX);
@@ -56,7 +56,8 @@ namespace Spor.Modules
                             c.Observe("cmd", v, n == 1 ? t : null, "Run dialog " + c.U(h.User) + v);
                             rt.Add(n == 1 ? Log.T(t) : "-", h.User, n.ToString(), sus ? "!suspicious" : "-", v);
                             if (n == 1) c.Event(t, "RUN", null, text: c.U(h.User) + "Run dialog: " + v, flags: sus ? new List<string> { "!suspicious" } : null);
-                            if (sus) c.Find(n == 1 ? t : null, "Run dialog " + c.U(h.User) + v, n == 1 ? "typed" : null);
+                            // the newest entry in the time window is in the SUMMARY through its timeline line; the others here
+                            if (sus && (n != 1 || !(t >= c.Since))) c.Find(n == 1 ? t : null, "Run dialog " + c.U(h.User) + v, null, new List<string> { "!suspicious" });
                         }
                     }
                 }
@@ -82,11 +83,12 @@ namespace Spor.Modules
                         {
                             var v = Convert.ToString(k.GetValue(n)) ?? "";
                             bool s = Sus.IsMatch(v) || Shape.IsMatch(v);
-                            if (s) { bad++; c.Find(n == "url1" ? t : null, "Explorer address bar " + c.U(h.User) + v, n == "url1" ? "typed" : null); }
+                            if (s) { bad++; c.Find(n == "url1" ? t : null, "Explorer address bar " + c.U(h.User) + v, null, new List<string> { "!suspicious" }); }
                             if (s || !Rules.Whitelist) at.Add(n == "url1" ? Log.T(t) : "-", h.User, n, s ? "!suspicious" : "-", v);
                         }
                         if (all.Count > 0) counts.Add($"{h.User}: {all.Count} entries, {bad} suspicious");
-                        if (bad > 0) c.Event(t, "ADR", null, text: c.U(h.User) + "Explorer address bar: newest entry typed", flags: new List<string> { "!suspicious" });
+                        // the suspicious entries are SUMMARY lines of their own (with the text): the timeline line without the flag
+                        if (bad > 0) c.Event(t, "ADR", null, text: c.U(h.User) + "Explorer address bar: newest entry typed");
                     }
                 }
                 catch (Exception e) { c.Err.Add("TypedPaths " + h.User + ": " + e.Message); }
@@ -115,7 +117,10 @@ namespace Spor.Modules
                             "All suspicious lines, then the last " + tail + " lines. PowerShell never saves lines with password/token/apikey/secret,\n" +
                             "so attackers can keep a pasted command out: an empty or harmless history does not prove nothing was pasted.");
                         c.Event(t, "PSH", null, text: $"{c.U(p.User)}PowerShell history {Path.GetFileName(f)} written ({hits.Count} suspicious lines of {lines.Count})");
-                        if (hits.Count > 0) c.Find(t, $"PowerShell history {c.U(p.User)}{Path.GetFileName(f)}: {hits.Count} suspicious lines", "file written");
+                        // the SUMMARY line with the suspicious commands themselves (the first few) on command: sub-lines
+                        if (hits.Count > 0)
+                            c.Find(t, $"PowerShell history {c.U(p.User)}{Path.GetFileName(f)}", $"{hits.Count} suspicious lines", new List<string> { "!suspicious" },
+                                   hits.Take(5).Select(i => ("command", Rules.Fix(Util.Clip(lines[i].Trim(), 200)))).ToList());
                         var ht = new Table("@line", "[part", "<flags", "*command");
                         foreach (var i in hits) ht.Add((i + 1).ToString(), "suspicious", "!suspicious", lines[i].Trim());
                         for (int i = Math.Max(0, lines.Count - tail); i < lines.Count; i++)

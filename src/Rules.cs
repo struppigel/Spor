@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -134,7 +135,7 @@ namespace Spor
 
         /// <summary>Double extension, harmless then executable (name.pdf.exe, also padded with spaces).</summary>
         public static readonly Regex Dbl = new Regex(
-            @"\.(PDF|DOCX?|DOTX?|XLSX?|XLSM|PPTX?|TXT|RTF|ODT|CSV|JPE?G|PNG|GIF|BMP|ICO|MP[34]|AVI|MKV|MOV|WAV|HTML?|INI|LOG)\s*\.(EXE|SCR|COM|BAT|CMD|PS1|VBS|VBE|JSE?|JSC|WSF|WSH|HTA|LNK|MSI|MSP|PIF|CPL|DLL|JAR|SCT|CHM|ISO|IMG)$", O);
+            @"\.(PDF|DOCX?|DOTX?|XLSX?|XLSM|PPTX?|TXT|RTF|ODT|CSV|JPE?G|PNG|GIF|BMP|ICO|MP[34]|AVI|MKV|MOV|WAV|HTML?|INI|LOG)\s*\.(EXE|SCR|COM|BAT|CMD|PS1|VBS|VBE|JSE?|JSC|WSF|WSH|HTA|LNK|MSI|MSP|PIF|CPL|JAR|SCT|CHM|ISO|IMG)$", O);   // not DLL: nobody double-clicks one (Windows.Data.Pdf.dll, Dapplo.Log.dll)
 
         /// <summary>Folders where Windows and Office name shortcuts after the file they open (report.pdf.lnk), and the Start Menu.</summary>
         public static readonly Regex LnkNormal = new Regex(@"\\MICROSOFT\\(WINDOWS|OFFICE)\\RECENT\\|\\START MENU\\", O);
@@ -180,6 +181,50 @@ namespace Spor
         static string publishersSource;
         public const string PublishersFile = "Spor.publishers.txt";
 
+        /// <summary>Known vulnerable signed kernel drivers by file name (resources/vulndrivers.txt; Spor.vulndrivers.txt next to Spor.exe overrides).</summary>
+        public static HashSet<string> VulnerableDrivers => vulnerable ?? (vulnerable = Util.DataFile(VulnerableDriversFile, ParsePublishers, out _));
+        static HashSet<string> vulnerable;
+        public const string VulnerableDriversFile = "Spor.vulndrivers.txt";
+        public const string VulnerableDriverFlag = "!vulnerable-driver";
+        public const string RandomNameFlag = "!random-name";
+
+        /// <summary>(pure) A file in a program's install folder: Program Files (x86) or a folder in ProgramData (C:\ProgramData\Vendor\...).</summary>
+        public static bool InInstallFolder(string p)
+        {
+            var m = Regex.Match(p ?? "", @"^[a-z]:\\(Program Files( \(x86\))?|ProgramData)\\([^\\]+)\\", O);
+            // a vendor's folder, not a random-looking one malware made (C:\ProgramData\kfjqzx\)
+            return m.Success && !Names.IsRandom(m.Groups[3].Value) && !RandomLowerName(m.Groups[3].Value.ToLowerInvariant());
+        }
+
+        /// <summary>(pure) A driver file that is a known vulnerable one (by name) or has a random-looking name (ksllxnqs.sys).</summary>
+        internal static List<string> DriverFlags(string p, HashSet<string> vulnerableNames)
+        {
+            var f = new List<string>();
+            if (string.IsNullOrEmpty(p) || !p.EndsWith(".sys", System.StringComparison.OrdinalIgnoreCase)) return f;
+            var name = p.Substring(p.LastIndexOf('\\') + 1);
+            if (vulnerableNames != null && vulnerableNames.Contains(name)) f.Add(VulnerableDriverFlag);
+            // not Names.IsRandom: driver names are short codes with digits (rt640x64, e1d68x64, b57nd60a) that it takes for random
+            if (RandomLowerName(System.IO.Path.GetFileNameWithoutExtension(name))) f.Add(RandomNameFlag);
+            return f;
+        }
+
+        /// <summary>Letter pairs no real (English or technical) name has; q only before u.</summary>
+        static readonly Regex RareBigram = new Regex(@"q(?!u)|vk|zk|kc|xn|jx|qx|fq|zx|vq|kz|wq|qk|jk|xj|zq|vz|gq|pq|xz", O);
+
+        /// <summary>Four consonants in a row.</summary>
+        static readonly Regex ConsonantRun = new Regex(@"[bcdfghjklmnpqrstvwxz]{4}", O);
+
+        /// <summary>
+        /// (pure) An all-lowercase name of 7-9 letters as cheat loaders and rootkits give their drivers (ksllxnqs, aavkswsq, lktrozkc,
+        /// qhemhlne): at most two vowels, four consonants in a row and a letter pair real names never have. Checked against the 2,099
+        /// driver names of the FenrisHub logs (November 2026): only the random ones; not nvlddmkm, dxgkrnl, qwavedrv, athpexnt, storqosflt.
+        /// </summary>
+        internal static bool RandomLowerName(string stem)
+        {
+            if (string.IsNullOrEmpty(stem) || stem.Length < 7 || stem.Length > 9 || !stem.All(ch => ch >= 'a' && ch <= 'z')) return false;
+            return stem.Count(ch => "aeiouy".IndexOf(ch) >= 0) <= 2 && ConsonantRun.IsMatch(stem) && RareBigram.IsMatch(stem);
+        }
+
         /// <summary>Where the publisher list comes from when it is not the built-in one (the override file's path), else null.</summary>
         public static string PublishersSource { get { var _ = TrustedSigners; return publishersSource; } }
 
@@ -221,8 +266,16 @@ namespace Spor
             if (m.Success) return m.Groups[2].Value.Count(ch => ch == '\\') < 2;   // AppData\Roaming\x.exe or AppData\Roaming\Folder\x.exe
             m = Regex.Match(u, @"^[A-Z]:\\PROGRAMDATA\\(.*)$");
             if (m.Success) return m.Groups[1].Value.Count(ch => ch == '\\') < 2;
+            if (Regex.IsMatch(u, @"^[A-Z]:\\RECOVERY\\")) return true;   // what Windows runs after a reset (C:\Recovery\OEM): no program lives there
             return Regex.IsMatch(u, @"^[A-Z]:\\[^\\]+$");   // root of a drive
         }
+
+        /// <summary>
+        /// PowerShell and command text that downloads or runs code, and common obfuscation (backticks in words, 'a'+'b', [char] codes,
+        /// reversed strings, gcm i*x, $pshome[4], any -EncodedCommand spelling, long Base64), Defender exclusions set by a command.
+        /// The ClickFix module reads the PowerShell history with it; persistence (Run values, tasks, services) the arguments.
+        /// </summary>
+        public static readonly Regex PsSus = new Regex(@"(?<![|(])\b(iex|irm|iwr)\b(?![|)])|invoke-(webrequest|restmethod)|invoke-expression(?!\s+(""[^""$`(]*""|'[^'$`(]*')\s*$)|\.download(string|file|data)\s*\(|frombase64string\s*\(|net\.webclient|start-bitstransfer\s|\bbitsadmin(\.exe)?\s+/|certutil(\.exe)?\s.*-urlcache|certutil(\.exe)?\s.*-addstore\s.*\broot\b|\bmshta(\.exe)?\s+\S|(add|set)-mppreference|(curl|wget)(\.exe)?\s.*https?://(?!(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?:[:/]|$))|(^|\s)[/\p{Pd}]e[a-z]{0,13}\s+['""]?[a-z0-9+/=]{20}|(^|\s)[/\p{Pd}]w[a-z]{0,10}\s+h[a-z]*\b|\w`\w[^`]*\w`\w|['""][^'""\s]{1,8}['""]\s*\+\s*['""][^'""\s]{1,8}['""]|(\[char\]\s*(0x)?[0-9a-f]+.*){3}|\[\s*-1\s*\.\.\s*-?\d|\b(gcm|get-command|gal|get-alias)\s+[^\s|;]*\*|\$(env:\w+|pshome|shellid)\s*\[\s*\d|\$verbosepreference\.tostring\(\)\s*\[|\$executioncontext\.invokecommand|\[scriptblock\]::create|[a-z0-9+/]{100,}", O);
 
         /// <summary>
         /// Arguments that make a trusted program untrusted: a file outside Windows/Program Files (or in Windows\Temp, Tasks, ...),
@@ -231,6 +284,7 @@ namespace Spor
         public static bool ArgsSuspicious(string args)
         {
             if (string.IsNullOrWhiteSpace(args)) return false;
+            if (PsSus.IsMatch(args)) return true;   // irm | iex, [scriptblock]::Create, Add-MpPreference, -EncodedCommand, ...
             if (Regex.IsMatch(args, @"\\\\[^\\\s]+\\|https?://|ftp://|\.(ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|bat|cmd|sct|py|pyw|au3|a3x|ahk|jar|scr|cpl|lnk|msi)\b|\s[-/]e(nc|ncodedcommand)?\s|frombase64|-w(indowstyle)?\s+h|iex\b|downloadstring|\bmshta\b", RegexOptions.IgnoreCase))
                 return true;
             // a program or library outside Windows / Program Files (data paths like log files and folders are normal arguments)
@@ -241,6 +295,33 @@ namespace Spor
             }
             return Regex.IsMatch(args, @"%(appdata|localappdata|temp|tmp|userprofile|public|programdata)%", RegexOptions.IgnoreCase);
         }
+
+        /// <summary>
+        /// (pure) Arguments of a Windows tool or script interpreter in persistence that make it !suspicious: PowerShell that downloads or
+        /// runs code (PsSus: irm | iex, [scriptblock]::Create, -EncodedCommand, Add-MpPreference, ...), a URL or a network path, or a
+        /// script or program outside Windows and Program Files ("pythonw.exe C:\ProgramData\x\x.py"). Stricter than ArgsSuspicious,
+        /// which also distrusts a vendor's own script in Program Files.
+        /// </summary>
+        public static bool ArgsRunCode(string args)
+        {
+            if (string.IsNullOrWhiteSpace(args)) return false;
+            if (PsSus.IsMatch(args) || Regex.IsMatch(args, @"\\\\[^\\\s]+\\|https?://|ftp://", RegexOptions.IgnoreCase)) return true;
+            foreach (Match m in ArgPath.Matches(args))
+                if (!InTrustedLocation(m.Groups[1].Value)
+                    && Regex.IsMatch(m.Groups[1].Value, @"\.(exe|dll|scr|cpl|com|pif|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|sct|py|pyw|jar|au3|a3x|ahk)$", RegexOptions.IgnoreCase))
+                    return true;
+            return false;
+        }
+
+        static readonly Regex BrowserOrNode = new Regex(@"\\(msedge|chrome|brave|opera|vivaldi|node)\.exe$", O);
+
+        /// <summary>
+        /// (pure) A browser (or Node.js) driven by another program: remote debugging on and no window (--headless). Stealers and
+        /// WEEVILPROXY (Puppeteer) read cookies and browse with the user's session this way; a developer's test run looks the same.
+        /// </summary>
+        public static bool HeadlessDebug(string program, string commandLine) =>
+            BrowserOrNode.IsMatch(program ?? "") && Regex.IsMatch(commandLine ?? "", @"--remote-debugging-(port|pipe)\b", O)
+            && Regex.IsMatch(commandLine ?? "", @"--headless\b", O);
 
         /// <summary>
         /// A drive path in arguments (group 1): up to a quote, a comma, the next option, a blank after a program or script name
@@ -405,13 +486,60 @@ namespace Spor
 
         public const string InvisibleFlag = "!invisible-char";
 
+        /// <summary>Where Windows keeps drivers: a driver elsewhere gets !outside-driver-folders.</summary>
+        public static readonly Regex DriverFolder = new Regex(@"^[a-z]:\\windows\\(system32|syswow64)\\(drivers|driverstore)\\", O);
+
+        public const string InterpreterOutsideFlag = "!interpreter-outside";
+
+        /// <summary>
+        /// (pure) A script interpreter (Rules.Interpreter: Python, Node.js, AutoIt, Java, ...) where none is installed: anywhere under the
+        /// Windows folder (C:\Windows\System32\HealthCheck\node.exe), or in a drop location (Temp, Downloads, the top of AppData or
+        /// ProgramData, ...) without an uninstaller in its folder (an all-users Anaconda in C:\ProgramData\anaconda3 has one).
+        /// hasUninstaller tells whether a folder holds unins*.exe / Uninstall*.exe.
+        /// </summary>
+        public static bool InterpreterOutside(string p, string winDir, Func<string, bool> hasUninstaller)
+        {
+            if (string.IsNullOrEmpty(p) || !Interpreter.IsMatch(p)) return false;
+            if (!string.IsNullOrEmpty(winDir) && p.StartsWith(winDir.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
+            {
+                // the Python launcher (C:\Windows\py.exe) and old Java copies sit right in Windows / System32: only a folder below counts
+                var rel = p.Substring(winDir.TrimEnd('\\').Length + 1);
+                return !Regex.IsMatch(rel, @"^((System32|SysWOW64)\\)?[^\\]+$", RegexOptions.IgnoreCase);
+            }
+            if (!DropLocation(p)) return false;
+            var dir = System.IO.Path.GetDirectoryName(p);
+            return dir == null || hasUninstaller == null || !hasUninstaller(dir);
+        }
+
+        /// <summary>A folder with an uninstaller (unins000.exe, Uninstall-Anaconda3.exe, uninstall.exe): a program was installed there.</summary>
+        public static bool HasUninstaller(string dir)
+        {
+            try
+            {
+                return System.IO.Directory.Exists(dir) && (System.IO.Directory.EnumerateFiles(dir, "unins*.exe").Any()
+                                                           || System.IO.Directory.EnumerateFiles(dir, "uninstall*.exe").Any());
+            }
+            catch { return false; }
+        }
+
+        /// <summary>(pure) A folder or file name in the path ending with a dot or a space: Windows' own APIs strip those, so only a program
+        /// that bypasses them (\\?\ paths) makes one, and Explorer and many tools cannot open it (C:\ProgramData\prndata..\prn.exe).</summary>
+        public static bool EdgePart(string p)
+        {
+            var m = DrivePath.Match(p ?? "");
+            if (!m.Success) return false;
+            // "." and ".." are the folder itself and its parent ("C:\Vendor\bin\..\app.exe" in a service's ImagePath), not names
+            return m.Groups[2].Value.Split('\\').Any(part => part.Length > 0 && part != "." && part != ".." && (part.EndsWith(".") || part.EndsWith(" ")));
+        }
+
         /// <summary>!RLO, !invisible-char, !double-extension, !in-folder-named-like-file, !lolbin. name: also test this file name for LOLBins.</summary>
         public static List<string> Flags(string p, string name = null)
         {
             var f = new List<string>();
             p = p ?? "";
             if (Bidi.IsMatch(p)) f.Add("!RLO");
-            if (Hiding.IsMatch(p)) f.Add(InvisibleFlag);
+            if (Hiding.IsMatch(p) || EdgePart(p)) f.Add(InvisibleFlag);
+            f.AddRange(DriverFlags(p, VulnerableDrivers));
             if (DoubleExt(p)) f.Add("!double-extension");
             if (Disg.IsMatch(p)) f.Add("!in-folder-named-like-file");
             if (Lol.IsMatch(p) || (name != null && Lol.IsMatch("\\" + name))) f.Add("!lolbin");
@@ -431,10 +559,30 @@ namespace Spor
         /// Hints: weak flags. They go to the SUMMARY only together with a strong flag on the same file or in the same folder
         /// (a renamed signed program alone is often harmless; next to a side-loaded DLL it is the host).
         /// </summary>
-        public static readonly HashSet<string> Hints = new HashSet<string> { "!renamed-program" };
+        public static readonly HashSet<string> Hints = new HashSet<string> { "!renamed-program", AbusedTldFlag };
+
+        /// <summary>A file whose signature was revoked or that was changed after signing (a patched or infected signed file).</summary>
+        public const string InvalidSignatureFlag = "!invalid-signature";
+
+        /// <summary>Hint: downloaded from a host under a cheap TLD malware campaigns favour (HostNames.AbusedTlds).</summary>
+        public const string AbusedTldFlag = "!abused-tld";
 
         /// <summary>Flags that go to the summary (a LOLBin run alone is normal on many PCs; hints only with a strong flag).</summary>
-        public static List<string> Strong(List<string> f) => f.Where(x => x != "!lolbin" && !Hints.Contains(x)).ToList();
+        public static List<string> Strong(List<string> f) => f.Where(x => x != "!lolbin" && !Hints.Contains(x) && !Info.Contains(x)).ToList();
+
+        /// <summary>
+        /// Context flags: not evidence of malware, but what a helper needs to know about the case (a remote access tool was used, an
+        /// account was created, Defender's history wiped). They put a finding in the SUMMARY, in time order with the others, and are no
+        /// reason for anything else (no hint counts next to them, nothing is shown or hidden because of them).
+        /// </summary>
+        public static readonly HashSet<string> Info = new HashSet<string>
+        {
+            "!remote-access", "!account-change", "!history-deleted", "!disk-image", "!upload", "!new-service", "!task-deleted", "!startup-item",
+            "!drop-group", "!reset-config", "!proxy", "!dev-mode", "!custom-root", "!settings-changed",
+        };
+
+        /// <summary>A flag list for one context finding.</summary>
+        public static List<string> InfoFlag(string flag) => new List<string> { flag };
 
         public static List<string> HintsOf(List<string> f) => f.Where(Hints.Contains).ToList();
 
@@ -445,7 +593,31 @@ namespace Spor
             "!in-folder-named-like-file = e.g. x.exe\\evil.dll",
             "!RLO = right-to-left override character in the name (shown as <RLO>)",
             "!renamed-lolbin = Windows tool under another name",
-            "!unsigned = driver without a valid signature",
+            "!unsigned = driver, or program of an auto-start service or scheduled task outside trusted locations, without a valid signature",
+            "!vulnerable-driver = a signed kernel driver known to be vulnerable (BYOVD: kdmapper, Defender killers); also installed by some tools (MSI Afterburner)",
+            "!random-name = driver file with a random-looking name (ksllxnqs.sys)",
+            "!remote-access = context: remote access tool, its logs or configuration, camera or microphone in use, a remote access host in the DNS cache",
+            "!account-change = context: account created, put in a group, or an admin with a password that never signed in",
+            "!history-deleted = context: Defender's detection history deleted",
+            "!disk-image = context: disk image mounted, or a program opened from a CD/DVD or mounted ISO",
+            "!upload = context: a program that is not validly signed sent 50 MB or more (SRUM)",
+            "!new-service = context: a service or driver was installed (not one the whitelist hides)",
+            "!task-deleted = context: a scheduled task was deleted",
+            "!startup-item = context: a file in a Startup folder that is no shortcut, program or script",
+            "!drop-group = context: a folder created together with a flagged loader folder (same seconds or same file names)",
+            "!reset-config = context: a reset or setup hook (C:\\Recovery\\OEM, Setup\\Scripts, unattend.xml) written in the time window that does nothing suspicious (a reset or reinstall writes them too)",
+            "!proxy = context: a proxy is set for web traffic",
+            "!dev-mode = context: browser extension developer mode is on",
+            "!custom-root = context: a self-signed root certificate that is not Windows' own (AV web shields, developer tools, or an older man-in-the-middle proxy)",
+            "!settings-changed = context: Settings pages hidden by policy (pages malware hides get !settings-hidden)",
+            "!reset-hook = what Windows runs after \"Reset this PC\", at the end of Setup or from an answer file runs code, restores a scheduled task or registry values, or (written in the time window) starts a program outside Windows; also a machine ID kept for after a reset (OldMachineGuid)",
+            "!new-in-windows = program, module or script without a valid signature in a folder new below System32 / SysWOW64",
+            "!local-proxy = web traffic goes through a proxy on this PC or the local network, or a proxy script (PAC): it can read and change everything (man-in-the-middle)",
+            "!root-cert = a self-signed root certificate that is not Windows' own was added in the time window (lets a proxy read HTTPS)",
+            "!settings-hidden = Settings pages hidden that malware hides: network-proxy, recovery, Windows Security, Windows Update, troubleshooting",
+            "!unpacked-extension = browser extension loaded unpacked or from the command line, not from a store (patched wallet extensions are loaded so)",
+            "!hidden-task = scheduled task set to hidden (not one of Windows') that runs a program outside trusted locations or not validly signed",
+            "!invalid-signature = file changed after signing or with a revoked signature (a patched or infected signed file)",
             "!outside-driver-folders = driver loaded from outside System32\\drivers and the DriverStore",
             "!suspicious = command that downloads or runs code",
             "!kept-despite-warning = the browser warned, the user kept the file",
@@ -465,6 +637,11 @@ namespace Spor
             "!runtime-loader = new launcher of a script runtime (Python/Ren'Py, AutoIt, Node.js, Electron unless signed by a well-known publisher, Java, Lua) with loader signs in its folder: padded or encrypted random-named data, a hidden file next to its scripts, a program it started, or a !motw-removed file near a run",
             "!known-malware = matches a pattern of a known malware family (Autodetect, resources/autodetect.txt); the line names the family",
             "!renamed-program = hint: a signed program under a random-looking or lure name that is not its original name (in SUMMARY only with a strong flag nearby)",
+            "!abused-tld = hint: downloaded from a host under a cheap TLD malware campaigns favour (.lol, .top, .xyz, ...; in SUMMARY only with a strong flag nearby)",
+            "!renamed-persisted = persistence starts a signed program under another name than its original, in a random-looking folder of a user profile or ProgramData (a loader's signed decoy)",
+            "!interpreter-outside = script interpreter (Python, Node.js, AutoIt, Java, ...) in a Windows folder or a drop location without an uninstaller, started by persistence or running",
+            "!defender-detected = Defender detected this file (or this process): every line of the file gets the flag",
+            "!in-defender-exclusion = file without a valid signature in a folder Defender excludes, or an excluded program: Defender does not scan it",
             "!invisible-char = invisible character in the name, shown as <U+XXXX>: anywhere one never used in names (zero-width space, Hangul filler, Braille blank, ...); on USB drives any (also no-break space)",
             "!usb-worm-lnk = shortcut on a drive that starts a script host, cmd, rundll32 or a file in a hidden folder, has no normal target, or is named like the drive or a hidden folder (USB worm)",
             "!disguised-icon = shortcut to a program or script that shows a folder, document or drive icon",

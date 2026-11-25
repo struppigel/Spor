@@ -27,7 +27,8 @@ Spor started as a set of my PowerShell snippets for malware removal help.
 * Timestomping detection from the NTFS change journal
 * Software installed, updated or removed: Uninstall keys, Windows Installer events, Store/MSIX apps; cached Windows Installer packages that run a script host from a LocalAppData install
 * Drop folder sweep without other evidence: loader project folders (PavinLoader: copied MSBuild.exe, .wsf, large .resx, dummy project files) in Windows cache folders and LocalAppData vendor folders, grouped by creation time; LOLBin copies outside their folders
-* Persistence with times: Run keys, services, scheduled tasks (also deleted ones), Startup folders, WMI subscriptions
+* Persistence with times: Run keys, services, scheduled tasks (also deleted ones), Startup folders, WMI subscriptions, reset and setup hooks (C:\Recovery\OEM, ResetConfig.xml, SetupComplete.cmd, unattend.xml / autounattend.xml)
+* Proxy settings, added root certificates, hidden Settings pages, browser extensions not from a store
 * Defender detections, exclusions, setting changes and cloud lookups, cleared event logs
 * ClickFix traces: Run dialog, Explorer address bar, PowerShell history
 * Webcam and microphone use, remote access tools (AnyDesk, TeamViewer, ScreenConnect, ...)

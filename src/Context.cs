@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -93,6 +94,7 @@ namespace Spor
         public void HashFile(string disp)
         {
             if (!ToHash.TryGetValue(disp, out var real) || Sha256.ContainsKey(disp)) return;
+            var sw = Stopwatch.StartNew();
             try
             {
                 using (var fs = new FileStream(real, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 20, FileOptions.SequentialScan))
@@ -101,14 +103,20 @@ namespace Spor
                 {
                     bool both = !Opt.Algo.Equals("MD5", StringComparison.OrdinalIgnoreCase);
                     var buf = new byte[1 << 20]; int n;
-                    while ((n = fs.Read(buf, 0, buf.Length)) > 0) { a.TransformBlock(buf, 0, n, null, 0); if (both) m.TransformBlock(buf, 0, n, null, 0); }
+                    while ((n = fs.Read(buf, 0, buf.Length)) > 0) { a.TransformBlock(buf, 0, n, null, 0); if (both) m.TransformBlock(buf, 0, n, null, 0); HashBytes += n; }
                     a.TransformFinalBlock(buf, 0, 0);
                     Sha256[disp] = BitConverter.ToString(a.Hash).Replace("-", "");
                     if (both) { m.TransformFinalBlock(buf, 0, 0); Md5[disp] = BitConverter.ToString(m.Hash).Replace("-", ""); }
                 }
             }
             catch { }
+            HashFiles++; HashTime += sw.Elapsed;
         }
+
+        /// <summary>What hashing cost this scan (for the end line: where the scan's time goes).</summary>
+        public int HashFiles;
+        public long HashBytes;
+        public TimeSpan HashTime;
 
         /// <summary>Side-loading results per host program (Sideload.For), so each program is checked once per scan.</summary>
         public readonly Dictionary<string, List<SideloadHit>> Sideloads = new Dictionary<string, List<SideloadHit>>(Util.IC);
@@ -275,6 +283,70 @@ namespace Spor
             return lolbinCopies[key] = Rules.LolbinCopy(real, orig, sig, hidden);
         }
 
+        /// <summary>Files NEW FILES flagged !timestomped (old times, written in the window): TIMESTOMPING lists them too.</summary>
+        public readonly List<(string Path, DateTime Created, DateTime Modified, DateTime Changed)> Backdated = new List<(string, DateTime, DateTime, DateTime)>();
+
+        readonly Dictionary<string, HashSet<string>> pathMarks = new Dictionary<string, HashSet<string>>(Util.IC);
+        readonly List<(string Folder, string Flag, bool Unsigned)> folderMarks = new List<(string, string, bool)>();
+
+        /// <summary>
+        /// A flag for every timeline event of a file, whichever module saw it (Defender detected it, a persisted interpreter outside
+        /// its install folder): ApplyMarks puts it on them before the timeline is built, so the file's lines link up in the SUMMARY.
+        /// </summary>
+        public void MarkPath(string path, string flag)
+        {
+            if (string.IsNullOrEmpty(path) || !Rules.DrivePath.IsMatch(path)) return;
+            if (!pathMarks.TryGetValue(path, out var set)) pathMarks[path] = set = new HashSet<string>();
+            set.Add(flag);
+        }
+
+        /// <summary>
+        /// A flag for the events of every file inside a folder (a Defender path exclusion): see MarkPath. unsigned: only files without a
+        /// valid signature (a game folder a user excluded holds hundreds of signed files; a dropper's payload is unsigned).
+        /// </summary>
+        public void MarkFolder(string folder, string flag, bool unsigned = false)
+        {
+            if (string.IsNullOrEmpty(folder) || !Rules.DrivePath.IsMatch(folder)) return;
+            folderMarks.Add((folder.TrimEnd('\\') + "\\", flag, unsigned));
+        }
+
+        /// <summary>
+        /// Files that stand for a value Autodetect may match: a Startup shortcut's target, an installed program's folder (ends with "\").
+        /// Key: the matched path, or the item text an observation was made with (Observe). A known-malware hit passes its mark on to them.
+        /// </summary>
+        public readonly Dictionary<string, List<string>> Related = new Dictionary<string, List<string>>(Util.IC);
+
+        /// <summary>See Related.</summary>
+        public void Relate(string key, string path)
+        {
+            if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(path) || !Rules.DrivePath.IsMatch(path)) return;
+            if (!Related.TryGetValue(key, out var list)) Related[key] = list = new List<string>();
+            if (!list.Contains(path, StringComparer.OrdinalIgnoreCase)) list.Add(path);
+        }
+
+        /// <summary>The flags MarkPath and MarkFolder give a file (empty when none).</summary>
+        public List<string> MarksOf(string path)
+        {
+            var f = new List<string>();
+            if (string.IsNullOrEmpty(path)) return f;
+            if (pathMarks.TryGetValue(path, out var set)) f.AddRange(set);
+            foreach (var (folder, flag, unsigned) in folderMarks)
+                if (path.StartsWith(folder, StringComparison.OrdinalIgnoreCase) && !f.Contains(flag) && (!unsigned || !SignedOk(path))) f.Add(flag);
+            return f;
+        }
+
+        /// <summary>Puts the marks on the timeline events of the marked files (new flag lists: modules may share theirs between events).</summary>
+        public void ApplyMarks()
+        {
+            if (pathMarks.Count == 0 && folderMarks.Count == 0) return;
+            foreach (var e in Events)
+            {
+                if (e.Path == null) continue;
+                var add = MarksOf(e.Path).Where(f => e.Flags == null || !e.Flags.Contains(f)).ToList();
+                if (add.Count > 0) e.Flags = (e.Flags ?? new List<string>()).Concat(add).ToList();
+            }
+        }
+
         /// <summary>The flags of a file with !lolbin-copy added when LolbinCopy finds one (a new list).</summary>
         public List<string> WithLolbinCopy(string p, IEnumerable<string> flags)
         {
@@ -414,6 +486,15 @@ namespace Spor
             return Signature.Check(real).Valid;
         }
 
+        /// <summary>A file on disk validly signed by a well-known publisher (resources/publishers.txt): Riot's vgk.sys, NordVPN's driver.</summary>
+        public bool ByTrustedSigner(string p)
+        {
+            var real = RealCase(p ?? "");
+            if (!System.IO.File.Exists(real) || !Signature.Applies(real)) return false;
+            var sg = Signature.Check(real);
+            return sg.Valid && Rules.TrustedSigners.Contains((sg.Signer ?? "").Replace(" (catalog)", ""));
+        }
+
         readonly Dictionary<string, string> aliases = new Dictionary<string, string>(Util.IC);
         /// <summary>The program an app execution alias in ...\Microsoft\WindowsApps\ starts, or null.</summary>
         public string Alias(string p)
@@ -502,8 +583,10 @@ namespace Spor
                         Signer[disp] = Signature.Describe(sg);
                         if (sg.Status == "no access") sts.Add("no access");   // unreadable: not "unsigned"
                         else if (!sg.Valid) sts.Add(sg.Status == "unsigned" ? "unsigned" : sg.Status + " signature");
+                        // "path => invalid signature: file changed after signing (bad digest); signer X <==== !invalid-signature"
                         if (sg.Status == "revoked" || (sg.Status == "invalid" && sg.Reason != null && sg.Reason.StartsWith("file changed")))
-                            Findings.Add((null, "Signature", $"{sg.Status} signature: {disp} ({sg.Reason}{(sg.Signer != null ? ", signer " + sg.Signer : "")})"));
+                            FindAs("Signature", null, disp, $"{sg.Status} signature: {sg.Reason}" + (sg.Signer != null ? "; signer " + sg.Signer : ""),
+                                   new List<string> { Rules.InvalidSignatureFlag });
                     }
                     var ver = Signature.Version(real);
                     if (ver != null) Version[disp] = ver;

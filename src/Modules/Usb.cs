@@ -127,7 +127,9 @@ namespace Spor.Modules
                     var s = Native.Storage(d.Letter);
                     d.Bus = s.Bus; d.Vendor = s.Vendor; d.Product = s.Product;
                 }
-                d.Deep = ready && (d.Type == DriveType.Removable || d.Bus == 7) && !d.Letter.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase);
+                // listed file by file: removable drives and USB disks up to 256 GB (sticks, small SSDs: what worms spread on); a big USB
+                // disk (media, backups) gets the root listing other fixed drives get
+                d.Deep = ready && (d.Type == DriveType.Removable || (d.Bus == 7 && d.Size > 0 && d.Size <= DeepMaxBytes)) && !d.Letter.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase);
                 if (d.Deep)
                 {
                     if (d.Serial != null) c.UsbVolumes[d.Serial] = d.Label ?? "";
@@ -165,12 +167,15 @@ namespace Spor.Modules
 
         // ---------------------------------------------------------------- contents
 
+        /// <summary>The largest USB disk (not removable) listed file by file: 256 GB.</summary>
+        internal const long DeepMaxBytes = 256L * 1000 * 1000 * 1000;
+
         /// <summary>Hidden root folders of Windows and common software: not entered on non-removable drives.</summary>
         static readonly Regex KnownRootFolder = new Regex(
             @"^(\$Recycle\.Bin|System Volume Information|Recovery|Config\.Msi|\$WinREAgent|\$Windows\.~(BT|WS)|\$SysReset|\$GetCurrent|ProgramData|PerfLogs|Documents and Settings|MSOCache|OneDriveTemp|Boot|EFI|\$AV_ASW|\$Windows\.old)$", Util.RX);
 
         /// <summary>Hidden+system items that Windows itself makes: not !hidden-system.</summary>
-        static readonly Regex WindowsHiddenSystem = new Regex(@"^(System Volume Information|\$RECYCLE\.BIN|desktop\.ini|Thumbs\.db|IndexerVolumeGuid|WPSettings\.dat|pagefile\.sys|hiberfil\.sys|swapfile\.sys|DumpStack\.log(\.tmp)?|bootmgr|BOOTNXT|BOOTSECT\.BAK)$", Util.RX);
+        static readonly Regex WindowsHiddenSystem = new Regex(@"^(System Volume Information|\$RECYCLE\.BIN|desktop\.ini|Thumbs\.db|IndexerVolumeGuid|WPSettings\.dat|pagefile\.sys|hiberfil\.sys|swapfile\.sys|DumpStack\.log(\.tmp)?|bootmgr|BOOTNXT|BOOTSECT\.BAK|\.dropbox\.device)$", Util.RX);
 
         /// <summary>Root files of the system drive that cannot or need not be hashed (page file, hibernation file, ...).</summary>
         static readonly Regex SystemRootFile = new Regex(@"^(pagefile\.sys|hiberfil\.sys|swapfile\.sys|DumpStack\.log(\.tmp)?|bootmgr|BOOTNXT|BOOTSECT\.BAK)$", Util.RX);
@@ -229,9 +234,12 @@ namespace Spor.Modules
             foreach (var it in items)
             {
                 string status = null;
-                bool hashable = !it.Dir && !(d.Letter.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase) && it.Depth == 0 && SystemRootFile.IsMatch(it.Name));
+                // hashed (FILES): what can run or carry what runs; a drive's films and photos are no evidence
+                bool hashable = !it.Dir && !(d.Letter.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase) && it.Depth == 0 && SystemRootFile.IsMatch(it.Name))
+                                && (Rules.ProgramFile(it.Path) || Signature.Applies(it.Path) || Archive.IsMatch(it.Name) || Rules.Strong(it.Flags).Count > 0);
                 if (hashable && !EdgeName(it.Name)) status = Status(it.Path);
-                else if (hashable) status = "name ends with a space or dot: Windows programs cannot open it";
+                // a name with a space or dot at its edge: a note in the details, not a status
+                if (!it.Dir && EdgeName(it.Name) && !it.Details.Contains(EdgeNote(it.Name))) it.Details.Add(EdgeNote(it.Name));
                 var streams = it.Streams.Count > 0 ? string.Join(", ", it.Streams.Select(s => Rules.Fix(s.Name) + " " + s.Size + " bytes")) : null;
                 t.Add(Shown(it.Path) + (it.Dir ? "\\" : ""), status, AttrText(it.Attr), Log.T(it.Created), Log.T(it.Modified), it.Dir ? null : it.Size + " bytes",
                       streams, it.Details.Count > 0 ? string.Join("; ", it.Details) : null, Rules.FlagCol(it.Flags));
@@ -289,13 +297,15 @@ namespace Spor.Modules
         {
             it.Flags.AddRange(UsbFlags(it.Path));
             bool hs = (it.Attr & FileAttributes.Hidden) != 0 && (it.Attr & FileAttributes.System) != 0;
-            if (d.Deep && hs && !WindowsHiddenSystem.IsMatch(it.Name)) it.Flags.Add(HiddenSystemFlag);
+            if (d.Deep && hs && !WindowsHiddenSystem.IsMatch(it.Name) && !InWindowsHiddenFolder(it.Path)) it.Flags.Add(HiddenSystemFlag);
             if (it.Dir && ClsidName(it.Name)) { it.Flags.Add(ClsidFlag); it.Details.Add("Explorer shows this folder as a shell object (CLSID in the name)"); }
             if (!it.Dir && it.Name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase) && it.Size < 64 * 1024)
             {
                 string text = null;
                 try { text = ReadIni(it.Path); } catch { }
                 var cls = DesktopIniClsid(text);
+                // the Recycle Bin's own desktop.ini (in $RECYCLE.BIN\S-1-...) sets the Recycle Bin's CLSID: Windows, not a disguise
+                if (cls != null && RecycleBinIni(it.Path, cls)) cls = null;
                 if (cls != null)
                 {
                     it.Flags.Add(ClsidFlag); it.Details.Add("sets " + cls);
@@ -307,6 +317,25 @@ namespace Spor.Modules
             if ((d.Deep || it.Depth == 0) && odd.Count > 0) it.Flags.Add(AdsFlag);
             if (it.Dir && it.Name.Equals("RECYCLER", StringComparison.OrdinalIgnoreCase) && d.Deep) it.Details.Add("RECYCLER is the recycle bin name of Windows XP; newer Windows use $RECYCLE.BIN");
         }
+
+        /// <summary>Archives and disk images: hashed on a drive like programs (a worm's payload can be packed).</summary>
+        static readonly Regex Archive = new Regex(@"\.(zip|rar|7z|cab|iso|img|vhdx?)$", Util.RX);
+
+        /// <summary>(pure) The note for a name with a space or dot at its edge.</summary>
+        internal static string EdgeNote(string name) =>
+            (name ?? "").EndsWith(" ") || (name ?? "").EndsWith(".") ? "name ends with a space or dot: Windows programs cannot open it"
+                                                                   : "name starts with a space: Explorer hides it";
+
+        /// <summary>(pure) An item inside a folder Windows itself keeps hidden and system ($RECYCLE.BIN, System Volume Information).</summary>
+        internal static bool InWindowsHiddenFolder(string path) =>
+            Regex.IsMatch(path ?? "", @"\\(\$RECYCLE\.BIN|System Volume Information)\\", Util.RX);
+
+        /// <summary>The Recycle Bin's CLSID.</summary>
+        const string RecycleBinClsid = "{645FF040-5081-101B-9F08-00AA002F954E}";
+
+        /// <summary>(pure) A desktop.ini in the Recycle Bin that sets the Recycle Bin's CLSID (normal: Windows writes it).</summary>
+        internal static bool RecycleBinIni(string path, string clsid) =>
+            InWindowsHiddenFolder(path) && (clsid ?? "").IndexOf(RecycleBinClsid, StringComparison.OrdinalIgnoreCase) >= 0;
 
         /// <summary>(pure) A name ending with a space or a dot, or made only of spaces and dots: Explorer hides the difference.</summary>
         internal static bool EdgeName(string name) => !string.IsNullOrEmpty(name) && (name.EndsWith(" ") || name.EndsWith(".") || name.StartsWith(" "));
@@ -367,7 +396,7 @@ namespace Spor.Modules
         }
 
         /// <summary>Streams that browsers, Windows and sync tools write: not !ads.</summary>
-        static readonly Regex NormalStream = new Regex(@"^(Zone\.Identifier|SmartScreen|com\.dropbox\.attrs?|com\.dropbox\.attributes|ms-properties|OECustomProperty|encryptable|favicon|AFP_AfpInfo|AFP_Resource|Win32App_1|\{4c8cc155-6c1e-11d1-8e41-00c04fb9386d\})$", Util.RX);
+        static readonly Regex NormalStream = new Regex(@"^(Zone\.Identifier|SmartScreen|com\.dropbox\.attrs?|com\.dropbox\.attributes|ms-properties|OECustomProperty|encryptable|favicon|AFP_AfpInfo|AFP_Resource|Win32App_1|shield|\{4c8cc155-6c1e-11d1-8e41-00c04fb9386d\})$", Util.RX);
 
         /// <summary>(pure) The streams that are not ones Windows, browsers or sync tools write.</summary>
         internal static List<string> UnusualStreams(IEnumerable<string> names) => (names ?? Enumerable.Empty<string>()).Where(n => !NormalStream.IsMatch(n ?? "")).ToList();
@@ -639,7 +668,8 @@ namespace Spor.Modules
                 // files the arguments name (the worm's hidden copy, often a path relative to the drive): hashed for FILES
                 foreach (var f in ArgumentFiles(l.Args, Util.Folder(it.Path), l.WorkDir, d.Root, p => { try { return new FileInfo(@"\\?\" + p).Exists; } catch { return false; } }))
                     t.More("argument file", FileValue(f));
-                Report(it, fl, l.Target);
+                // no target of its own (the worm's "no target" sign): what its shell items name, else its relative path
+                Report(it, fl, l.Target ?? (l.IdListTarget != null ? "item list target " + l.IdListTarget : l.RelPath != null ? "relative path " + l.RelPath : null));
             }
             t.WriteTo(c.Out, "no shortcuts on the drives");
         }
@@ -648,7 +678,7 @@ namespace Spor.Modules
         {
             var strong = Rules.Strong(fl).Where(f => !UsbFlags(it.Path).Contains(f)).ToList();
             if (strong.Count == 0) return;
-            c.Find(it.Created, Log.Item(Shown(it.Path), null, Rules.Fix(target ?? "?"), Rules.FlagCol(strong)), "created");
+            c.Find(it.Created, Log.Item(Shown(it.Path), null, Rules.Fix(target ?? "no target"), Rules.FlagCol(strong)), "created");
         }
 
         // ---------------------------------------------------------------- Explorer settings, MountPoints2

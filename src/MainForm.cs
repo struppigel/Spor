@@ -47,7 +47,7 @@ namespace Spor
 
             Add(new Label
             {
-                Text = "Spor collects traces of malware and remote access tools and saves them to Spor.txt.\r\nNothing on this PC is changed. Send the log to the person helping you.",
+                Text = "Spor collects traces of malware and remote access tools and saves them to Spor.txt.\r\nSend the log to the person helping you.",
                 AutoSize = true, Margin = new Padding(0, 0, 0, 4)
             });
 

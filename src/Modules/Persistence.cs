@@ -22,6 +22,9 @@ namespace Spor.Modules
 
         Ctx c;
 
+        /// <summary>A scheduled task set to hidden (not one of Windows') that runs a program that is not trusted.</summary>
+        public const string HiddenTaskFlag = "!hidden-task";
+
         public void Execute(Ctx ctx)
         {
             c = ctx;
@@ -30,16 +33,289 @@ namespace Spor.Modules
             Tasks();
             Startup();
             Wmi();
+            Hooks();
         }
 
-        /// <summary>Program of a command: path, flags, [gone]/[unsigned].</summary>
+        // ---------------- Reset and setup hooks ----------------
+
+        static readonly Regex ScriptFile = new Regex(@"\.(cmd|bat|ps1|vbs|js)$", Util.RX);
+        static readonly Regex AnswerName = new Regex(@"^(auto)?unattend\.xml$", Util.RX);
+
+        /// <summary>
+        /// What Windows runs by itself after "Reset this PC" (C:\Recovery\OEM: ResetConfig.xml and its scripts), at the end of Setup
+        /// (Windows\Setup\Scripts) and from answer files (unattend.xml, autounattend.xml in Panther, Sysprep and the root of every
+        /// drive): see ResetHooks. !reset-hook when a hook runs code or restores a task or registry values, a task copy or .reg file
+        /// waits in C:\Recovery\OEM, or a hook was written in the time window; else the context flag !reset-config. Other files in
+        /// C:\Recovery\OEM are listed; a program there that is not validly signed and new is a hook too.
+        /// </summary>
+        void Hooks()
+        {
+            var t = new Table("@changed", "[kind", "!status", "<flags", "*file");
+            var files = new List<(string Path, string Kind)>();
+            var oem = Path.Combine(c.SystemDrive + "\\", @"Recovery\OEM");
+            try
+            {
+                // files directly in the folder first (where a dropped hook waits), then the PC maker's subfolders
+                if (Directory.Exists(oem))
+                    foreach (var f in Directory.EnumerateFiles(oem).Concat(Directory.EnumerateDirectories(oem).SelectMany(d => SafeFiles(d))).Take(MaxOemFiles))
+                        files.Add((f, "recovery"));
+            }
+            catch (Exception e) { c.Err.Add(oem + ": " + e.Message); }
+            int oemFiles = files.Count;
+            var setup = Path.Combine(c.WinDir, @"Setup\Scripts");
+            try { if (Directory.Exists(setup)) foreach (var f in Directory.EnumerateFiles(setup).Take(50)) files.Add((f, "setup")); }
+            catch (Exception e) { c.Err.Add(setup + ": " + e.Message); }
+            foreach (var dir in new[] { Path.Combine(c.WinDir, "Panther"), Path.Combine(c.WinDir, @"Panther\Unattend"), Path.Combine(c.WinDir, @"System32\Sysprep") })
+                try { if (Directory.Exists(dir)) foreach (var f in Directory.EnumerateFiles(dir, "*.xml").Where(f => AnswerName.IsMatch(Path.GetFileName(f)))) files.Add((f, "answer")); }
+                catch (Exception e) { c.Err.Add(dir + ": " + e.Message); }
+            // answer files in the root of every drive (Windows Setup reads them there, a USB stick included)
+            foreach (var d in DriveInfo.GetDrives())
+                try
+                {
+                    if ((d.DriveType != DriveType.Fixed && d.DriveType != DriveType.Removable) || !d.IsReady) continue;
+                    foreach (var f in Directory.EnumerateFiles(d.RootDirectory.FullName, "*.xml").Where(f => AnswerName.IsMatch(Path.GetFileName(f)))) files.Add((f, "answer"));
+                }
+                catch { }
+            // first every file (what it is, what it runs), then the flags: a task copy is evidence when a hook names it
+            var recs = new List<HookFile>();
+            foreach (var (f, where) in files)
+            {
+                try { recs.Add(ReadHookFile(f, where, oem)); }
+                catch (Exception e) { c.Err.Add(f + ": " + e.Message); }
+            }
+            var hookCommands = recs.Where(r => r.Script || r.Answer || r.ResetConfig).SelectMany(r => r.Commands).ToList();
+            int unlisted = 0;
+            DateTime newestUnlisted = DateTime.MinValue;
+            foreach (var r in recs)
+            {
+                var f = r.Path;
+                var fi = r.Info;
+                try
+                {
+                    foreach (var cmd in r.Commands) c.Observe("cmd", cmd, fi.LastWriteTimeUtc, $"{r.Kind} {f}: {Rules.Fix(Util.Clip(cmd))}");
+                    c.Observe("path", f, fi.LastWriteTimeUtc);
+                    bool recent = fi.LastWriteTimeUtc >= c.Since || fi.CreationTimeUtc >= c.Since;
+
+                    bool unsigned = r.Program && !(Signature.Applies(f) && c.SignedOk(f));
+                    var outside = recent && r.Hook ? r.Commands.Select(cmd => Cmd.Program(cmd, c.WinDir)).FirstOrDefault(p => RunsOutside(p, oem)) : null;
+                    var (fl, reasons, listed) = Judge(r.Hook, r.TaskCopy && NamedBy(fi.Name, hookCommands),
+                        r.Reg && r.Where == "recovery" && ResetHooks.RestoresTask(r.Text), r.TooBig, recent, unsigned, outside, r.Commands);
+                    if (!listed)
+                    {
+                        unlisted++;
+                        if (fi.LastWriteTimeUtc > newestUnlisted) newestUnlisted = fi.LastWriteTimeUtc;
+                        continue;
+                    }
+                    var st = c.F(f);
+                    t.Add(Log.T(fi.LastWriteTimeUtc), r.Kind, st.Status, fl.Count > 0 ? Rules.FlagCol(fl) : "-", st.Path);
+                    foreach (var m in r.More) t.More(m.Key, m.Value);
+                    if (reasons.Count > 0) t.More("why", string.Join("; ", reasons));
+                    c.Event(fi.CreationTimeUtc, "RST", f, $"{r.Kind} created");
+                    if ((fi.LastWriteTimeUtc - fi.CreationTimeUtc).TotalMinutes > 2) c.Event(fi.LastWriteTimeUtc, "RST", f, $"{r.Kind} changed");
+                    if (fl.Count > 0)
+                        c.Find(fi.LastWriteTimeUtc, $"{r.Kind}: {st.Path}" + (st.Status != "-" ? $" [{st.Status}]" : ""),
+                               string.Join("; ", reasons), fl, r.More.Where(m => m.Key == "command" || m.Key == "decoded" || m.Key == "script").ToList());
+                }
+                catch (Exception e) { c.Err.Add(f + ": " + e.Message); }
+            }
+            var head = "what Windows runs by itself after \"Reset this PC\" (C:\\Recovery\\OEM), at the end of Setup (Setup\\Scripts) and from answer files\n" +
+                       "(unattend.xml, autounattend.xml); time = file last changed; phase:/script: = ResetConfig.xml, command: = what a script or answer file runs";
+            if (unlisted > 0)
+                head += $"\n{unlisted} other files in {oem} not listed: older than the time window, programs validly signed (newest {newestUnlisted:yyyy-MM-dd})";
+            if (oemFiles >= MaxOemFiles) head += $"\nonly the first {MaxOemFiles} files of {oem} read";
+            // a machine ID kept for after a reinstall (MachineGuid changes; WEEVILPROXY keeps the old one to stay registered with its server)
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography"))
+                    if (k?.GetValue("OldMachineGuid") is object old)
+                    {
+                        var when = Native.LastWrite(k);
+                        c.Observe("registry", @"HKLM\SOFTWARE\Microsoft\Cryptography\OldMachineGuid", when);
+                        var fl = new List<string> { ResetHooks.HookFlag };
+                        t.Add(Log.T(when), "registry", "-", Rules.FlagCol(fl), @"HKLM\SOFTWARE\Microsoft\Cryptography: OldMachineGuid " + Rules.Fix(Convert.ToString(old)));
+                        t.More("why", "a machine ID kept for after a reset or reinstall (Windows has no such value)");
+                        c.Find(when, @"registry value HKLM\SOFTWARE\Microsoft\Cryptography\OldMachineGuid", "a machine ID kept for after a reset or reinstall", fl);
+                    }
+            }
+            catch (Exception e) { c.Err.Add("OldMachineGuid: " + e.Message); }
+            c.Out.Sub("Reset and setup hooks", head);
+            t.WriteTo(c.Out, unlisted > 0 ? "none of them" : "none (no C:\\Recovery\\OEM files, setup scripts or answer files)");
+        }
+
+        /// <summary>The most files read from C:\Recovery\OEM (a PC maker's factory copy of C: has hundreds).</summary>
+        const int MaxOemFiles = 5000;
+
+        /// <summary>The files below a folder; none when it cannot be read (one locked subfolder must not end the walk).</summary>
+        static IEnumerable<string> SafeFiles(string dir)
+        {
+            try { return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).ToList(); } catch { return Enumerable.Empty<string>(); }
+        }
+
+        /// <summary>A file of the reset and setup hooks: what it is and what it runs.</summary>
+        sealed class HookFile
+        {
+            public string Path, Where, Kind, Text;
+            public FileInfo Info;
+            public bool ResetConfig, Script, Reg, Answer, Program, TaskCopy, TooBig;
+            public bool Hook => ResetConfig || Script || Reg || Answer || TaskCopy;
+            public List<string> Commands = new List<string>();
+            public List<(string Key, string Value)> More = new List<(string, string)>();
+        }
+
+        /// <summary>A task's XML starts with its namespace: a few KB tell whether any file is one.</summary>
+        const int TaskSniff = 4096;
+
+        HookFile ReadHookFile(string f, string where, string oem)
+        {
+            var fi = new FileInfo(f);
+            var name = fi.Name;
+            var r = new HookFile { Path = f, Where = where, Info = fi };
+            r.ResetConfig = name.Equals("ResetConfig.xml", StringComparison.OrdinalIgnoreCase);
+            r.Script = ScriptFile.IsMatch(name);
+            r.Reg = name.EndsWith(".reg", StringComparison.OrdinalIgnoreCase);
+            // Unattend.xml in C:\Recovery\OEM is the answer file "Reset this PC" applies
+            r.Answer = AnswerFile(where, name);
+            r.Program = Spor.Modules.Files.Exec.IsMatch(name);
+            if (r.ResetConfig || r.Script || r.Reg || r.Answer) (r.Text, r.TooBig) = ReadHook(f);
+            else if (!r.Program && where == "recovery")
+            {
+                // any other file may be a task copy (WEEVILPROXY names it after the task, without an extension)
+                var sniff = ReadHook(f, TaskSniff).Text;
+                if (ResetHooks.IsTaskXml(sniff)) { r.Text = ReadHook(f).Text; r.TaskCopy = !r.ResetConfig && !r.Answer; }
+            }
+            r.Kind = r.ResetConfig ? "reset config" : r.Answer ? "answer file" : r.TaskCopy ? "task copy" : r.Reg ? "registry file"
+                   : r.Script ? (where == "setup" ? "setup script" : "reset script") : r.Program ? "program" : "file";
+            if (r.ResetConfig)
+                foreach (var (phase, p) in ResetHooks.ResetRuns(r.Text))
+                {
+                    r.More.Add(("phase", phase));
+                    // a path with characters a path cannot have is shown as written (one bad Run must not hide the others)
+                    var full = ScriptPath(oem, p);
+                    if (full == null) { r.More.Add(("script", Rules.Fix(p))); continue; }
+                    bool there = false;
+                    try { there = File.Exists(full); } catch { }
+                    r.More.Add(("script", Log.Item(Rules.Fix(full), there ? null : "gone")));
+                    c.Observe("path", full, fi.LastWriteTimeUtc);
+                }
+            if (r.Script) r.Commands.AddRange(ResetHooks.Commands(r.Text));
+            // a .reg file: its keys (key:); RestoresTask decides, not its value lines (paths of a PC maker's settings)
+            if (r.Reg) r.More.AddRange(ResetHooks.RegKeys(r.Text).Take(ResetHooks.MaxCommands).Select(k => ("key", k)));
+            if (r.TaskCopy)
+            {
+                var doc = ResetHooks.Xml(r.Text);
+                foreach (System.Xml.XmlNode ex in doc?.GetElementsByTagName("Exec").Cast<System.Xml.XmlNode>() ?? Enumerable.Empty<System.Xml.XmlNode>())
+                {
+                    var cmd = ex.SelectNodes("*").Cast<System.Xml.XmlNode>().Where(n => n.LocalName == "Command" || n.LocalName == "Arguments").Select(n => n.InnerText.Trim());
+                    r.Commands.Add(string.Join(" ", cmd));
+                }
+            }
+            bool autoLogon = false;
+            if (r.Answer)
+            {
+                foreach (var (k, cmd) in ResetHooks.AnswerCommands(r.Text, out autoLogon)) r.Commands.Add(cmd);
+                if (File.Exists(Path.Combine(Path.GetPathRoot(f) ?? "", @"sources\boot.wim"))) r.More.Add(("info", @"\sources\boot.wim on this drive: Windows Setup reads this answer file"));
+            }
+            // the commands that give a reason first: the few shown are the ones that matter
+            var shown = ResetHooks.ShowOrder(r.Commands);
+            foreach (var cmd in shown.Take(ResetHooks.MaxCommands))
+            {
+                r.More.Add(("command", Rules.Fix(Cut(Util.Clip(cmd), 200))));
+                if (ResetHooks.Decoded(cmd) is string dec) r.More.Add(("decoded", Rules.Fix(dec)));
+            }
+            if (shown.Count > ResetHooks.MaxCommands) r.More.Add(("info", $"+{shown.Count - ResetHooks.MaxCommands} more commands"));
+            if (autoLogon) r.More.Add(("info", "AutoLogon password set (not shown)"));
+            if ((fi.Attributes & FileAttributes.Hidden) != 0) r.More.Add(("info", "hidden"));
+            return r;
+        }
+
+        /// <summary>
+        /// (pure) The flags, reasons and whether a file is listed. Evidence (!reset-hook): its commands run code or restore a task or
+        /// registry values (ResetHooks.Reasons), a task copy a hook script uses, a .reg file that restores a task, a padded hook, a hook
+        /// written in the time window that starts a program outside Windows and Program Files, a new program that is not validly signed.
+        /// Context (!reset-config): any other hook written in the time window (a reset or reinstall writes them too). An older hook
+        /// with none of these is the PC maker's: listed, no flag. Other files: listed only when new, programs also when not validly
+        /// signed (a factory copy of C: holds hundreds of old, signed files).
+        /// </summary>
+        internal static (List<string> Flags, List<string> Reasons, bool Listed) Judge(bool hook, bool namedTaskCopy, bool regRestores,
+            bool tooBig, bool recent, bool unsigned, string outsideProgram, IEnumerable<string> commands)
+        {
+            var reasons = ResetHooks.Reasons(commands);
+            if (namedTaskCopy) reasons.Add("copy of a scheduled task that a reset or setup script uses");
+            if (regRestores) reasons.Add("registry file that restores a scheduled task");
+            // padded beyond what Spor reads: what follows the part read is unknown
+            if (tooBig) reasons.Add($"larger than {ResetHooks.MaxText / 1024 / 1024} MB (padded?): only its start was read");
+            if (recent && hook && !string.IsNullOrEmpty(outsideProgram)) reasons.Add("written in the time window; starts " + Rules.Fix(outsideProgram));
+            if (recent && unsigned) reasons.Add("new program that is not validly signed");
+            var fl = reasons.Count > 0 ? new List<string> { ResetHooks.HookFlag }
+                   : recent && hook ? new List<string> { ResetHooks.ConfigFlag } : new List<string>();
+            if (recent && hook && reasons.Count == 0) reasons.Add("written in the time window");
+            return (fl, reasons, hook || recent || unsigned);
+        }
+
+        /// <summary>(pure) A hook command names the file (a task copy the script copies back or registers): its name, at least 4 characters.</summary>
+        internal static bool NamedBy(string fileName, IEnumerable<string> commands) =>
+            !string.IsNullOrEmpty(fileName) && fileName.Length >= 4 && (commands ?? Enumerable.Empty<string>()).Any(x => x.IndexOf(fileName, StringComparison.OrdinalIgnoreCase) >= 0);
+
+        /// <summary>A program a hook starts that is outside Windows and Program Files and not the PC maker's own in C:\Recovery\OEM.</summary>
+        static bool RunsOutside(string program, string oem) =>
+            Rules.DrivePath.IsMatch(program ?? "") && !Rules.InTrustedLocation(program)
+            && !program.StartsWith(oem + "\\", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>(pure) An answer file: found where Setup reads them, or an (auto)unattend.xml in C:\Recovery\OEM (the one a reset applies).</summary>
+        internal static bool AnswerFile(string where, string name) => where == "answer" || (where == "recovery" && AnswerName.IsMatch(name ?? ""));
+
+        /// <summary>(pure) A ResetConfig.xml Run path as a full path (relative to C:\Recovery\OEM); null when it has characters no path has.</summary>
+        internal static string ScriptPath(string oem, string p)
+        {
+            try { return Path.IsPathRooted(p) ? p : Path.Combine(oem, p); } catch (ArgumentException) { return null; }
+        }
+
+        /// <summary>Text cut to n characters with "…".</summary>
+        static string Cut(string s, int n) => s == null || s.Length <= n ? s : s.Substring(0, n) + "…";
+
+        /// <summary>The start of a hook file (at most ResetHooks.MaxText bytes) and whether it is bigger ('' when unreadable).</summary>
+        static (string Text, bool TooBig) ReadHook(string f, int max = ResetHooks.MaxText)
+        {
+            try { return ResetHooks.Head(f, max); } catch { return ("", false); }
+        }
+
+        /// <summary>
+        /// Program of a command: path, flags, [gone]/[unsigned]. Flags of the command: !suspicious for a Windows tool or script interpreter
+        /// whose arguments download or run code (irm | iex, a script in ProgramData, -EncodedCommand, Add-MpPreference, ...),
+        /// !interpreter-outside for an interpreter where none is installed, !renamed-persisted for a signed decoy in a random folder.
+        /// </summary>
         string Show(string cmd, out string prog, out List<string> fl)
         {
             prog = Cmd.Program(cmd, c.WinDir);
             fl = Rules.Flags(prog);
             if (Rules.Lol.IsMatch(prog) && !fl.Contains("!lolbin")) fl.Add("!lolbin");
-            if (Names.RenamedDetail(c, c.RealCase(prog)) != null) fl.Add(Names.RenamedFlag);
+            var real = c.RealCase(prog);
+            if (Names.RenamedDetail(c, real) != null) fl.Add(Names.RenamedFlag);
+            if ((Rules.Lol.IsMatch(prog) || Rules.Interpreter.IsMatch(prog)) && Rules.ArgsRunCode(Cmd.Args(cmd))) fl.Add("!suspicious");
+            if (Rules.InterpreterOutside(real, c.WinDir, Rules.HasUninstaller))
+            {
+                fl.Add(Rules.InterpreterOutsideFlag);
+                c.MarkPath(real, Rules.InterpreterOutsideFlag);
+            }
+            if (Names.RenamedPersisted(c, real))
+            {
+                fl.Add(Names.RenamedPersistedFlag);
+                c.MarkPath(real, Names.RenamedPersistedFlag);
+            }
             return Rules.DrivePath.IsMatch(prog) ? c.File(prog) : Rules.Fix(prog);
+        }
+
+        /// <summary>
+        /// A driver outside System32\drivers and the DriverStore gets !outside-driver-folders (in `fl`). True when that flag is all there
+        /// is and a well-known publisher signed the driver validly (anti-cheat, VPN): listed, but no SUMMARY line.
+        /// </summary>
+        bool DriverFlag(string kind, string prog, List<string> fl)
+        {
+            if (kind != "driver" || !Rules.DrivePath.IsMatch(prog ?? "") || Rules.DriverFolder.IsMatch(prog)) return false;
+            if (!fl.Contains("!outside-driver-folders")) fl.Add("!outside-driver-folders");
+            // quiet only in an install folder (Program Files, ProgramData), with no other flag (not a vulnerable driver): a signed driver
+            // from Temp or any other folder (C:\Only for\CH32\iqvw64.sys) stays a finding
+            return Rules.Whitelist && Rules.Strong(fl).All(x => x == "!outside-driver-folders") && Rules.InInstallFolder(prog) && c.ByTrustedSigner(prog);
         }
 
         /// <summary>Program of a command as (path, status) for a table.</summary>
@@ -209,6 +485,10 @@ namespace Spor.Modules
                             var st = start == 0 ? "boot" : start == 1 ? "system" : start == 2 ? "auto" : start == 3 ? "manual" : start == 4 ? "disabled" : "?";
                             var type = Convert.ToInt32(k.GetValue("Type") ?? 0);
                             var kind = (type & 0xF) != 0 ? "driver" : "service";   // 1 kernel driver, 2 file system driver, 8 recognizer; 0x10/0x20 services
+                            bool quietDriver = DriverFlag(kind, prog, fl);
+                            // before the row is written: the table and the SUMMARY show the same flags
+                            bool unsignedAuto = !Trusted(prog) && start <= 2 && Ctx.BadSig(pf.Status);
+                            if (unsignedAuto && !fl.Contains("!unsigned")) fl.Add("!unsigned");
                             // svchost-hosted: the DLL is what FRST lists and links; sub-line with its status (it is in FILES through ProgF)
                             var dllLine = cmd == dll ? Log.Item(pf.Path, pf.Status, null, Rules.FlagCol(fl)) : null;
                             var svMore = new List<(string Key, string Value)>();
@@ -217,7 +497,7 @@ namespace Spor.Modules
                             sv.Add((t, new[] { Log.T(t), kind, st, pf.Status, Rules.FlagCol(fl), Rules.Fix(n), pf.Path + (dll != null && cmd == dll ? " (svchost DLL)" : "") }, svMore));
                             if (Rules.DrivePath.IsMatch(prog)) c.Event(t, "SVC", prog, $"service {n} ({st}) changed");
                             else c.Event(t, "SVC", null, text: $"service {n} ({st}) changed: {Util.Clip(Rules.Fix(ip), 120)}");
-                            if (Rules.Strong(fl).Count > 0 || (!Trusted(prog) && start <= 2 && Ctx.BadSig(pf.Status))) c.Find(t, $"service {Rules.Fix(n)} ({st}): {disp}", null, fl);   // time = key changed
+                            if ((Rules.Strong(fl).Count > 0 && !quietDriver) || unsignedAuto) c.Find(t, $"service {Rules.Fix(n)} ({st}): {disp}", null, fl);   // time = key changed
                         }
             }
             catch (Exception e) { c.Err.Add("Services: " + e.Message); }
@@ -248,12 +528,25 @@ namespace Spor.Modules
                 }
                 bool trusted = dprog != null ? Trusted(dprog) && Rules.Strong(dfl).Count == 0 : Trusted(prog, Cmd.Args(ip));
                 if (Rules.Whitelist && trusted && Rules.Strong(fl).Count == 0) { e.Dispose(); continue; }
+                bool quietDriver = DriverFlag(kind, prog, fl);
                 it.Add(Log.T(t), kind, acct, pf.Status, Rules.FlagCol(fl), Rules.Fix(name), pf.Path);
                 it.More("dll", dllLine);
+                // what the service runs, when the program is not all of it (cmd.exe /c ..., a script host and its script)
+                var ipArgs = Cmd.Args(ip);
+                if (ipArgs.Length > 0) it.More("arguments", Rules.Fix(ipArgs));
                 foreach (var m in Modules(prog)) it.More("module", m);
                 if (Rules.DrivePath.IsMatch(prog)) c.Event(t, "SVC", prog, $"service {name} installed");
                 else c.Event(t, "SVC", null, text: $"service {name} installed: {Util.Clip(Rules.Fix(ip), 120)}", flags: fl);
-                if (!trusted || Rules.Strong(fl).Count > 0) c.Find(t, $"service installed: {Rules.Fix(name)}: {disp}" + (dllLine != null ? ", dll " + dllLine : ""), null, fl);
+                // a SUMMARY line only with a reason: a strong flag or a signature that does not hold ([gone] alone is none: a security
+                // product reinstalling its drivers again and again)
+                bool badSig = Ctx.BadSig(pf.Status) || (dllLine != null && Ctx.BadSig(dllLine));
+                if (!trusted && badSig && !fl.Contains("!unsigned")) fl.Add("!unsigned");
+                // evidence (a strong flag, a signature that does not hold) or, else, context: a service the whitelist does not hide was
+                // installed (a security product reinstalling its drivers is one line with "+N more times" in the SUMMARY)
+                // a well-known publisher's driver in its install folder (quietDriver): context only, without !outside-driver-folders
+                var baseFl = quietDriver ? fl.Where(x => x != "!outside-driver-folders").ToList() : fl;
+                var sumFl = (Rules.Strong(baseFl).Count > 0) || (!trusted && badSig) ? baseFl : baseFl.Concat(new[] { "!new-service" }).ToList();
+                c.Find(t, $"service installed: {Rules.Fix(name)}: {disp}" + (dllLine != null ? ", dll " + dllLine : ""), null, sumFl);
                 e.Dispose();
             }
             it.WriteTo(c.Out);
@@ -302,6 +595,8 @@ namespace Spor.Modules
                         var cmd = ex.SelectSingleNode("t:Command", ns)?.InnerText ?? "";
                         var args = ex.SelectSingleNode("t:Arguments", ns)?.InnerText ?? "";
                         var pf = ProgF(cmd, out var prog, out var fl);
+                        // the task's arguments are not part of its command: what they run is checked here
+                        if ((Rules.Lol.IsMatch(prog) || Rules.Interpreter.IsMatch(prog)) && Rules.ArgsRunCode(args) && !fl.Contains("!suspicious")) fl.Add("!suspicious");
                         var disp = Log.Item(pf.Path, pf.Status);
                         acts.Add((prog, disp + (args.Length > 0 ? "  " + Rules.Fix(args) : ""), fl, pf.Path, pf.Status, Rules.Fix(args)));
                     }
@@ -349,8 +644,15 @@ namespace Spor.Modules
                     var info = string.Join(", ", new[] { hidden ? "hidden" : null, string.IsNullOrEmpty(author) ? null : "author " + author }.Where(v => v != null));
                     if (info.Length > 0) more.Add("info: " + info);
                     foreach (var a in acts) more.AddRange(Modules(a.Prog).Select(m => "module: " + m));
-                    trows.Add((fi.CreationTimeUtc, new[] { Log.T(fi.CreationTimeUtc), "task", changed ? Log.T(fi.LastWriteTimeUtc) : "-", Rules.FlagCol(first.Fl),
+                    // the task's flags: those of every action (a second action can be the one that downloads code); a program that is
+                    // not trusted and not validly signed: !unsigned; a hidden task (not Windows') that runs one not trusted: !hidden-task
+                    var taskFl = acts.SelectMany(a => a.Fl).Distinct().ToList();
+                    if (acts.Any(a => a.Prog.Length > 0 && !Trusted(a.Prog) && Ctx.BadSig(a.Line)) && !taskFl.Contains("!unsigned")) taskFl.Add("!unsigned");
+                    if (hidden && !ms && acts.Any(a => a.Prog.Length > 0 && !Trusted(a.Prog)) && !taskFl.Contains(HiddenTaskFlag)) taskFl.Add(HiddenTaskFlag);
+                    var strongFl = Rules.Strong(taskFl);
+                    trows.Add((fi.CreationTimeUtc, new[] { Log.T(fi.CreationTimeUtc), "task", changed ? Log.T(fi.LastWriteTimeUtc) : "-", Rules.FlagCol(taskFl),
                                                            Rules.Fix(name) }, more));
+                    // the events without the task's flags: its SUMMARY line is the finding below (one line, not two)
                     if (first.Prog != null && Rules.DrivePath.IsMatch(first.Prog))
                     {
                         c.Event(fi.CreationTimeUtc, "TSK", first.Prog, $"task {name} created");
@@ -361,8 +663,10 @@ namespace Spor.Modules
                         c.Event(fi.CreationTimeUtc, "TSK", null, text: $"task {Rules.Fix(name)} created: {Util.Clip(first.Line ?? "", 120)}");
                         if (changed) c.Event(fi.LastWriteTimeUtc, "TSK", null, text: $"task {Rules.Fix(name)} changed");
                     }
-                    if (acts.Any(a => Rules.Strong(a.Fl).Count > 0 || (a.Prog.Length > 0 && !Trusted(a.Prog) && Ctx.BadSig(a.Line))) || (hidden && !ms && acts.Any(a => a.Prog.Length > 0 && !Trusted(a.Prog))))
-                        c.Find(fi.CreationTimeUtc, $"task {Rules.Fix(name)}{(hidden ? " (hidden)" : "")}: {first.Line}", null, first.Fl);   // time = task file created
+                    if (strongFl.Count > 0 || acts.Any(a => a.Prog.Length > 0 && !Trusted(a.Prog) && Ctx.BadSig(a.Line)) || (hidden && !ms && acts.Any(a => a.Prog.Length > 0 && !Trusted(a.Prog))))
+                        // "task \X: program [status] => arguments ..." like every item line (up to 0.8.0 the arguments came after a double blank)
+                        c.Find(fi.CreationTimeUtc, $"task {Rules.Fix(name)}{(hidden ? " (hidden)" : "")}: {Log.Item(first.Path ?? "(no action)", first.Status)}",
+                               string.IsNullOrEmpty(first.Args) ? null : "arguments " + first.Args, taskFl);   // time = task file created
                 }
                 catch (UnauthorizedAccessException) when (Rules.Whitelist && LockedTasks.Contains(f.Substring(root.Length))) { lockedTasks++; }
                 catch (Exception e) { c.Err.Add("Task " + f + ": " + e.Message); }
@@ -397,7 +701,7 @@ namespace Spor.Modules
                     tet.Add(Log.T(t), "task", e.Id.ToString(), what, Rules.Fix(Ev.P(e, 0)), Ev.P(e, 1));
                     c.Observe("task", Ev.P(e, 0), t, text);
                     c.Event(t, "TSK", null, text: text);
-                    if (e.Id == 141) c.Find(t, text);
+                    if (e.Id == 141) c.Find(t, text, null, Rules.InfoFlag("!task-deleted"));
                 }
                 tet.WriteTo(c.Out);
             }
@@ -427,13 +731,26 @@ namespace Spor.Modules
                     {
                         var pf = ProgF(target, out var prog, out var fl);
                         c.Observe("cmd", target, f.CreationTimeUtc, "Startup item " + line + " -> " + Log.Item(pf.Path, pf.Status));
-                        if (Rules.DrivePath.IsMatch(prog ?? "")) c.Observe("path", prog, f.CreationTimeUtc);
+                        if (Rules.DrivePath.IsMatch(prog ?? "")) { c.Observe("path", prog, f.CreationTimeUtc); c.Relate(f.FullName, prog); }
                         var ta = Cmd.Args(target);
                         stt.More("target", Log.Item(pf.Path, pf.Status, ta.Length > 0 ? "arguments " + Rules.Fix(ta) : null, Rules.FlagCol(fl)));
                         foreach (var m in Modules(prog)) stt.More("module", m);
-                        if (Rules.Strong(fl).Count > 0 || fl.Contains("!lolbin")) c.Find(f.CreationTimeUtc, "Startup item " + c.File(f.FullName) + " -> " + c.File(prog), null, Rules.Flags(f.FullName).Concat(fl).ToList());
+                        if (Rules.Strong(fl).Count > 0 || fl.Contains("!lolbin"))
+                        {
+                            // a shortcut that starts a Windows tool (mshta, rundll32, ...): at least context, when nothing else flags it
+                            var stFl = Rules.Flags(f.FullName).Concat(fl).ToList();
+                            if (Rules.Strong(stFl).Count == 0) stFl.Add("!startup-item");
+                            c.Find(f.CreationTimeUtc, "Startup item " + c.File(f.FullName) + " -> " + c.File(prog), null, stFl);
+                        }
                     }
-                    else if (!f.Extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase)) c.Find(f.CreationTimeUtc, "Startup folder file (not a shortcut): " + c.File(f.FullName), null, Rules.Flags(f.FullName));
+                    else if (!f.Extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // a program or script right in a Startup folder runs at every sign-in
+                        var sfl = Rules.Flags(f.FullName);
+                        if (Rules.ProgramFile(f.FullName) && !sfl.Contains("!suspicious")) sfl.Add("!suspicious");
+                        if (Rules.Strong(sfl).Count == 0) sfl.Add("!startup-item");   // a document or data file: context
+                        c.Find(f.CreationTimeUtc, "Startup folder file (not a shortcut): " + c.File(f.FullName), null, sfl);
+                    }
                     c.Event(f.CreationTimeUtc, "STA", f.FullName, target != null ? "-> " + target : null);
                 }
             }
@@ -493,7 +810,7 @@ namespace Spor.Modules
                         c.Observe("cmd", cw, null, $"WMI subscription {Nm(fr)} -> {Nm(cr)}: {cw}");
                         if (Rules.Whitelist && own) continue;
                         wt.Add("wmi", Nm(fr), Nm(cr), cw, fq);
-                        c.Find($"WMI subscription {Nm(fr)} -> {Nm(cr)}: {cw}");
+                        c.Find(null, $"WMI subscription {Nm(fr)} -> {Nm(cr)}", cw, new List<string> { "!suspicious" });   // runs code on an event
                     }
                 wt.WriteTo(c.Out);
             }

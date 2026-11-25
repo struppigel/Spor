@@ -21,7 +21,7 @@ namespace Spor
     {
         public const string Flag = "!known-malware";
         public const string OverrideFile = "Spor.autodetect.txt";
-        public static readonly string[] Kinds = { "path", "task", "run", "service", "cmd", "software", "company", "domain" };
+        public static readonly string[] Kinds = { "path", "task", "run", "service", "cmd", "software", "company", "domain", "registry" };
         /// <summary>Hits per family in the SUMMARY; the rest are counted on one more line.</summary>
         public const int PerFamily = 10;
         static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
@@ -49,7 +49,7 @@ namespace Spor
         }
 
         /// <summary>Kinds with a few hundred values per PC at most: regex rows without a key are allowed there.</summary>
-        public static readonly string[] FewValues = { "task", "run", "service", "software" };
+        public static readonly string[] FewValues = { "task", "run", "service", "software", "registry" };
 
         internal sealed class Db
         {
@@ -259,6 +259,15 @@ namespace Spor
                 // files on the timeline: their line gets the flag; the rest are SUMMARY lines
                 var findings = fam.Where(h => h.Value.File == null || !Mark(c.Events, h.Value.File, fam.Key, Notes(h.Value)))
                                   .OrderBy(h => h.Value.T ?? DateTime.MaxValue).ToList();
+                // what stands for a hit gets its mark too: a Startup shortcut's target, the files in a matched program's folder
+                foreach (var h in fam)
+                    if (c.Related.TryGetValue(h.Value.File ?? h.Key.Item, out var related))
+                        foreach (var r in related)
+                        {
+                            var via = "related to " + (h.Value.File != null ? Util.Leaf(h.Value.File) : "a matched installed program");
+                            if (!r.EndsWith("\\")) Mark(c.Events, r, fam.Key, via);
+                            else if (r.TrimEnd('\\').Count(ch => ch == '\\') >= 3) MarkInside(c.Events, r, fam.Key, via);   // not C:\Program Files\
+                        }
                 foreach (var h in findings.Take(PerFamily))
                 {
                     var notes = Notes(h.Value);
@@ -286,6 +295,16 @@ namespace Spor
                 else if (!e.Known.Contains(known)) e.Known += "; " + known;
                 any = true;
             }
+            return any;
+        }
+
+        /// <summary>Mark for the events of every file inside a folder (folder ends with "\"): a known-malware program's install folder.</summary>
+        internal static bool MarkInside(IList<TEvent> events, string folder, string family, string note)
+        {
+            bool any = false;
+            foreach (var path in events.Where(e => e.Path != null && e.Path.StartsWith(folder, StringComparison.OrdinalIgnoreCase))
+                                       .Select(e => e.Path).Distinct(StringComparer.OrdinalIgnoreCase).ToList())
+                any |= Mark(events, path, family, note);
             return any;
         }
 

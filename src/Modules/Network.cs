@@ -29,7 +29,111 @@ namespace Spor.Modules
             c = ctx;
             Srum();
             Connections();
+            Proxy();
             Dns();
+        }
+
+        // ---------------- Proxy ----------------
+
+        public const string LocalProxyFlag = "!local-proxy";
+
+        /// <summary>
+        /// (pure) Host and port of a WinINet / WinHTTP proxy value: "127.0.0.1:57352", "http=127.0.0.1:8080;https=..." (the first
+        /// entry), "socks=host:1080"; null when there is none.
+        /// </summary>
+        internal static (string Host, int Port)? ProxyTarget(string value)
+        {
+            var first = (value ?? "").Split(';').Select(x => x.Trim()).FirstOrDefault(x => x.Length > 0);
+            if (first == null) return null;
+            int eq = first.IndexOf('=');
+            if (eq >= 0) first = first.Substring(eq + 1);
+            first = Regex.Replace(first, @"^[a-z]+://", "", RegexOptions.IgnoreCase).TrimEnd('/');
+            var m = Regex.Match(first, @"^\[?([^\]\s]+?)\]?(?::(\d{1,5}))?$");
+            if (!m.Success) return null;
+            return (m.Groups[1].Value, m.Groups[2].Success ? int.Parse(m.Groups[2].Value) : 80);
+        }
+
+        /// <summary>(pure) Every entry of a per-protocol proxy value ("ftp=x:21;http=127.0.0.1:8080;https=..."), as ProxyTarget reads one.</summary>
+        internal static List<(string Host, int Port)> ProxyTargets(string value) =>
+            (value ?? "").Split(';').Select(x => ProxyTarget(x)).Where(x => x.HasValue).Select(x => x.Value).Distinct().ToList();
+
+        /// <summary>(pure) A proxy on this PC or the local network: localhost, loopback, private and link-local addresses.</summary>
+        internal static bool LocalOrLan(string host)
+        {
+            if (string.IsNullOrEmpty(host)) return false;
+            if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+            return IPAddress.TryParse(host, out var a) && !Public(a);
+        }
+
+        /// <summary>
+        /// (pure) The proxy of WinHTTP's WinHttpSettings value (netsh winhttp set proxy): DWORD version, DWORD counter, DWORD flags
+        /// (3 = a proxy), DWORD length, the proxy as ASCII, then the bypass list; null when it is direct access.
+        /// </summary>
+        internal static string WinHttpProxy(byte[] b)
+        {
+            if (b == null || b.Length < 16) return null;
+            int flags = BitConverter.ToInt32(b, 8), len = BitConverter.ToInt32(b, 12);
+            if ((flags & 2) == 0 || len <= 0 || len > b.Length - 16) return null;   // no int overflow on a crafted length
+            return System.Text.Encoding.ASCII.GetString(b, 16, len);
+        }
+
+        /// <summary>
+        /// Proxy settings: per user (WinINet, what browsers use) and the machine's (policy and WinHTTP). A proxy on this PC or the LAN
+        /// gets !local-proxy and the program listening on its port (a man-in-the-middle proxy reads all traffic, HTTPS too with a root
+        /// certificate it installed: WEEVILPROXY); a proxy script (PAC) too; any other proxy the context flag !proxy.
+        /// </summary>
+        void Proxy()
+        {
+            c.Out.Sub("Proxy settings", "where WinINet (browsers) and WinHTTP send web traffic; listening = the program that has the proxy's port open now");
+            var t = new Table("@changed", "[scope", "<flags", "*proxy", "=details");
+            var listeners = new Dictionary<int, string>();
+            try
+            {
+                foreach (var x in Tcp(2).Concat(Tcp(23)).Where(x => x.State == 2))
+                    if (!listeners.ContainsKey(x.LPort)) listeners[x.LPort] = $"{ProcPath(x.Pid)} (pid {x.Pid})";
+            }
+            catch { }
+            void Row(DateTime? when, string scope, bool enabled, string server, string pac)
+            {
+                foreach (var (value, isPac) in new[] { (server, false), (pac, true) })
+                {
+                    if (string.IsNullOrWhiteSpace(value)) continue;
+                    var fl = new List<string>();
+                    var details = new List<string>();
+                    if (isPac) { details.Add("proxy script (PAC)"); fl.Add(LocalProxyFlag); }
+                    else if (!enabled) details.Add("not enabled");
+                    else if (ProxyTargets(value).Where(x => LocalOrLan(x.Host)).ToList() is var local && local.Count > 0)
+                    {
+                        // any local entry (http, https or socks): the program listening on each port
+                        fl.Add(LocalProxyFlag);
+                        foreach (var port in local.Select(x => x.Port).Distinct())
+                            details.Add(listeners.TryGetValue(port, out var who) ? "listening: " + who : $"nothing listening on port {port} now");
+                    }
+                    else fl.Add("!proxy");
+                    t.Add(Log.T(when), scope, Rules.FlagCol(fl), Rules.Fix(value), string.Join("; ", details));
+                    c.Observe("domain", ProxyTarget(value)?.Host, when);
+                    if (fl.Count > 0) c.Find(when, $"proxy ({scope}): {Rules.Fix(value)}", details.Count > 0 ? string.Join("; ", details) : null, fl);
+                }
+            }
+            const string Inet = @"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+            foreach (var h in c.Hives)
+                try
+                {
+                    using (var k = h.Root.OpenSubKey(Inet))
+                        if (k != null) Row(Native.LastWrite(k), "user " + h.User, Convert.ToInt32(k.GetValue("ProxyEnable") ?? 0) == 1,
+                                           Convert.ToString(k.GetValue("ProxyServer")), Convert.ToString(k.GetValue("AutoConfigURL")));
+                }
+                catch (Exception e) { c.Err.Add("proxy " + h.User + ": " + e.Message); }
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(Inet))
+                    if (k != null) Row(Native.LastWrite(k), "machine", Convert.ToInt32(k.GetValue("ProxyEnable") ?? 0) == 1,
+                                       Convert.ToString(k.GetValue("ProxyServer")), Convert.ToString(k.GetValue("AutoConfigURL")));
+                using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(Inet + @"\Connections"))
+                    if (k?.GetValue("WinHttpSettings") is byte[] wh && WinHttpProxy(wh) is string winhttp) Row(Native.LastWrite(k), "WinHTTP", true, winhttp, null);
+            }
+            catch (Exception e) { c.Err.Add("proxy (machine): " + e.Message); }
+            t.WriteTo(c.Out, "no proxy set");
         }
 
         bool Trusted(string p) => c.TrustedFile(p);   // location + valid signature, not a LOLBin
@@ -86,14 +190,21 @@ namespace Spor.Modules
             int k = 0, staging = 0;
             foreach (var r in shown)
             {
-                var fl = Rules.Flags(r.Path);
+                var fl = c.WithLolbinCopy(r.Path, Rules.Flags(r.Path));   // the flags the timeline gives the file (!lolbin-copy too)
                 // whitelist: updaters' staged packages (gone after the update; timeline too)
                 if (Rules.Whitelist && Rules.InUpdaterStaging(r.Path) && Rules.Strong(fl).Count == 0) { staging++; continue; }
                 var f = c.F(r.Path);
                 st.Add(Log.T(r.First), Log.T(r.Last), Cmd.Bytes(r.Sent), Cmd.Bytes(r.Recv), r.User, f.Status, Rules.FlagCol(fl), f.Path);
                 // timeline: the 60 programs that sent the most (the table lists all)
                 if (k++ < 60 || Rules.Strong(fl).Count > 0) c.Event(r.First, "SRU", r.Path, $"SRUM first activity in the window; sent {Cmd.Bytes(r.Sent)} in total");
-                if (r.Sent >= 50L << 20 && !c.SignedOk(r.Path)) c.Find(r.Last, $"{c.File(r.Path)} sent {Cmd.Bytes(r.Sent)} ({r.First:MM-dd} to {r.Last:MM-dd}, SRUM)", "last activity");
+                if (r.Sent >= 50L << 20 && !c.SignedOk(r.Path))
+                {
+                    // what the file is (an interpreter where none is installed, Defender detected it, ...), else the upload as context
+                    var upFl = Rules.Strong(fl).Concat(c.MarksOf(r.Path)).ToList();
+                    if (Rules.InterpreterOutside(r.Path, c.WinDir, Rules.HasUninstaller)) upFl.Add(Rules.InterpreterOutsideFlag);
+                    if (Rules.Strong(upFl).Count == 0) upFl.Add("!upload");
+                    c.Find(r.Last, $"{c.File(r.Path)} sent {Cmd.Bytes(r.Sent)} ({r.First:MM-dd} to {r.Last:MM-dd}, SRUM)", null, upFl.Distinct().ToList());
+                }
             }
             if (staging > 0) c.Out.Comment($"Hidden: {Util.Plural(staging, "updater package", "updater packages")} staged by Edge, Brave, Google or Windows Update; -nowhitelist lists them.");
             st.WriteTo(c.Out);
@@ -163,7 +274,7 @@ namespace Spor.Modules
                 var lis = g.Where(x => x.State == 2 && !IPAddress.IsLoopback(x.L)).Select(x => x.LPort).Distinct().OrderBy(x => x).ToList();
                 if (est.Count == 0 && lis.Count == 0) continue;
                 if (g.Key == System.Diagnostics.Process.GetCurrentProcess().Id) continue;   // Spor itself (certificate revocation lists)
-                var fl = Rules.Flags(path);
+                var fl = Rules.DrivePath.IsMatch(path) ? c.WithLolbinCopy(path, Rules.Flags(path)) : Rules.Flags(path);
                 var f = Rules.DrivePath.IsMatch(path) ? c.F(path) : (path, "-");
                 var disp = f.Item1;
                 bool unsigned = Ctx.BadSig(f.Item2);
@@ -221,7 +332,8 @@ namespace Spor.Modules
             {
                 var hit = names.Where(match).ToList();
                 foreach (var h in hit) dt.Add(cat, h);
-                if (hit.Count > 0 && (cat == "remote access" || cat == "tunnel / dynamic DNS" || cat == "victim ID in name")) c.Find($"DNS cache, {cat}: {string.Join(", ", hit)}");
+                if (hit.Count > 0 && (cat == "remote access" || cat == "tunnel / dynamic DNS" || cat == "victim ID in name"))
+                    c.Find(null, $"DNS cache, {cat}: {string.Join(", ", hit)}", null, Rules.InfoFlag("!remote-access"));
             }
             if (!Rules.Whitelist)
                 foreach (var n in names.Where(n => !Domains.Any(d => d.Match(n)))) dt.Add("-", n);

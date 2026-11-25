@@ -165,16 +165,16 @@ When a copied file was seen by another source too, there is no `[SC]` line at th
 | `!renamed-lolbin` | a Windows tool under another name (original name from Amcache) | High |
 | `!lolbin-copy` | a copy of MSBuild, InstallUtil, RegAsm, RegSvcs, AddInProcess, aspnet_compiler, wscript, cscript or mshta outside its usual folders (found by its original name, so also renamed) | High, especially with a signature that does not hold (`file changed after signing`), the Hidden attribute or in a Windows cache folder: PavinLoader runs its `.wsf` with a copied MSBuild.exe. A validly signed copy in AppData can be a portable build tool; ask. |
 | `!msi-script-action` | a cached Windows Installer package installs into `AppData\Local\<Vendor>\<Product>` and runs wscript, cscript, cmd, PowerShell or mshta (or a script of its own) as a custom action | High. RenLoader's fake vendor apps (`Realtek\Card Reader Helper`, `NVIDIA\PhysX Runtime`) start PavinLoader so. The line has the product code: remove the product, and the install folder. |
-| `!suspicious` | a command that downloads or runs code (Run dialog, address bar, PowerShell history) | High, typical for **ClickFix** (fake CAPTCHA: "press Win+R, Ctrl+V, Enter") |
+| `!suspicious` | a command that downloads or runs code (Run dialog, address bar, PowerShell history; since 0.8.1 also a Run value, service, task or running process whose Windows tool or interpreter gets such arguments, a WMI subscription, a program right in a Startup folder) | High, typical for **ClickFix** (fake CAPTCHA: "press Win+R, Ctrl+V, Enter") and for loaders that persist as `powershell ... irm ... \| iex` |
 | `!kept-despite-warning` | the browser warned and the user kept the download | Medium to high |
 | `!timestomped` | file timestamps were probably faked | Medium to high for programs and scripts. Read the signals. |
-| `!defender-off` | real-time protection or another protection was turned off | High, unless the user did it |
+| `!defender-off` | real-time protection or another protection was turned off (also an attempt Tamper Protection blocked) | High, unless the user did it |
 | `!defender-exclusion` | Defender exclusion added or changed | **Ask the user.** Malware adds exclusions for its folder, but many power users add their own, e.g. for Downloads or project folders. |
 | `!not-removed` | Defender could not remove a detection | High |
 | `!log-cleared` | an event log was cleared | High, anti-forensics |
 | `!hidden-account` | account hidden from the sign-in screen | High, backdoor account |
 | `!com-hijack` | a per-user COM registration overrides the machine one (COM handler of a scheduled task) | High |
-| `!unsigned`, `!outside-driver-folders` | driver without a valid signature, or loaded from an unusual folder | High for drivers (rootkits) |
+| `!unsigned`, `!outside-driver-folders` | driver (or auto-start service program) without a valid signature, or a driver loaded from an unusual folder | High for drivers (rootkits). A well-known publisher's validly signed driver outside the driver folders (anti-cheat, VPN) has no SUMMARY line since 0.8.1. |
 | `!from-web` | a Store or MSIX app was installed from a web page (App Installer link) | High, this is a known way to deliver malware. Check the source URL and the signer. |
 | `!log-syntax-in-name` | the path contains ` => ` or text like `[gone]` | High, the name was made to mislead someone who reads the log |
 | `!motw-removed` | a new program, script or shortcut has a Zone.Identifier with zone 0-2 and no URL | High. Browsers write zone 3 with a URL; a dropper wrote the low zone to turn off SmartScreen and the download warning. |
@@ -184,6 +184,15 @@ When a copied file was seen by another source too, there is no `[SC]` line at th
 | `!runtime-loader` | a new program that ships a script runtime (Python/Ren'Py, AutoIt, Node.js, Electron unless signed by a well-known publisher, Java, Lua), with loader signs in its folder | High. The code is in the data files listed as `script:` lines, not in the program. |
 | `!known-malware` | the item matches a pattern of a known malware family (Autodetect); the line names the family | High. The patterns are curated from confirmed cases; still read the line: a row can be wrong. |
 | `!renamed-program` | **hint**: a signed program under a random-looking or lure name that is not its original name | **Not on its own.** It goes to SUMMARY only with a strong flag on the same file or in the same folder, e.g. as the host of a `!sideload` DLL. |
+| `!abused-tld` | **hint**: downloaded from a host under a cheap TLD (`.lol`, `.top`, `.xyz`, ...) | **Not on its own.** Next to a strong flag it says where the file came from. |
+| `!renamed-persisted` | a Run value, service or task starts a validly signed program under another name, from a random-looking folder | High: a loader's signed decoy (Adobe's `Setup.exe` as `S_Pipe.exe` in `kgw7Hp\kOsW3u0gxT\clip\`) that side-loads or starts the real payload. Look at the files next to it. |
+| `!interpreter-outside` | Python, Node.js, AutoIt, Java, ... in a Windows folder or a drop location, started by persistence or running | High: a script interpreter has no business in `C:\Windows\System32\<name>\` or `C:\ProgramData\<name>\`; the script it runs is the malware. A portable Python in Downloads that the user runs by hand: ask. |
+| `!defender-detected` | Defender detected this file or process | Every line of the file has it, so its ShimCache, Prefetch and network lines link to the detection. A PUA detection of a tool the user wants: ask. |
+| `!in-defender-exclusion` | an unsigned file in a folder Defender excludes, or an excluded program | High when the exclusion is new or broad (`C:\`, `C:\Windows\System32`, `C:\Users\x`): malware excludes its own folder first. |
+| `!vulnerable-driver` | a signed kernel driver known to be vulnerable (Intel NAL `iqvw64e.sys`, `RTCore64.sys`, ...) | High from Temp or an odd folder, or with a game cheat or Defender turned off: kernel access for a loader (kdmapper) or a Defender killer. From MSI Afterburner or a fan tool the user runs: ask. |
+| `!random-name` | a driver with a random-looking file name | High: rootkits and cheat loaders install drivers under random names, often removed right after loading (`[gone]`). |
+| context flags (`!remote-access`, `!account-change`, `!history-deleted`, `!disk-image`, `!upload`, `!new-service`, `!task-deleted`, `!startup-item`) | not malware by themselves; SUMMARY lists them so the case is complete | Read them with the evidence around them: a remote access tool right before a fake support call, an admin account created by a loader, Defender's history wiped after a detection, an ISO opened just before the infection, a large upload by an unsigned program. |
+| `!invalid-signature` | a file changed after signing or with a revoked signature | Often a cracked game DLL (`steam_api64.dll`); in Windows or a security product's folder: infected. |
 | `!usb-worm-lnk` | a shortcut on a USB drive that starts cmd/wscript/rundll32/..., points into a hidden folder, or is named like the drive or a hidden folder | High. The `worm signs:` line under it says why. |
 | `!disguised-icon` | a shortcut to a program or script shows a folder, document or drive icon | High |
 | `!autorun` | autorun.inf that starts something, or a MountPoints2 shell command | High |
@@ -266,7 +275,9 @@ Programs running now from outside Windows and Program Files, unsigned ones, LOLB
 Run keys (all entries), services and tasks outside trusted locations, recently installed services (event 7045), Task Scheduler events (also **deleted** tasks), Startup folders and WMI subscriptions.
 Look for programs in AppData, ProgramData or Temp, random names, hidden tasks (`info: hidden`), and arguments that run scripts or encoded PowerShell. Services hosted by svchost.exe have an indented `dll:` line with the DLL that actually runs. A `module:` line is an unsigned DLL the program side-loads (`!sideload`).
 
-**Not covered yet:** Winlogon `Shell` and `Userinit`, Image File Execution Options, AppInit_DLLs, Active Setup, LSA packages, print monitors and browser extensions. Check those with other tools.
+**Reset and setup hooks** (Spor 0.9.0): what Windows runs by itself after "Reset this PC" (`C:\Recovery\OEM\ResetConfig.xml` and its scripts), at the end of Setup (`SetupComplete.cmd`) and from answer files (`unattend.xml`, `autounattend.xml`, also in the root of a USB stick). `!reset-hook` means it runs code or restores a task or registry values, or was written recently: malware uses it to survive a reset or a clean reinstall (WEEVILPROXY copies its task, a `.reg` export and a `.cmd` there, and drops a hidden `autounattend.xml` next to `\sources\boot.wim` on every drive). **A reset does not remove such malware: remove the hook files first.** `!reset-config` is context: a hook written recently that does nothing suspicious (a reset or reinstall writes them too); read the `command:` lines. A PC maker's older scripts, answer files and task copies (`AfterImageApply_*.cmd`, Lenovo's `scripts\FACTORY_POST`, the factory copy of `C:` in `C:\Recovery\OEM\C`) are listed without a flag, its other old files only as a count.
+
+**Not covered yet:** Winlogon `Shell` and `Userinit`, Image File Execution Options, AppInit_DLLs, Active Setup, LSA packages and print monitors. Check those with other tools. Browser extensions: only Chromium extensions not from a store (DOWNLOADS).
 
 ### DEFENDER
 Detections (`1116`), actions (`1117`), failures (`!not-removed`), protection turned off, exclusions (current list and changes), cloud lookups from MPLog and cleared event logs.
@@ -285,6 +296,7 @@ Webcam and microphone use per program, and traces of AnyDesk, TeamViewer, Screen
 - DNS cache: recent lookups of remote access, tunnel, paste and file sharing, bot API (Telegram, Discord webhooks) and IP lookup services. Many of them are normal, so combine them with the timeline.
 - `victim ID in name`: a host name whose first part is a MAC address, a GUID or a long hash (`0800272a1b3c.example.click`). Beacons do this so every victim resolves its own name. Also in SUMMARY.
 - `abused TLD`: names under .click, .top, .xyz and other cheap TLDs. Common for campaigns, but also for normal sites: only a hint.
+- Proxy settings (Spor 0.9.0): `!local-proxy` means web traffic goes through a program on this PC (`127.0.0.1:57352`), the line names it. Together with `!root-cert` / `!custom-root` (DEFENDER) and `!settings-hidden` for `network-proxy`, that is a man-in-the-middle stealer (WEEVILPROXY). Removing the malware is not enough: turn the proxy off, delete the root certificate, and change the passwords and keys typed while it ran.
 
 ### ACCOUNTS
 Local accounts, last sign-in, members of Administrators and account changes. Look for new accounts, unknown administrators and hidden accounts.
@@ -320,6 +332,9 @@ Expect these and don't report them as malware without more evidence:
 - Installers in Downloads and on the Desktop
 - `Spor.exe` itself with `PCA: Installer failed`: Windows' compatibility assistant treats programs that ask for admin rights like installers
 - `Defender detection history deleted` now and then
+- `!reset-config` for the hooks a recent "Reset this PC" or reinstall wrote (`C:\Windows\Panther\unattend.xml`)
+- `!custom-root` for an antivirus web shield (Avast, AVG, Kaspersky, ESET), Fiddler or a developer's local certificate (mkcert)
+- `!dev-mode` for developers; an unpacked extension they made themselves
 - Disk images mounted by virtual machines (WSL, Docker, Hyper-V)
 - Defender detections of files that the user analyses on purpose, e.g. if they are malware researchers or use security tools
 - Games and tools that ship a script runtime (Ren'Py and Python games, Electron apps, Java tools) with `script runtime` in the timeline, without `!runtime-loader`. Electron apps validly signed by a well-known publisher (resources/publishers.txt) are never checked; other Electron apps are, like the other runtimes, because a lot of malware is Electron-based.

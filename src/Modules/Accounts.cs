@@ -62,21 +62,25 @@ namespace Spor.Modules
                     {
                         var u = (USER_INFO_3)Marshal.PtrToStructure(buf + i * sz, typeof(USER_INFO_3));
                         bool enabled = (u.flags & 2) == 0, admin = u.priv == 2;
-                        var pwSet = DateTime.UtcNow.AddSeconds(-u.password_age);
+                        // password_age 0: no local password set (a Microsoft account, a PIN only): no time to show, not "just now"
+                        DateTime? pwSet = u.password_age > 0 ? DateTime.UtcNow.AddSeconds(-u.password_age) : (DateTime?)null;
                         // last sign-in: when Windows last loaded the user's profile (every sign-in, also with PIN/Windows Hello/Microsoft
                         // account); usri_last_logon only counts classic password logons. No profile = never signed in interactively.
-                        var (hasProfile, loaded) = ProfileLoad(u.name);
+                        // The profile by the account's SID (machine SID + RID): a name lookup can fail for an account that has one.
+                        var sid = Sid(msid, u.name, u.user_id);
+                        var (hasProfile, loaded) = ProfileLoad(u.name, sid);
                         DateTime? last = u.last_logon > 0 ? DateTimeOffset.FromUnixTimeSeconds(u.last_logon).UtcDateTime : (DateTime?)null;
                         if (loaded.HasValue && (!last.HasValue || loaded > last)) last = loaded;
                         if (Rules.Whitelist && !enabled && builtin.Contains(u.user_id)) continue;
                         var fl = new List<string>();
                         if (hidden.Contains(u.name) && enabled) fl.Add("!hidden-account");
-                        bool recent = pwSet >= c.Since;
-                        at.Add(Log.T(pwSet), enabled ? "enabled" : "disabled", admin ? "admin" : "user", Rules.FlagCol(fl), u.name,
-                               last.HasValue ? Log.T(last) : hasProfile ? "-" : "no profile", u.full_name, Sid(msid, u.name, u.user_id));
-                        if (recent && enabled) c.Event(pwSet, "USR", null, text: $"password of {(admin ? "admin" : "user")} account {u.name} set (or account created)");
-                        if (fl.Count > 0 || (recent && enabled && admin && !builtin.Contains(u.user_id) && !hasProfile && u.password_age > 0))
-                            c.Find(pwSet, $"account {u.name} ({(admin ? "admin" : "user")}), password set {pwSet:yyyy-MM-dd HH:mm}{(hasProfile ? "" : ", never signed in")}", null, fl);
+                        bool recent = pwSet.HasValue && pwSet >= c.Since;
+                        at.Add(Log.T(pwSet), enabled ? "enabled" : "disabled", admin ? "admin" : "user", Rules.FlagCol(fl), Rules.Fix(u.name),
+                               last.HasValue ? Log.T(last) : hasProfile ? "-" : "no profile", Rules.Fix(u.full_name), sid);
+                        if (recent && enabled) c.Event(pwSet, "USR", null, text: $"password of {(admin ? "admin" : "user")} account {Rules.Fix(u.name)} set (or account created)");
+                        if (fl.Count > 0 || (recent && enabled && admin && !builtin.Contains(u.user_id) && !hasProfile))
+                            c.Find(pwSet, $"account {Rules.Fix(u.name)} ({(admin ? "admin" : "user")})" + (pwSet.HasValue ? $", password set {pwSet:yyyy-MM-dd HH:mm}" : "") +
+                                          (hasProfile ? "" : ", never signed in"), null, fl.Count > 0 ? fl : Rules.InfoFlag("!account-change"));
                     }
                 }
                 finally { NetApiBufferFree(buf); }
@@ -122,18 +126,21 @@ namespace Spor.Modules
                 }
                 et.Add(Log.T(t), e.Id.ToString(), text);
                 c.Event(t, "USR", null, text: text);
-                if (e.Id == 4720 || e.Id == 4732 || e.Id == 4728) c.Find(t, text);
+                // an account created or put in a group: context for the case, unless Windows' setup did it (the machine account "PC$")
+                var actor = e.Id == 4720 ? Ev.P(e, 4) : Ev.P(e, 6);
+                if ((e.Id == 4720 || e.Id == 4732 || e.Id == 4728) && !(actor ?? "").EndsWith("$"))
+                    c.Find(t, text, null, Rules.InfoFlag("!account-change"));
                 e.Dispose();
             }
             et.WriteTo(c.Out);
         }
 
-        /// <summary>(profile exists, last time it was loaded) from ProfileList\SID\LocalProfileLoadTimeHigh/Low.</summary>
-        static (bool, DateTime?) ProfileLoad(string user)
+        /// <summary>(profile exists, last time it was loaded) from ProfileList\SID\LocalProfileLoadTimeHigh/Low; sid: the account's own, else looked up by name.</summary>
+        static (bool, DateTime?) ProfileLoad(string user, string sid = null)
         {
             try
             {
-                var sid = ((SecurityIdentifier)new NTAccount(user).Translate(typeof(SecurityIdentifier))).Value;
+                if (string.IsNullOrEmpty(sid)) sid = ((SecurityIdentifier)new NTAccount(user).Translate(typeof(SecurityIdentifier))).Value;
                 using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\" + sid))
                 {
                     if (k == null) return (false, null);

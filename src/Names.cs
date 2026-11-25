@@ -101,6 +101,40 @@ namespace Spor
             return IsRandom(file) || (IsLure(file) && !IsLure(orig));
         }
 
+        public const string RenamedPersistedFlag = "!renamed-persisted";
+
+        /// <summary>
+        /// (pure) A program started by persistence that is a signed program under another name, in a random-looking folder of a user
+        /// profile or ProgramData: a loader's signed decoy (S_Pipe.exe = Adobe's Setup.exe in C:\Users\x\kgw7Hp\kOsW3u0gxT\clip\).
+        /// The name differs from the original (not one inside the other) and a folder below the profile / ProgramData is random-looking
+        /// (Squirrel's Update.exe in AppData\Local\Discord is not).
+        /// </summary>
+        public static bool RenamedPersisted(string path, string originalName, string internalName, string pdb)
+        {
+            var orig = Base(Original(originalName, internalName, pdb));
+            var file = Base(Path.GetFileName(path ?? ""));
+            if (orig.Length == 0 || file.Length == 0 || file.Equals(orig, StringComparison.OrdinalIgnoreCase)) return false;
+            var fl = file.ToLowerInvariant(); var ol = orig.ToLowerInvariant();
+            if ((ol.Length >= 3 && fl.Contains(ol)) || (fl.Length >= 3 && ol.Contains(fl))) return false;
+            var m = System.Text.RegularExpressions.Regex.Match(path ?? "", @"^[A-Za-z]:\\(?:Users\\[^\\]+|ProgramData)\\(.+)\\[^\\]+$",
+                                                                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return m.Success && m.Groups[1].Value.Split('\\').Any(IsRandom);
+        }
+
+        /// <summary>RenamedPersisted for a program on disk (validly signed .exe), cached with the other name checks.</summary>
+        public static bool RenamedPersisted(Ctx c, string path)
+        {
+            if (string.IsNullOrEmpty(path) || !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || !Rules.DrivePath.IsMatch(path)) return false;
+            try
+            {
+                if (!File.Exists(path) || Rules.InTrustedLocation(path) || !Signature.Check(path).Valid) return false;
+                var (orig, intern) = Signature.Names(path);
+                var pdb = orig == null && intern == null ? Pe.Read(path).Pdb : null;
+                return RenamedPersisted(path, orig, intern, pdb);
+            }
+            catch { return false; }
+        }
+
         /// <summary>"original name X" from the version resource, else the PDB file name without ".pdb" ("original name EventEmitter (from the PDB path)").</summary>
         public static string OriginalNameText(string original, string internalName, string pdb) =>
             "original name " + (original ?? internalName ?? Path.GetFileNameWithoutExtension(pdb.Replace('/', '\\')) + " (from the PDB path)");

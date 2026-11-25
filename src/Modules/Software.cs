@@ -25,6 +25,8 @@ namespace Spor.Modules
         public string Description => "programs installed, updated or removed recently";
 
         Ctx c;
+        /// <summary>The Uninstall subkeys read (Installed): a Windows Installer event of one of them is not a second Autodetect value.</summary>
+        readonly HashSet<string> uninstallKeys = new HashSet<string>(Util.IC);
 
         public void Execute(Ctx ctx)
         {
@@ -179,10 +181,11 @@ namespace Spor.Modules
                                 var lw = Native.LastWrite(k);
                                 var idate = InstallDate(S(k, "InstallDate"));
                                 // Autodetect sees every entry, also older ones: "name | version | publisher", the folder and the icon program
+                                uninstallKeys.Add(n);   // an MSI product's subkey is its product code
                                 var swItem = $"installed program {NameVersion(name, S(k, "DisplayVersion"))}" + (S(k, "Publisher").Length > 0 ? $" ({S(k, "Publisher")})" : "") + $", key {prefix}{n}";
                                 c.Observe("software", $"{name} | {S(k, "DisplayVersion")} | {S(k, "Publisher")}", lw ?? idate, swItem);
                                 var loc = InstallFolder(S(k, "InstallLocation"));
-                                if (Rules.DrivePath.IsMatch(loc)) c.Observe("path", loc + "\\", lw ?? idate, swItem);
+                                if (Rules.DrivePath.IsMatch(loc)) { c.Observe("path", loc + "\\", lw ?? idate, swItem); c.Relate(swItem, loc + "\\"); }
                                 var ico = Regex.Replace(S(k, "DisplayIcon"), @",-?\d+$", "").Trim('"');
                                 if (Rules.DrivePath.IsMatch(ico)) c.Observe("path", ico, lw ?? idate);
                                 bool recent = (lw.HasValue && lw.Value >= c.Since) || (idate.HasValue && idate.Value >= c.Since.Date);
@@ -300,6 +303,11 @@ namespace Spor.Modules
                     : $"{what}: " + Regex.Replace(msg, @"^Product:\s*", "", RegexOptions.IgnoreCase);
                 var code = ProductCode(e);   // = the product's Uninstall subkey (FRST: HKLM\...\{GUID})
                 t.Add(Log.T(tm), e.Id.ToString(), text, user, name, code);
+                // Autodetect sees a product installed and removed again within the window too (no Uninstall key left to read);
+                // one still installed it has seen through its Uninstall key (one SUMMARY line, not two)
+                if (name.Length > 0 && !failed && (code == null || !uninstallKeys.Contains(code)))
+                    c.Observe("software", $"{name} | {ver} | {maker}", tm, $"Windows Installer {what}: {NameVersion(name, ver)}" +
+                              (maker.Length > 0 ? $" ({maker})" : "") + (code != null ? ", product code " + code : ""));
                 // the timeline has one line per install: not a second one for the same product within 5 minutes (the Uninstall key's
                 // "installed or updated" line, or the 11708 next to a failed 1033)
                 bool twin = code != null && tm.HasValue && c.Events.Any(x => x.Src == "INS" && Math.Abs((x.T - tm.Value).TotalMinutes) <= 5

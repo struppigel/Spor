@@ -27,6 +27,7 @@ namespace Spor.Modules
         {
             c = ctx;
             Browsers();
+            Extensions();
             Recent();
             WebCache();
             Images();
@@ -34,6 +35,51 @@ namespace Spor.Modules
         }
 
         bool Show(string path) => !Rules.Whitelist || Risky.IsMatch(path ?? "") || Rules.Strong(Rules.Flags(path ?? "")).Count > 0;
+
+        /// <summary>The Chromium profiles Browsers read: (user, browser and profile, profile folder).</summary>
+        readonly List<(string User, string Browser, string Dir)> profiles = new List<(string, string, string)>();
+
+        /// <summary>
+        /// Browser extensions not installed from a store (BrowserExtensions): loaded unpacked or from the command line, !unpacked-extension;
+        /// developer mode on, the context flag !dev-mode. Their folders are listed with their files hashed when they are programs.
+        /// </summary>
+        void Extensions()
+        {
+            c.Out.Sub("Browser extensions not from a store", "Chromium profiles: extensions loaded unpacked or from the command line, and developer mode");
+            var t = new Table("@changed", "[user", "[browser", "<flags", "*extension", "=details");
+            var seen = new HashSet<string>(Util.IC);   // an extension in Secure Preferences and Preferences: once
+            foreach (var (user, browser, dir) in profiles.Distinct())
+                foreach (var file in new[] { "Secure Preferences", "Preferences" })
+                {
+                    var f = Path.Combine(dir, file);
+                    try
+                    {
+                        if (!File.Exists(f)) continue;
+                        var when = File.GetLastWriteTimeUtc(f);
+                        var r = BrowserExtensions.Parse(Util.ReadText(f, BrowserExtensions.MaxText));
+                        if (r == null) continue;
+                        if (r.Value.DevMode && file == "Preferences")
+                        {
+                            var dfl = new List<string> { BrowserExtensions.DevModeFlag };
+                            t.Add(Log.T(when), user, browser, Rules.FlagCol(dfl), "developer mode on", null);
+                            c.Find(when, $"{c.U(user)}{browser}: extension developer mode on", null, dfl);
+                        }
+                        foreach (var x in r.Value.Unpacked)
+                        {
+                            if (!seen.Add(dir + "|" + x.Id)) continue;
+                            var name = x.Name.Length > 0 ? x.Name : BrowserExtensions.ManifestName(x.Path);
+                            var item = (x.Path.Length > 0 ? x.Path : x.Id) + (name.Length > 0 ? " (" + Rules.Fix(name) + ")" : "");
+                            var fl = new List<string> { BrowserExtensions.UnpackedFlag };
+                            DateTime? changed = Directory.Exists(x.Path) ? Directory.GetLastWriteTimeUtc(x.Path) : (DateTime?)null;
+                            t.Add(Log.T(changed ?? when), user, browser, Rules.FlagCol(fl), Rules.Fix(item), $"{x.Location}; id {x.Id}");
+                            if (Rules.DrivePath.IsMatch(x.Path)) c.Observe("path", x.Path + "\\", changed);
+                            c.Find(changed ?? when, $"{c.U(user)}{browser}: extension {Rules.Fix(item)}", $"{x.Location}; id {x.Id}", fl);
+                        }
+                    }
+                    catch (Exception e) { c.Err.Add($"extensions {browser} ({f}): {e.Message}"); }
+                }
+            t.WriteTo(c.Out, "none");
+        }
 
         // ---------------- browser downloads ----------------
         void Browsers()
@@ -72,6 +118,7 @@ namespace Spor.Modules
                     foreach (var (name, h) in hist)
                     {
                         browsers.Add(c.U(p.User) + name);
+                        profiles.Add((p.User, name, Path.GetDirectoryName(h)));   // for the extensions (Extensions)
                         try
                         {
                             var db = Sqlite.Open(c, h);
@@ -135,8 +182,18 @@ namespace Spor.Modules
             c.Out.Comment("browsers: " + (browsers.Count > 0 ? string.Join(", ", browsers.Distinct()) : "none found"));
             // The user is a tag of its own ("[anna] [Brave]"), never inside the browser's brackets.
             var dlt = new Table("@time", "[user", "[browser", "!status", "<flags", "*file");
+            var keptSeen = new HashSet<string>(Util.IC);
             foreach (var r in rows.OrderBy(r => r.T))
             {
+                if (r.Fl.Contains(KeptFlag))
+                {
+                    // the tools a helper asked for (this Spor, FRST from bleepingcomputer.com) are no finding; the same file from the same
+                    // page again ("x (1).py", 27 times from one chat) only the first time
+                    if (OwnTool(r.Path, r.Url, SelfPath, SelfHash) || !keptSeen.Add(SameDownload(r.Path, r.Page ?? r.Url)))
+                        r.Fl.Remove(KeptFlag);
+                }
+                // a download from a cheap TLD campaigns favour (.lol, .top, ...): a hint, in the SUMMARY only next to a strong flag
+                if (new[] { r.Url, r.Page }.Any(u => HostNames.AbusedTld(HostOnly(u))) && !r.Fl.Contains(Rules.AbusedTldFlag)) r.Fl.Add(Rules.AbusedTldFlag);
                 var fl = Rules.Flags(r.Path).Concat(r.Fl).Distinct().ToList();
                 var f = c.F(r.Path);
                 dlt.Add(Log.T(r.T), c.MultiUser ? r.User : null, r.Browser, f.Status, Rules.FlagCol(fl), f.Path);
@@ -146,7 +203,8 @@ namespace Spor.Modules
                 var urls = new List<(string Key, string Value)> { ("from", Host(r.Url)) };
                 if (!string.IsNullOrEmpty(r.Page) && !Host(r.Page).Equals(Host(r.Url), StringComparison.OrdinalIgnoreCase)) urls.Add(("page", Host(r.Page)));
                 c.Event(r.T, "DL", r.Path, $"{c.U(r.User)}{r.Browser}", r.Fl, more: urls);
-                if (Rules.Strong(fl).Count > 0) c.Find(r.T, c.File(r.Path), $"downloaded from {r.Url}", Rules.Strong(fl));
+                // a flagged download in the time window is in the SUMMARY through its timeline line (one line, not two); an older one here
+                if (Rules.Strong(fl).Count > 0 && r.T < c.Since) c.Find(r.T, c.File(r.Path), $"downloaded from {r.Url}", Rules.Strong(fl));
             }
             dlt.WriteTo(c.Out, $"none in the last {c.Opt.Days} days");
         }
@@ -164,10 +222,73 @@ namespace Spor.Modules
         /// <summary>(pure) A URL for the section: whole up to 250 characters, else cut with "…" (signed download links carry 1 KB of tokens).</summary>
         internal static string LongUrl(string url) => url == null || url.Length <= 250 ? url : url.Substring(0, 250) + "…";
 
-        static string Host(string url)
+        const string KeptFlag = "!kept-despite-warning";
+
+        static string selfPath, selfHash;
+        /// <summary>The running Spor.exe.</summary>
+        static string SelfPath => selfPath ?? (selfPath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName ?? "");
+        /// <summary>SHA256 of the running Spor.exe ("" when unreadable).</summary>
+        static string SelfHash
+        {
+            get
+            {
+                if (selfHash != null) return selfHash;
+                try
+                {
+                    using (var s = File.OpenRead(SelfPath)) using (var sha = System.Security.Cryptography.SHA256.Create())
+                        selfHash = BitConverter.ToString(sha.ComputeHash(s)).Replace("-", "");
+                }
+                catch { selfHash = ""; }
+                return selfHash;
+            }
+        }
+
+        static readonly Regex SporName = new Regex(@"^Spor( \(\d+\))?\.exe$", Util.RX);
+        static readonly Regex FrstName = new Regex(@"^FRST(64)?( \(\d+\))?\.exe$", Util.RX);
+
+        /// <summary>
+        /// (pure with the test hooks) A download of a tool the helper asked for: this Spor.exe (its path, or a Spor.exe that is gone or
+        /// has the running one's SHA256; a file of that name with other content is not), or FRST(64).exe downloaded from
+        /// bleepingcomputer.com (FRST is unsigned). Its "kept despite warning" is no finding.
+        /// </summary>
+        internal static bool OwnTool(string path, string url, string selfPath, string selfHash)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            var name = Path.GetFileName(path);
+            if (!string.IsNullOrEmpty(selfPath) && path.Equals(selfPath, StringComparison.OrdinalIgnoreCase)) return true;
+            if (SporName.IsMatch(name))
+            {
+                if (!File.Exists(path)) return true;
+                try
+                {
+                    using (var s = File.OpenRead(path)) using (var sha = System.Security.Cryptography.SHA256.Create())
+                        return selfHash.Length > 0 && BitConverter.ToString(sha.ComputeHash(s)).Replace("-", "").Equals(selfHash, StringComparison.OrdinalIgnoreCase);
+                }
+                catch { return false; }
+            }
+            if (FrstName.IsMatch(name) && Regex.IsMatch(HostOnly(url), @"(^|\.)bleepingcomputer\.com$", Util.RX))
+                return true;
+            return false;
+        }
+
+        /// <summary>(pure) One download "again": its name without " (1)" and the host of its page, lower case.</summary>
+        internal static string SameDownload(string path, string page) =>
+            Regex.Replace(Path.GetFileName(path ?? ""), @" \(\d+\)(?=\.[^.]+$|$)", "").ToLowerInvariant() + "|" + HostOnly(page).ToLowerInvariant();
+
+        /// <summary>The host name of a URL ("blob:https://x.lol/..." too), '' if none.</summary>
+        static string HostOnly(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return "";
+            try { return new Uri(Regex.Replace(url, @"^blob:", "", RegexOptions.IgnoreCase)).Host; } catch { return ""; }
+        }
+
+        /// <summary>(pure) A download's address for the timeline: host and path, no scheme and query ("blob:https://claude.ai/x" -> "blob:claude.ai/x").</summary>
+        internal static string Host(string url)
         {
             if (string.IsNullOrEmpty(url)) return "?";
-            try { var u = new Uri(url); return u.Scheme == "file" ? url : u.Host + (u.AbsolutePath.Length > 1 ? u.AbsolutePath : ""); } catch { return url; }
+            var blob = url.StartsWith("blob:", StringComparison.OrdinalIgnoreCase);
+            var inner = blob ? url.Substring(5) : url;
+            try { var u = new Uri(inner); return u.Scheme == "file" ? url : (blob ? "blob:" : "") + u.Host + (u.AbsolutePath.Length > 1 ? u.AbsolutePath : ""); } catch { return url; }
         }
 
         // ---------------- Recent shortcuts ----------------
@@ -203,7 +324,7 @@ namespace Spor.Modules
                 c.Event(r.T, "OPN", r.L.Target, "opened" + (r.L.Where != null ? " " + r.L.Where : ""));
                 if ((r.T - r.First).TotalMinutes > 2) c.Event(r.First, "OPN", r.L.Target, "first opened" + (r.L.Where != null ? " " + r.L.Where : ""));
                 if (r.L.DriveType == 5 && Regex.IsMatch(r.L.Target, @"\.(exe|scr|com|bat|cmd|lnk|js|vbs|msi|hta)$", Util.RX))
-                    c.Find(r.T, $"program opened from a CD/DVD or mounted ISO: {Rules.Fix(r.L.Target)}");
+                    c.Find(r.T, $"program opened from a CD/DVD or mounted ISO: {Rules.Fix(r.L.Target)}", null, Rules.InfoFlag("!disk-image"));
             }
             rct.WriteTo(c.Out);
         }
@@ -288,7 +409,7 @@ namespace Spor.Modules
                 c.Event(r.First, "ISO", r.Path, "disk image mounted", noHash: true);
                 if (r.N > 1) c.Event(r.Last, "ISO", r.Path, "disk image mounted", noHash: true);
                 bool user = Regex.IsMatch(r.Path, @"\.(iso|img)$", Util.RX) || !Regex.IsMatch(r.Path, @"\\AppData\\|\\ProgramData\\|^[a-z]:\\(Windows|Program Files)", Util.RX);
-                if (user) c.Find(r.Last, $"disk image mounted{(r.N > 1 ? $" ({r.N}x)" : "")}: {Rules.Fix(r.Path)}");
+                if (user) c.Find(r.Last, $"disk image mounted{(r.N > 1 ? $" ({r.N}x)" : "")}: {Rules.Fix(r.Path)}", null, Rules.InfoFlag("!disk-image"));
             }
             it.WriteTo(c.Out);
         }

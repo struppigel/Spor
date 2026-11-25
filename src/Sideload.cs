@@ -147,13 +147,24 @@ namespace Spor
             }
             catch (Exception e) { c.Err.Add("side-loading check of " + host + ": " + e.Message); }
             c.Sideloads[host] = hits;
-            foreach (var h in hits)
+            if (hits.Count > 0)
             {
-                var f = c.F(h.Dll.Path);
+                // one SUMMARY line per program (a program with its ffmpeg and openssl DLLs is one finding), the DLLs on dll: sub-lines;
+                // time = the oldest DLL created
                 DateTime? t = null;
-                try { t = File.GetCreationTimeUtc(h.Dll.Path); } catch { }
-                c.Find(t, $"DLL side-loading: {f.Path} ({(f.Status == "-" ? "not validly signed" : f.Status)}) imported by {c.RealCase(h.Host.Path)}" +
-                          (string.IsNullOrEmpty(h.Host.Signer) ? "" : $" (signed by {h.Host.Signer})") + (h.Evidence != null ? "; " + h.Evidence : ""));
+                var more = new List<(string Key, string Value)>();
+                foreach (var h in hits)
+                {
+                    var f = c.F(h.Dll.Path);
+                    try { var ct = File.GetCreationTimeUtc(h.Dll.Path); if (!t.HasValue || ct < t) t = ct; } catch { }
+                    // the status in brackets only when it is one (unsigned, invalid signature, ...); "not validly signed" is a detail
+                    var details = string.Join("; ", new[] { f.Status == "-" ? "not validly signed" : null, h.Evidence }.Where(x => !string.IsNullOrEmpty(x)));
+                    more.Add(("dll", Log.Item(f.Path, f.Status, details)));
+                }
+                var first = hits[0];
+                var signer = string.IsNullOrEmpty(first.Host.Signer) ? "" : $" (signed by {first.Host.Signer})";
+                var names = string.Join(", ", hits.Select(h => h.Dll.Name).Distinct(Util.IC));
+                c.Find(t, $"DLL side-loading: {c.File(host)}{signer}", $"side-loads {names}", new List<string> { Flag }, more);
             }
             return hits;
         }

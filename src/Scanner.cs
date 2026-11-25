@@ -116,6 +116,7 @@ namespace Spor
             var total = Stopwatch.StartNew();
             var sections = new List<Log>();
             var times = new List<string>();
+            var sigTimes = new List<string>();   // signature check time per module
             var log = new Log();
             using (var c = new Ctx(o))
             {
@@ -126,17 +127,21 @@ namespace Spor
                     progress?.Invoke(m.Description, i, mods.Count);
                     c.Out = new Log(); c.Module = Pretty(m); c.Err.Clear();
                     var sw = Stopwatch.StartNew();
+                    var sig0 = Signature.CheckTime;
                     c.Out.Heading(m.Name + " - " + m.Description);
                     try { m.Execute(c); }
                     catch (Exception e) { c.Err.Add($"MODULE FAILED: {e.GetType().Name}: {e.Message} at {e.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}"); }
                     if (c.Err.Count > 0) { c.Out.Sub("Errors"); var et = new Table("*error"); foreach (var e in c.Err) et.Add(e); et.WriteTo(c.Out); }
                     sections.Add(c.Out);
                     times.Add($"{m.Id} {sw.Elapsed.TotalSeconds:N1} s");
+                    var sigs = (Signature.CheckTime - sig0).TotalSeconds;
+                    if (sigs >= 0.5) sigTimes.Add($"{m.Id} {sigs:N1} s");
                 }
                 progress?.Invoke("Writing the log", mods.Count, mods.Count);
                 c.Err.Clear();
                 Correlate.Run(c);   // checks across modules (script-runtime launchers); its errors go to the header
                 startErr.AddRange(c.Err); c.Err.Clear();
+                c.ApplyMarks();     // flags modules gave a file (Defender detected it, ...) on all its timeline events
 
                 // known malware (curated patterns) over everything collected; before the timeline, so its file lines get !known-malware.
                 // Signers of files first checked by the timeline: a second pass after it (SUMMARY findings only).
@@ -159,7 +164,10 @@ namespace Spor
                 Legend(log);
                 log.W();
                 if (c.ShadowNote != null) log.W(c.ShadowNote);
-                log.Heading($"End of log. Scan took {total.Elapsed.TotalSeconds:N1} s ({string.Join(", ", times)})");
+                // where the time goes: signature checks (counted in the module that checked a file first) and hashing (FILES)
+                log.Heading($"End of log. Scan took {total.Elapsed.TotalSeconds:N1} s ({string.Join(", ", times)}); " +
+                            $"{Signature.Checks} signature checks {Signature.CheckTime.TotalSeconds:N1} s ({string.Join(", ", sigTimes)}); " +
+                            $"hashed {c.HashFiles} files, {c.HashBytes / 1024 / 1024} MB, {c.HashTime.TotalSeconds:N1} s");
             }
 
             string path = o.Out ?? DefaultLog();
@@ -401,7 +409,7 @@ namespace Spor
         /// Sub-lines the SUMMARY writes under a line: a download's addresses, a Defender detection's items, the first folder of a drop
         /// folder's group, and the ShimCache time of a copied file.
         /// </summary>
-        static readonly HashSet<string> SummaryKeys = new HashSet<string> { "from", "page", "referrer", "file", "process", "resource", "group", "shimcache" };
+        static readonly HashSet<string> SummaryKeys = new HashSet<string> { "from", "page", "referrer", "file", "process", "resource", "group", "shimcache", "dll", "command" };
 
         static Log Timeline(Ctx c, out List<Row> result)
         {
@@ -523,10 +531,30 @@ namespace Spor
             var t = new Table("@time", "[from", "*item", "!status", "=details", "<flags");
             // sorted by time, oldest first; findings without a time (signatures, Run dialog, ...) at the end, in module order
             List<(string Key, string Value)> NoMore = null;
+            // the same finding again and again (a service a security product reinstalls, one Defender threat detected many times): one
+            // line at its newest time, "+N more times since <first>" like the timeline's lines
+            // only findings with a reason the reader can see: a strong flag (FindingFlags, or written after "<====" in the text, as
+            // Autodetect and USB DRIVES do). Without one (a remote access tool's folder, an account created, a big upload) the item is in
+            // its section only; a flag that is quiet (!lolbin) or a hint is no reason on its own.
+            bool Flagged((DateTime? T, string Module, string Text) f)
+            {
+                var fl = c.FindingFlags.TryGetValue(f.Module + "\n" + f.Text, out var ff) ? ff : new List<string>();
+                int cut = (f.Text ?? "").IndexOf(" <==== ", StringComparison.Ordinal);
+                if (cut >= 0) fl = fl.Concat(f.Text.Substring(cut + 7).Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)).ToList();
+                // evidence (a strong flag) or context (an info flag: a remote access tool, an account created, ...); same list, by time
+                return Rules.Strong(fl).Count > 0 || fl.Any(Rules.Info.Contains);
+            }
+            var findings = c.Findings.Where(Flagged).GroupBy(f => (f.Module, f.Text)).Select(g =>
+            {
+                var times = g.Where(f => f.T.HasValue).Select(f => f.T.Value).Distinct().OrderBy(x => x).ToList();
+                var f0 = g.First();
+                var text = Repeated(f0.Text, times);
+                return (T: times.Count > 0 ? times[times.Count - 1] : f0.T, Fields: new[] { Log.T(times.Count > 0 ? times[times.Count - 1] : f0.T), f0.Module, text, null, null,
+                                                     c.FindingFlags.TryGetValue(f0.Module + "\n" + f0.Text, out var ff) ? Rules.FlagCol(ff) : null },
+                        More: c.FindingMore.TryGetValue(f0.Text ?? "", out var fm) ? fm : NoMore);
+            });
             var items = flagged.Select(r => (T: (DateTime?)r.T, Fields: new[] { Log.T(r.T), "timeline " + r.Src, r.Obj, r.Status, r.Details, Rules.FlagCol(Shown(r)) }, More: r.More))
-                .Concat(c.Findings.GroupBy(f => (Log.T(f.T), f.Module, f.Text)).Select(g => g.First()).Select(f => (T: f.T, Fields: new[] { Log.T(f.T), f.Module, f.Text, null, null,
-                                                                                   c.FindingFlags.TryGetValue(f.Module + "\n" + f.Text, out var ff) ? Rules.FlagCol(ff) : null },
-                                                           More: c.FindingMore.TryGetValue(f.Text ?? "", out var fm) ? fm : NoMore)))
+                .Concat(findings)
                 .Select((x, i) => (x.T, x.Fields, x.More, I: i))
                 .OrderBy(x => x.T.HasValue ? 0 : 1).ThenBy(x => x.T ?? DateTime.MaxValue).ThenBy(x => x.I);
             foreach (var x in items)
@@ -537,6 +565,22 @@ namespace Spor
             }
             t.WriteTo(log, "nothing flagged");
             if (lolbins.Count > 0) log.Wrap("LOLBins run in the last " + c.Opt.Days + " days (normal on many PCs, see the timeline): ", lolbins);
+        }
+
+        /// <summary>
+        /// (pure) A SUMMARY finding's text for the times it happened (oldest first): itself for one time, else with "+N more times
+        /// since &lt;first&gt;" added as its last detail ("item => details; +N more ..." or "item => +N more ...").
+        /// </summary>
+        internal static string Repeated(string text, IList<DateTime> times)
+        {
+            if (times == null || times.Count < 2) return text;
+            var more = $"+{times.Count - 1} more times since {times[0]:yyyy-MM-dd HH:mm}";
+            text = text ?? "";
+            // flags written in the text (Autodetect: "... <==== !known-malware") stay at its end
+            int cut = text.IndexOf(" <==== ", StringComparison.Ordinal);
+            var head = cut >= 0 ? text.Substring(0, cut) : text;
+            var tail = cut >= 0 ? text.Substring(cut) : "";
+            return (head.Contains(" => ") ? head + "; " + more : head + " => " + more) + tail;
         }
 
         /// <summary>

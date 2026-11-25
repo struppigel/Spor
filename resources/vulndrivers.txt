@@ -1,0 +1,33 @@
+# Spor vulnerable drivers: kernel drivers, validly signed by their vendors, whose flaws give any program kernel access
+# ("bring your own vulnerable driver"). Cheat loaders (kdmapper), ransomware and Defender killers install them; some come
+# with tools users run themselves (MSI Afterburner's RTCore64.sys, HWiNFO, fan tools): a hit is a question for the user,
+# not a verdict. Used by: Rules.Flags for .sys files (!vulnerable-driver), on every line of the driver; its signature
+# never hides it.
+# Columns (tab-separated): file name (case-insensitive), note (optional). '#' lines are comments.
+iqvw64e.sys	Intel Network Adapter Diagnostic Driver (NAL), kdmapper
+iqvw64.sys	Intel NAL, kdmapper
+iqvw32.sys	Intel NAL
+RTCore64.sys	MSI Afterburner (RivaTuner), BlackByte
+RTCore32.sys	MSI Afterburner
+gdrv.sys	GIGABYTE, RobbinHood
+WinRing0.sys	OpenLibSys (fan / monitoring tools, miners)
+WinRing0x64.sys	OpenLibSys (fan / monitoring tools, miners)
+dbutil_2_3.sys	Dell BIOS utility
+DBUtilDrv2.sys	Dell BIOS utility
+AsIO.sys	ASUS
+AsIO2.sys	ASUS
+AsIO3.sys	ASUS
+atillk64.sys	ATI / AMD
+mhyprot2.sys	Genshin Impact anti-cheat, ransomware
+kprocesshacker.sys	Process Hacker 2 (kills protected processes)
+procexp152.sys	Process Explorer (EDR killers)
+NTIOLib_X64.sys	MSI
+speedfan.sys	SpeedFan
+phymemx64.sys	physical memory access
+viragt64.sys	Tg Soft
+zamguard64.sys	Zemana (Terminator EDR killer)
+zam64.sys	Zemana
+aswArPot.sys	Avast anti-rootkit (AvosLocker, Cuba)
+TrueSight.sys	Adlice (EDR killers)
+ene.sys	ENE Technology (RGB)
+wnbios.sys	BIOS utility

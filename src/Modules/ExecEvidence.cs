@@ -24,6 +24,9 @@ namespace Spor.Modules
         public string Name => "EXECUTION EVIDENCE";
         public string Description => "PCA, UserAssist, BAM, ShimCache, Compatibility Assistant";
 
+        /// <summary>A forward / reverse delta of a component in WinSxS (...\amd64_..._powershell-exe_...\f\powershell.exe): no signature of its own.</summary>
+        internal static readonly Regex WinSxsDelta = new Regex(@"^[a-z]:\\windows\\winsxs\\[^\\]+\\[fr]\\[^\\]+$", Util.RX);
+
 
         Ctx c;
         Regex noise;
@@ -169,17 +172,33 @@ namespace Spor.Modules
             // and a validly signed Windows tool in its own folder that was modified before the time window is a Windows update.
             // A LOLBin copy elsewhere, or one with a bad signature, is still a finding.
             int oldLol = 0;
+            var olderFlagged = new List<(DateTime? M, string P, List<string> F)>();   // their section lines (the SUMMARY's "details in the sections below")
             foreach (var x in Grouped(shim, r => r.N.ToString("D8")))
             {
                 if (x.More > 0) c.Event(x.M, "SC", null, text: Rules.Fix(c.RealCase(x.P.TrimEnd('\\'))) + "\\ => " + Util.Plural(x.More, "more file", "more files") + " modified in this folder: " +Rules.Fix(x.Names));
-                else if (Rules.Whitelist && Rules.Strong(x.F).Count == 0 && Rules.InTrustedLocation(x.P) && c.SignedOk(x.P)) oldLol++;   // also inside the window: a Windows update
+                else if (Rules.Whitelist && Rules.Strong(x.F).Count == 0 && Rules.InTrustedLocation(x.P) && (c.SignedOk(x.P) || WinSxsDelta.IsMatch(x.P))) oldLol++;   // also inside the window: a Windows update
                 else if (x.M.HasValue && x.M.Value >= c.Since)
                 {
                     if (Rules.DrivePath.IsMatch(x.P ?? "")) c.Event(x.M, "SC", x.P, null, x.F);
                     else c.Event(x.M, "SC", null, null, x.F, text: "ShimCache entry without a folder: " + Rules.Fix(x.P));
                 }
                 // flagged, older: Correlate writes it, or makes it a detail of later evidence when the file is a copy (FoldCopiedShimCache)
-                else c.PendingShim.Add((x.M, c.Module, x.P, c.File(x.P), "ShimCache: file modified", x.F));
+                else
+                {
+                    c.PendingShim.Add((x.M, c.Module, x.P, c.File(x.P), "ShimCache: file modified", x.F));
+                    if (Rules.Strong(x.F).Count > 0) olderFlagged.Add((x.M, x.P, x.F));
+                }
+            }
+            if (olderFlagged.Count > 0)
+            {
+                c.Out.Sub("ShimCache: flagged files modified before the time window", "time = the file's modification time ShimCache recorded (a copy keeps the original's)");
+                var st = new Table("@modified", "!status", "<flags", "*file");
+                foreach (var x in olderFlagged.OrderBy(x => x.M))
+                {
+                    var f = c.F(x.P);
+                    st.Add(Log.T(x.M), f.Status, Rules.FlagCol(x.F), f.Path);
+                }
+                st.WriteTo(c.Out);
             }
 
             var creations = ProcessCreations();
@@ -416,6 +435,12 @@ namespace Spor.Modules
             if (Regex.IsMatch(p, @"^\\[^\\]"))
             {
                 foreach (var d in DriveInfo.GetDrives()) { var x = d.Name.TrimEnd('\\') + p; if (File.Exists(x)) return x; }
+                // the file is gone: the one drive that still has its folder (a game uninstalled from D:\Games\X)
+                var folder = Path.GetDirectoryName(p);
+                var withFolder = folder != null && folder.Length > 1
+                    ? DriveInfo.GetDrives().Select(d => d.Name.TrimEnd('\\') + p).Where(x => { try { return Directory.Exists(Path.GetDirectoryName(x)); } catch { return false; } }).ToList()
+                    : new List<string>();
+                if (withFolder.Count == 1) return withFolder[0];
                 return "?:" + p;
             }
             return p;

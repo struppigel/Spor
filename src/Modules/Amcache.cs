@@ -266,10 +266,14 @@ namespace Spor.Modules
                 var fl = new List<string>();
                 if (uns) fl.Add("!unsigned");
                 if (outside) fl.Add("!outside-driver-folders");
+                fl.AddRange(Rules.DriverFlags(p, Rules.VulnerableDrivers));   // a known vulnerable driver, a random-looking name
                 var info = $"{Short(e.S("DriverCompany"), 40)}, {Short(e.S("Product"), 40)} {Short(e.S("DriverVersion"), 20)}".Trim(' ', ',');
                 var sha = Sha(e.G("DriverId"));
                 if (sha.Length > 0) c.AmSha1[Rules.Fix(c.RealCase(p))] = sha;
-                if (!dscan) c.Event(e.Time, "DRV", p, info, fl);
+                // a well-known publisher's driver outside the driver folders: its timeline line without the flag (no SUMMARY line)
+                bool quiet = Rules.Whitelist && fl.All(x => x == "!outside-driver-folders") && outside && Rules.InInstallFolder(p) && c.ByTrustedSigner(p);
+                var evFl = quiet ? new List<string>() : fl;
+                if (!dscan) c.Event(e.Time, "DRV", p, info, evFl);
                 if (fl.Count > 0) odd.Add((e.Time, p, fl, info));
             }
 
@@ -282,6 +286,8 @@ namespace Spor.Modules
             {
                 var f = c.F(x.P);
                 dt.Add(Log.T(x.T), f.Status, Rules.FlagCol(x.F), f.Path, x.I);
+                // a driver of a well-known publisher outside the driver folders (anti-cheat, VPN, Google Drive): listed here, no SUMMARY line
+                if (Rules.Whitelist && x.F.All(fl => fl == "!outside-driver-folders") && Rules.InInstallFolder(x.P) && c.ByTrustedSigner(x.P)) continue;
                 c.Find(x.T, f.Path, "driver; Amcache entry written", x.F);
             }
             dt.WriteTo(c.Out);

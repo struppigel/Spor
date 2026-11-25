@@ -69,15 +69,54 @@ namespace Spor.Modules
             // Windows Update's packages keep the times they were built with (Deployment.cab, ...): whitelist
             int wu = Rules.Whitelist ? found.RemoveAll(x => Rules.InWindowsUpdateFolder(x.Path)) : 0;
             if (wu > 0) c.Out.Comment($"Hidden: {Util.Plural(wu, "file", "files")} in Windows Update's download folder (SoftwareDistribution; -nowhitelist lists them).");
-            foreach (var x in found.OrderByDescending(x => x.Score).ThenByDescending(x => x.Changed))
+            // Windows' own staging and servicing folders (reset, upgrade, CBS logs) and files a well-known publisher signed validly keep the
+            // times they were built with
+            int win = Rules.Whitelist ? found.RemoveAll(x => WindowsStaging.IsMatch(x.Path) || c.ByTrustedSigner(x.Path)) : 0;
+            if (win > 0) c.Out.Comment($"Hidden: {Util.Plural(win, "file", "files")} in Windows' reset / upgrade / servicing folders or validly signed by a well-known publisher (-nowhitelist lists them).");
+            // an installer's files keep the times of the package: three or more files of one folder with the same creation second are one line
+            foreach (var g in Batches(found.Select(x => (x.Path, x.Created)).ToList())
+                .Select(b => found.Where(x => b.Contains(x.Path)).OrderByDescending(x => x.Score).ThenByDescending(x => x.Changed).ToList())
+                .OrderByDescending(g => g[0].Score).ThenByDescending(g => g[0].Changed))
             {
+                var x = g[0];
                 t.Add(Log.T(x.Changed), x.Status, Exact(x.Created), Exact(x.Modified), x.Path);
                 foreach (var s in x.Signals) t.More("signal", s);
+                var others = g.Skip(1).Select(o => Path.GetFileName(o.Path)).ToList();
+                if (others.Count > 0) t.More("same times", Util.Plural(others.Count, "more file", "more files") + " in this folder: " + Util.Clip(string.Join(", ", others), 200));
                 if (x.Score < MinScore) continue;
                 var fl = new List<string> { "!timestomped" };
-                c.Event(x.Changed, "STP", x.Path, StpDetail(x.Created, x.Modified), fl);
+                c.Event(x.Changed, "STP", x.Path, StpDetail(x.Created, x.Modified) + (others.Count > 0 ? $"; +{others.Count} more files in this folder with the same creation time" : ""), fl);
+            }
+            // the files NEW FILES found written in the window with older times (their timeline lines are written there)
+            var listed = new HashSet<string>(found.Select(x => x.Path), Util.IC);
+            bool Hidden(string p) => Rules.Whitelist && (Rules.InWindowsUpdateFolder(p) || WindowsStaging.IsMatch(p) || c.ByTrustedSigner(p));   // as above
+            foreach (var b in c.Backdated.Where(b => !Hidden(b.Path) && listed.Add(b.Path)))
+            {
+                var f = c.F(b.Path);
+                t.Add(Log.T(b.Changed), f.Status, Exact(b.Created), Exact(b.Modified), f.Path);
+                t.More("signal", "written in the time window with older times (NEW FILES)");
             }
             t.WriteTo(c.Out);
+        }
+
+        /// <summary>Windows' reset ($SysReset), upgrade ($WINDOWS.~BT) and servicing log (Logs\CBS) folders: their files keep build times.</summary>
+        internal static readonly Regex WindowsStaging = new Regex(@"^[a-z]:\\(\$SysReset|\$WINDOWS\.~BT|Windows\\Logs\\CBS)\\", Util.RX);
+
+        /// <summary>
+        /// (pure) The files in groups: three or more files of one folder with the same creation second are one group (an installer's
+        /// package times), every other file a group of its own. Paths in each group.
+        /// </summary>
+        internal static List<List<string>> Batches(List<(string Path, DateTime Created)> files)
+        {
+            var groups = files.GroupBy(f => (Folder: (Path.GetDirectoryName(f.Path) ?? "").ToLowerInvariant(), B: f.Created.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture)))
+                              .ToList();
+            var result = new List<List<string>>();
+            foreach (var g in groups)
+            {
+                if (g.Count() >= 3) result.Add(g.Select(f => f.Path).ToList());
+                else result.AddRange(g.Select(f => new List<string> { f.Path }));
+            }
+            return result;
         }
 
         /// <summary>The timeline detail of a file whose timestamps were set: "set: B created, M modified", full 7-digit fractions (the evidence).</summary>

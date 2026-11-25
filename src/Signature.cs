@@ -34,9 +34,21 @@ namespace Spor
 
         /// <summary>Forget cached results (a new scan in the same window must see replaced files).</summary>
         static readonly Dictionary<string, uint> catalogs = new Dictionary<string, uint>(Util.IC);
-        public static void Reset() { cache.Clear(); catalogs.Clear(); names.Clear(); online = true; Package.Reset(); }
+        public static void Reset() { cache.Clear(); catalogs.Clear(); names.Clear(); online = true; Checks = 0; CheckTime = TimeSpan.Zero; Package.Reset(); }
+
+        /// <summary>Signature checks this scan (not the cached ones) and their time: the end line says where the scan's time goes.</summary>
+        public static int Checks;
+        public static TimeSpan CheckTime;
 
         public static Result Check(string path)
+        {
+            if (cache.TryGetValue(path, out var cached)) return cached;
+            var sw = Stopwatch.StartNew();
+            try { return CheckNew(path); }
+            finally { Checks++; CheckTime += sw.Elapsed; }
+        }
+
+        static Result CheckNew(string path)
         {
             if (cache.TryGetValue(path, out var r)) return r;
             if (!File.Exists(path)) return new Result { Status = "unsigned", Reason = "file not found" };   // callers check existence first
