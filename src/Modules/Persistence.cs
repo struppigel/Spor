@@ -474,7 +474,11 @@ namespace Spor.Modules
                             if (Aggr.On)
                             {
                                 var norm = Regex.Replace(cmd.Trim(), @"\s+", " ");
-                                if (same.TryGetValue(norm, out var first)) { rt.Aggr("Run values that start the same command as a value listed in the same key"); first.Names.Add(Rules.Fix(n)); }
+                                if (same.TryGetValue(norm, out var first))
+                                {
+                                    rt.Aggr(Aggr.Dup("Run values that start the same command as a value listed in the same key"));
+                                    if (rt.LastMarked) first.Names.Add(Rules.Fix(n));   // a flagged repeat stays listed itself
+                                }
                                 else
                                 {
                                     same[norm] = (rt.Count - 1, new List<string>());
@@ -575,8 +579,8 @@ namespace Spor.Modules
                     var key = string.Join("|", kind, acct, pf.Status, Rules.FlagCol(fl), name, pf.Path, ip);
                     if (installs.TryGetValue(key, out var firstInstall))
                     {
-                        it.Aggr("repeated installs of the same service (the first one is listed)");
-                        installs[key] = (firstInstall.Row, firstInstall.More + 1, t);
+                        it.Aggr(Aggr.Dup("repeated installs of the same service (the first one is listed)"));
+                        if (it.LastMarked) installs[key] = (firstInstall.Row, firstInstall.More + 1, t);   // a flagged repeat stays listed itself
                     }
                     else installs[key] = (it.Count - 1, 0, t);
                 }

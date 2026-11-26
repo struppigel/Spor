@@ -109,9 +109,6 @@ namespace Spor
         readonly Dictionary<int, string> aggr = new Dictionary<int, string>();   // row index -> why -aggressive hides it
         readonly Dictionary<(int Row, int More), string> aggrMore = new Dictionary<(int, int), string>();   // sub-lines -aggressive hides
 
-        /// <summary>Hidden by -aggressive per reason, in first-seen order (WriteTo adds them up).</summary>
-        public readonly Dictionary<string, int> AggrHidden = new Dictionary<string, int>();
-
         public Table(params string[] columns) { cols = columns; }
         public int Count => rows.Count;
 
@@ -123,9 +120,9 @@ namespace Spor
         }
 
         /// <summary>
-        /// The last record is noise the aggressive whitelist hides (Aggr): with -aggressive it is counted under `why` instead of
-        /// written (with its sub-lines), else written with Aggr.Mark at the end of its first line. A record with a flag other than
-        /// !lolbin is never marked (safety net).
+        /// The last record is noise the aggressive whitelist hides (Aggr): written with Aggr.Mark at the end of its first line, and
+        /// hidden with -aggressive (Aggr.Finish, which also keeps it when another module flagged one of its files). A record with a
+        /// flag other than !lolbin is never marked (safety net).
         /// </summary>
         public void Aggr(string why) => AggrAt(rows.Count - 1, why);
 
@@ -219,31 +216,64 @@ namespace Spor
             return line;
         }
 
+        /// <summary>
+        /// The table's lines. Records marked for the aggressive whitelist end in Aggr.Mark; a table with marks is put between
+        /// Aggr.Start and an Aggr.End line that carries the reasons in order. Aggr.Finish decides at the end of the scan, when
+        /// every module's findings are known, which marks stay, hides them with -aggressive and removes the two lines.
+        /// </summary>
+        static string Quote(string v) => "\"" + v + "\"";
+
+        /// <summary>
+        /// A record's line. When its data would end in what looks like the aggressive whitelist's mark (a file "E:\Backup ~", a
+        /// detail "~"), the value that ends the line is written in double quotes, so " ~" at a line's end is always a mark.
+        /// </summary>
+        string Written(string[] f)
+        {
+            var line = Line(f);
+            if (!global::Spor.Aggr.IsMarked(line)) return line;
+            for (int i = cols.Length - 1; i >= 0; i--)
+            {
+                if (f[i] == "-" || !f[i].EndsWith("~", StringComparison.Ordinal)) continue;
+                var q = (string[])f.Clone();
+                q[i] = Quote(f[i]);
+                var ql = Line(q);
+                if (!global::Spor.Aggr.IsMarked(ql)) return ql;
+            }
+            return line;
+        }
+
+        /// <summary>(pure) A "key: value" sub-line, the value in double quotes when it would end the line like the mark ("cd ~").</summary>
+        internal static string WrittenMore(string keyValue)
+        {
+            if (!global::Spor.Aggr.IsMarked("    " + keyValue)) return keyValue;
+            int i = keyValue.IndexOf(": ", StringComparison.Ordinal);
+            return i < 0 ? Quote(keyValue) : keyValue.Substring(0, i + 2) + Quote(keyValue.Substring(i + 2));
+        }
+
         public void WriteTo(Log log, string none = null)
         {
             if (rows.Count == 0) { log.None(none); return; }
-            bool hide = global::Spor.Aggr.Hide;
-            AggrHidden.Clear();
-            void Count(string why) => AggrHidden[why] = (AggrHidden.TryGetValue(why, out var n) ? n : 0) + 1;
-            if (!hide || aggr.Count < rows.Count)
-            {
-                log.Comment("line: " + Format());
-                log.W();   // explanations above, data below
-            }
+            var whys = new List<string>();
+            bool any = aggr.Count > 0 || aggrMore.Count > 0;
+            if (any) log.W(global::Spor.Aggr.Start);
+            log.Comment("line: " + Format());
+            log.W();   // explanations above, data below
             for (int i = 0; i < rows.Count; i++)
             {
                 bool marked = aggr.TryGetValue(i, out var why);
-                if (marked && hide) { Count(why); continue; }
                 var r = rows[i];
-                log.W(Line(r.F) + (marked ? global::Spor.Aggr.Mark : ""));
+                log.W(Written(r.F) + (marked ? global::Spor.Aggr.Mark : ""));
+                if (marked) whys.Add(why);
                 for (int j = 0; j < r.More.Count; j++)
                 {
-                    bool mm = aggrMore.TryGetValue((i, j), out var mw);
-                    if (mm && hide) { Count(mw); continue; }
-                    log.W("    " + r.More[j] + (mm && !marked ? global::Spor.Aggr.Mark : ""));
+                    // a sub-line of a marked record goes with it, unmarked itself
+                    string mw = null;
+                    bool mm = !marked && aggrMore.TryGetValue((i, j), out mw);
+                    if (mm) whys.Add(mw);
+                    log.W("    " + WrittenMore(r.More[j]) + (mm ? global::Spor.Aggr.Mark : ""));
                 }
             }
-            if (global::Spor.Aggr.Comment(AggrHidden) is string c) log.Comment(c);
+            if (any) log.W(global::Spor.Aggr.EndOf(whys));
         }
     }
 }

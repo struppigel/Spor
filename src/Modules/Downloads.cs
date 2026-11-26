@@ -204,7 +204,7 @@ namespace Spor.Modules
                 dlt.Add(Log.T(r.T), c.MultiUser ? r.User : null, r.Browser, f.Status, Rules.FlagCol(fl), f.Path);
                 if (Aggr.On && fl.Count == 0)
                 {
-                    if (!dlSeen.Add(r.Path + "|" + Host(r.Url))) dlt.Aggr("the same file downloaded again from the same host");
+                    if (!dlSeen.Add(r.Path + "|" + Host(r.Url))) dlt.Aggr(Aggr.Dup("the same file downloaded again from the same host"));
                     else if (NexusMod.IsMatch(r.Path) && NexusCdn.IsMatch(HostOnly(r.Url) ?? "")) dlt.Aggr("mod archives from Nexus Mods (nexus-cdn.com)");
                 }
                 else if (Aggr.On) dlSeen.Add(r.Path + "|" + Host(r.Url));
@@ -383,9 +383,10 @@ namespace Spor.Modules
                 wct.Add(Log.T(r.T), r.User, f.Status, note, Rules.FlagCol(Rules.Flags(r.Path)), f.Path);
                 if (Aggr.On && Rules.Flags(r.Path).Count == 0)
                 {
-                    if (WebDocs.IsMatch(r.Path) && !Risky.IsMatch(r.Path)) wct.Aggr("documents opened (pdf, Office, text)");
+                    // not in Downloads, Desktop, Temp ...: a lure's notes and the files next to a payload (tutforrobrun.txt, saved\masq.txt)
+                    if (WebDocs.IsMatch(r.Path) && !Risky.IsMatch(r.Path) && !Rules.DropLocation(r.Path)) wct.Aggr("documents opened (pdf, Office, text)");
                     else if (n > 0 && rows.Any(o => o.Path.Equals(r.Path, StringComparison.OrdinalIgnoreCase) && !batch.ContainsKey(BatchKey(o.T, o.User))))
-                        wct.Aggr("WebCache batch entries of files listed with their own open time");
+                        wct.Aggr(Aggr.Dup("WebCache batch entries of files listed with their own open time"));
                 }
                 if (!(Risky.IsMatch(r.Path) || !Rules.Whitelist)) continue;
                 // a batch time only when the file has no real open time of its own

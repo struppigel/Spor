@@ -29,7 +29,9 @@ namespace Spor.Tests
 
         // ---- Table: mark or hide
 
-        static List<string> Write(bool aggressive, Action<Table> fill, params string[] cols)
+        static List<string> Write(bool aggressive, Action<Table> fill, params string[] cols) => Write(aggressive, fill, null, cols);
+
+        static List<string> Write(bool aggressive, Action<Table> fill, Func<string, bool> keep, params string[] cols)
         {
             var before = Rules.Aggressive;
             try
@@ -39,6 +41,7 @@ namespace Spor.Tests
                 fill(t);
                 var log = new Log();
                 t.WriteTo(log);
+                Aggr.Finish(log.Lines, 0, keep, aggressive);
                 return log.Lines;
             }
             finally { Rules.Aggressive = before; }
@@ -143,16 +146,139 @@ namespace Spor.Tests
         // ---- FILES and AMCACHE FILES
 
         [Theory]
-        [InlineData(@"N:\Films\x.mkv", true, "media, subtitle, image and Recycle Bin index files")]
-        [InlineData(@"N:\$RECYCLE.BIN\S-1-5-21-1\$IABC123.exe", true, "media, subtitle, image and Recycle Bin index files")]
-        [InlineData(@"C:\Users\a\AppData\Local\x\y.dll", false, "files only hidden lines name")]
-        [InlineData(@"C:\Users\a\AppData\Local\x\y.dll", true, null)]
-        [InlineData(@"C:\Users\a\Downloads\invoice.pdf.exe", false, null)]   // flagged: !double-extension
-        [InlineData(@"N:\Films\x.ts", false, "files only hidden lines name")]   // TypeScript, not a film: only by the rule for unnamed files
-        public void FilesEntries(string key, bool named, string why) => Assert.Equal(why, Scanner.FileAggr(key, named, false));
+        [InlineData(@"N:\Films\x.mkv", true, true, "media, subtitle, image and Recycle Bin index files")]
+        [InlineData(@"N:\$RECYCLE.BIN\S-1-5-21-1\$IABC123.exe", true, true, "media, subtitle, image and Recycle Bin index files")]
+        [InlineData(@"C:\Users\a\AppData\Local\x\y.dll", true, false, "files only hidden lines name")]
+        [InlineData(@"C:\Users\a\AppData\Local\x\y.dll", true, true, null)]
+        [InlineData(@"C:\Users\a\AppData\Local\x\y.dll", false, false, null)]   // no line names it: a module had a reason to check it
+        [InlineData(@"C:\Users\a\Downloads\invoice.pdf.exe", true, false, null)]   // flagged: !double-extension
+        [InlineData(@"N:\Films\x.ts", true, false, "files only hidden lines name")]   // TypeScript, not a film
+        // enchanted-flame: random-named files in System32\drivers that only FILES lists
+        [InlineData(@"C:\Windows\System32\drivers\7EDMSHzxJx8ucVea", true, false, null)]
+        [InlineData(@"C:\Windows\System32\drivers\GwCKsOVgMq2QFnlb", false, false, null)]
+        [InlineData(@"C:\Users\a\AppData\Local\Z0533B4Lo\MVg4zIU\clip\S_Pipe.exe", true, false, null)]
+        public void FilesEntries(string key, bool namedByAny, bool namedByUnmarked, string why) =>
+            Assert.Equal(why, Scanner.FileAggr(key, namedByAny, namedByUnmarked, false));
 
         [Fact]
-        public void AMarkedFileStaysInFiles() => Assert.Null(Scanner.FileAggr(@"N:\Films\x.mkv", false, true));   // Defender detected it
+        public void AMarkedFileStaysInFiles() => Assert.Null(Scanner.FileAggr(@"N:\Films\x.mkv", true, false, true));   // Defender detected it
+
+        // ---- the end of the scan decides (Aggr.Finish)
+
+        static void Docs(Table t)
+        {
+            t.Add("2026-11-25 03:53:12", "", @"C:\Users\Fadi pc\Desktop\saved\masq.txt");
+            t.Aggr("documents opened");
+            t.Add("2026-11-25 03:53:13", "", @"C:\Users\Fadi pc\Dropbox\notes.txt");
+            t.Aggr("documents opened");
+        }
+
+        static bool NextToADetection(string text) => text.Contains(@"\Desktop\saved\");   // stands for Ctx.MarksOf / SUMMARY
+
+        [Fact]
+        public void AMarkALaterModuleContradictsGoes()
+        {
+            var normal = Write(false, Docs, NextToADetection);
+            Assert.Contains(@"2026-11-25 03:53:12 C:\Users\Fadi pc\Desktop\saved\masq.txt", normal);   // unmarked
+            Assert.Contains(@"2026-11-25 03:53:13 C:\Users\Fadi pc\Dropbox\notes.txt ~", normal);
+            var aggressive = Write(true, Docs, NextToADetection);
+            Assert.Contains(@"2026-11-25 03:53:12 C:\Users\Fadi pc\Desktop\saved\masq.txt", aggressive);
+            Assert.DoesNotContain(aggressive, l => l.Contains("notes.txt"));
+            Assert.Contains("(Hidden by -aggressive: documents opened (1).)", aggressive);
+            Assert.DoesNotContain(aggressive, l => l.Contains("\u0001"));
+        }
+
+        [Fact]
+        public void DataThatEndsLikeTheMarkIsWrittenOtherwise()
+        {
+            var l = Write(true, t =>
+            {
+                t.Add("2026-11-01 10:00:00", "", @"E:\Films\x ~");
+                t.More("command", "cd ~");
+                t.Add("2026-11-01 10:00:01", "", @"C:\a\noise.exe");
+                t.Aggr("noise");
+            });
+            Assert.Contains(@"2026-11-01 10:00:00 ""E:\Films\x ~""", l);   // quoted: not taken for a mark, not hidden
+            Assert.Contains(@"    command: ""cd ~""", l);
+            Assert.DoesNotContain(l, x => x.Contains("noise.exe"));
+        }
+
+        [Fact]
+        public void OnlyTheValueThatEndsTheLineIsQuoted()
+        {
+            var l = Write(false, t =>
+            {
+                t.Add("2026-11-01 10:00:00", "", @"E:\Films\x ~", "[unsigned]", "~");   // a lone "~" detail ends the line
+                t.Add("2026-11-01 10:00:01", "", @"E:\Films\y ~", "-", "size 3");        // " ~" in the middle: unchanged
+            }, "@time", "<flags", "*item", "=status", "=details");
+            Assert.Contains(@"2026-11-01 10:00:00 E:\Films\x ~ => [unsigned]; ""~""", l);
+            Assert.Contains(@"2026-11-01 10:00:01 E:\Films\y ~ => size 3", l);
+            Assert.DoesNotContain(l, Aggr.IsMarked);
+        }
+
+        [Theory]
+        [InlineData("command: cd ~", @"command: ""cd ~""")]
+        [InlineData("command: ~", @"command: ""~""")]
+        [InlineData("command: cd ~/x", "command: cd ~/x")]
+        [InlineData("program: C:\\PROGRA~1\\x.exe", "program: C:\\PROGRA~1\\x.exe")]
+        public void SubLineValues(string keyValue, string written) => Assert.Equal(written, Table.WrittenMore(keyValue));
+
+        [Fact]
+        public void OnlyLinesOfATableWithMarksAreMarks()
+        {
+            var lines = new List<string> { "(comment ~", @"2026-11-01 C:\x\y ~", Aggr.Start, "(line: x)", "", @"C:\a\n.exe ~", Aggr.EndOf(new[] { "noise" }) };
+            Aggr.Finish(lines, 0, null, true);
+            Assert.Equal(new[] { "(comment ~", @"2026-11-01 C:\x\y ~", "(Hidden by -aggressive: noise (1).)" }, lines);
+        }
+
+        [Fact]
+        public void DecideFirstHideLast()
+        {
+            var a = new Log(); var t = new Table("@time", "<flags", "*item");
+            Docs(t); t.WriteTo(a);
+            var lines = a.Lines;
+            Aggr.Finish(lines, 0, NextToADetection, false, final: false);   // before FILES: decided, the marks and Start / End stay
+            Assert.Contains(lines, l => l.EndsWith(@"masq.txt", StringComparison.Ordinal));
+            Assert.Contains(lines, l => l.EndsWith(@"notes.txt ~", StringComparison.Ordinal));
+            Assert.Equal(2, lines.Count(Aggr.IsSentinel));
+            Assert.Equal(new[] { @"2026-11-25 03:53:12 C:\Users\Fadi pc\Desktop\saved\masq.txt" },
+                         Aggr.Unmarked(lines).Where(l => l.Contains(@":\")).ToArray());   // what FILES counts as shown
+            Aggr.Finish(lines, 0, null, true);   // the end: hidden, with the reason of the mark that was left
+            Assert.Contains("(Hidden by -aggressive: documents opened (1).)", lines);
+            Assert.DoesNotContain(lines, Aggr.IsSentinel);
+            Assert.DoesNotContain(lines, l => l.Contains("notes.txt"));
+        }
+
+        [Fact]
+        public void ARepeatKeepsItsMark()
+        {
+            var normal = Write(false, t =>
+            {
+                t.Add("2026-11-20 02:12:04", "", @"C:\Users\Fadi pc\Downloads\saved.zip");
+                t.Add("2026-11-20 02:12:04", "", @"C:\Users\Fadi pc\Downloads\saved.zip");
+                t.Aggr(Aggr.Dup("the same file downloaded again from the same host"));
+            }, _ => true);
+            Assert.Equal(1, normal.Count(Aggr.IsMarked));   // the first line shows it; the repeat stays marked although SUMMARY names the file
+        }
+
+        [Fact]
+        public void TheReasonsSurviveLinesCopiedBetweenLogs()
+        {
+            var a = new Log(); var t = new Table("@time", "<flags", "*item");
+            Docs(t); t.WriteTo(a);
+            var b = new List<string> { "x", "" };
+            b.AddRange(a.Lines);   // as Scanner.Append does
+            Aggr.Finish(b, 0, null, true);
+            Assert.Equal(new[] { "x", "", "(Hidden by -aggressive: documents opened (2).)" }, b);
+        }
+
+        [Fact]
+        public void PathCandidatesEndAtEveryBlank()
+        {
+            var c = Aggr.PathCandidates(@"2026-11-20 [PF] C:\Users\Fadi pc\Desktop\saved\RobRunAIO.exe [gone] => x").ToList();
+            Assert.Contains(@"C:\Users\Fadi", c);
+            Assert.Contains(@"C:\Users\Fadi pc\Desktop\saved\RobRunAIO.exe", c);
+        }
 
         [Fact]
         public void BulkAmcacheFolders()

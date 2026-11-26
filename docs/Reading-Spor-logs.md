@@ -185,6 +185,7 @@ When a copied file was seen by another source too, there is no `[SC]` line at th
 | `!known-malware` | the item matches a pattern of a known malware family (Autodetect); the line names the family | High. The patterns are curated from confirmed cases; still read the line: a row can be wrong. |
 | `!renamed-program` | **hint**: a signed program under a random-looking or lure name that is not its original name | **Not on its own.** It goes to SUMMARY only with a strong flag on the same file or in the same folder, e.g. as the host of a `!sideload` DLL. |
 | `!abused-tld` | **hint**: downloaded from a host under a cheap TLD (`.lol`, `.top`, `.xyz`, ...) | **Not on its own.** Next to a strong flag it says where the file came from. |
+| `!root-program` | **hint**: a program, script or shortcut in the root of a drive | **Not on its own** (installers are often left in `C:\`). On a USB drive next to a hidden folder or a worm shortcut it is likely the worm's copy. |
 | `!renamed-persisted` | a Run value, service or task starts a validly signed program under another name, from a random-looking folder | High: a loader's signed decoy (Adobe's `Setup.exe` as `S_Pipe.exe` in `kgw7Hp\kOsW3u0gxT\clip\`) that side-loads or starts the real payload. Look at the files next to it. |
 | `!interpreter-outside` | Python, Node.js, AutoIt, Java, ... in a Windows folder or a drop location, started by persistence or running | High: a script interpreter has no business in `C:\Windows\System32\<name>\` or `C:\ProgramData\<name>\`; the script it runs is the malware. A portable Python in Downloads that the user runs by hand: ask. |
 | `!defender-detected` | Defender detected this file or process | Every line of the file has it, so its ShimCache, Prefetch and network lines link to the detection. A PUA detection of a tool the user wants: ask. |
@@ -196,7 +197,7 @@ When a copied file was seen by another source too, there is no `[SC]` line at th
 | `!usb-worm-lnk` | a shortcut on a USB drive that starts cmd/wscript/rundll32/..., points into a hidden folder, or is named like the drive or a hidden folder | High. The `worm signs:` line under it says why. |
 | `!disguised-icon` | a shortcut to a program or script shows a folder, document or drive icon | High |
 | `!autorun` | autorun.inf that starts something, or a MountPoints2 shell command | High |
-| `!hidden-system` | a hidden and system item on a USB drive | High for folders and programs. Explorer does not show these even with "show hidden files". |
+| `!hidden-system` | a hidden and system item on a USB drive or USB disk | High for folders and programs. Explorer does not show these even with "show hidden files". |
 | `!clsid-folder` | a folder that Explorer shows as something else (`x.{GUID}`, or a desktop.ini with a CLSID) | High on USB drives |
 | `!ads` | an unusual alternate data stream on a file of a USB drive or a drive root | Medium. Read the stream name and size in the line. |
 | `!explorer-hiding` | Explorer was changed so hidden files cannot be shown | High |

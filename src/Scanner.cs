@@ -161,7 +161,15 @@ namespace Spor
                 Summary(c, log, rows);
                 Append(log, timeline);
                 foreach (var s in sections) Append(log, s);
+                // the aggressive whitelist's marks, now that every module's findings are known: decided before FILES (which lists a
+                // file only marked lines name with a mark itself), FILES' own marks after it; hidden (-aggressive) at the very end, so
+                // FILES sees every line in both modes
+                var keep = AggrKeep(c, log.Lines);
+                Aggr.Finish(log.Lines, 0, keep, false, final: false);
+                int filesStart = log.Lines.Count;
                 Files(c, log);
+                Aggr.Finish(log.Lines, filesStart, keep, false, final: false);
+                Aggr.Finish(log.Lines, 0, null, Aggr.Hide);
                 Legend(log);
                 log.W();
                 if (c.ShadowNote != null) log.W(c.ShadowNote);
@@ -179,6 +187,44 @@ namespace Spor
                 Write(path, log);
             }
             return path;
+        }
+
+        /// <summary>
+        /// When a line the aggressive whitelist marked stays marked (Aggr.Finish): not when it names a file another module flagged
+        /// (Ctx.MarksOf: Defender detected it, it is in a Defender exclusion, ...), a file SUMMARY names, or a file in the folder of
+        /// one SUMMARY names outside Windows / Program Files (masq.txt next to a detected RobRunAIO.exe; a lure's notes in Downloads).
+        /// </summary>
+        static readonly Regex FileLike = new Regex(@"\\[^\\]+\.[A-Za-z0-9]{1,10}$", Util.RX);
+
+        static Func<string, bool> AggrKeep(Ctx c, List<string> lines)
+        {
+            var summaryPaths = new HashSet<string>(Util.IC);
+            var summaryFolders = new HashSet<string>(Util.IC);
+            bool inSummary = false;
+            foreach (var l in lines)
+            {
+                if (l.StartsWith("==================== ", StringComparison.Ordinal)) inSummary = l.StartsWith("==================== SUMMARY", StringComparison.Ordinal);
+                if (!inSummary) continue;
+                // only candidates that end in an extension: "C:\Users\Fadi" (cut at the blank in "Fadi pc") would match everything
+                foreach (var p in Aggr.PathCandidates(l).Where(p => FileLike.IsMatch(p)))
+                {
+                    summaryPaths.Add(p);
+                    var folder = Util.Folder(p);
+                    // a real folder of its own (not C:\, C:\Users, a profile): three levels at least, outside Windows / Program Files
+                    if (folder.Count(ch => ch == '\\') >= 3 && !Rules.InTrustedLocation(p)) summaryFolders.Add(folder);
+                }
+            }
+            return text =>
+            {
+                try
+                {
+                    foreach (var p in Aggr.PathCandidates(text))
+                        if (c.MarksOf(p).Count > 0 || (FileLike.IsMatch(p) && (summaryPaths.Contains(p) || (summaryFolders.Contains(Util.Folder(p)) && !Rules.InTrustedLocation(p)))))
+                            return true;
+                }
+                catch { }
+                return false;
+            };
         }
 
         static void Append(Log log, Log part)
@@ -760,14 +806,15 @@ namespace Spor
             @"|\\\$RECYCLE\.BIN\\[^\\]+\\\$I[^\\]+$", Util.RX);
 
         /// <summary>
-        /// (pure) Why the aggressive whitelist leaves a FILES entry out, or null: a file no unmarked line names (only lines -aggressive
-        /// hides name it, or none), or a plain data file. Never a flagged file (path flags, marks such as a Defender detection, LOLBin copy).
+        /// (pure) Why the aggressive whitelist leaves a FILES entry out, or null: a file only lines -aggressive hides name, or a plain
+        /// data file. Never a flagged file (path flags, marks such as a Defender detection, LOLBin copy), a random-looking name or
+        /// folder, and never a file no line names at all: a module checked it for a reason (random-named files in System32\drivers).
         /// </summary>
-        internal static string FileAggr(string key, bool namedByUnmarked, bool marked)
+        internal static string FileAggr(string key, bool namedByAny, bool namedByUnmarked, bool marked)
         {
-            if (marked || Rules.Strong(Rules.Flags(key)).Count > 0) return null;
+            if (marked || Rules.Strong(Rules.Flags(key)).Count > 0 || Names.IsRandom(Util.Leaf(key)) || Names.RandomFolder(key)) return null;
             if (DataFile.IsMatch(key)) return "media, subtitle, image and Recycle Bin index files";
-            if (!namedByUnmarked) return "files only hidden lines name";
+            if (namedByAny && !namedByUnmarked) return "files only hidden lines name";
             return null;
         }
 
@@ -796,7 +843,7 @@ namespace Spor
             HashSet<string> shown = null, shownUnmarked = null;
             if (Rules.Whitelist)
             {
-                shown = ShownFiles(log.Lines, all);
+                shown = ShownFiles(Aggr.WithoutSentinels(log.Lines), all);
                 shownUnmarked = ShownFiles(Aggr.Unmarked(log.Lines), all);   // aggressive: what stays when marked records go
                 // an app execution alias shows the program it starts (its status is that program's)
                 foreach (var (alias, target) in c.AliasTargets())
@@ -826,7 +873,7 @@ namespace Spor
                     t.Add(k, h ?? "not hashed", sig);
                     t.More("file", fileLine);
                     t.More("version", versionLine);
-                    if (Aggr.On) t.Aggr(FileAggr(k, shownUnmarked.Contains(k), c.MarksOf(k).Count > 0 || c.LolbinCopy(k) != null));
+                    if (Aggr.On) t.Aggr(FileAggr(k, shown.Contains(k), shownUnmarked.Contains(k), c.MarksOf(k).Count > 0 || c.LolbinCopy(k) != null));
                 }
                 t.WriteTo(log);
             }

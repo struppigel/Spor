@@ -562,7 +562,10 @@ namespace Spor
         /// Hints: weak flags. They go to the SUMMARY only together with a strong flag on the same file or in the same folder
         /// (a renamed signed program alone is often harmless; next to a side-loaded DLL it is the host).
         /// </summary>
-        public static readonly HashSet<string> Hints = new HashSet<string> { "!renamed-program", AbusedTldFlag };
+        public static readonly HashSet<string> Hints = new HashSet<string> { "!renamed-program", AbusedTldFlag, RootProgramFlag };
+
+        /// <summary>Hint: a program, script or shortcut in the root of a drive (USB worms put their copy and shortcuts there).</summary>
+        public const string RootProgramFlag = "!root-program";
 
         /// <summary>A file whose signature was revoked or that was changed after signing (a patched or infected signed file).</summary>
         public const string InvalidSignatureFlag = "!invalid-signature";
@@ -649,9 +652,10 @@ namespace Spor
             "!usb-worm-lnk = shortcut on a drive that starts a script host, cmd, rundll32 or a file in a hidden folder, has no normal target, or is named like the drive or a hidden folder (USB worm)",
             "!disguised-icon = shortcut to a program or script that shows a folder, document or drive icon",
             "!autorun = autorun.inf that starts something, or a MountPoints2 shell command",
-            "!hidden-system = hidden and system item on a removable drive (not a Windows folder), e.g. a fake RECYCLER folder",
+            "!hidden-system = hidden and system item on a removable drive or USB disk (not a Windows folder), e.g. a fake RECYCLER folder",
             "!clsid-folder = folder named x.{GUID} or with a desktop.ini that sets a CLSID: Explorer shows it as something else",
             "!ads = alternate data stream (other than Zone.Identifier) on a file of a drive",
+            "!root-program = hint: program, script or shortcut in the root of a drive (USB worms put their copy and shortcuts there; in SUMMARY only with a strong flag nearby)",
             "!explorer-hiding = Explorer settings tampered so hidden files cannot be shown (SHOWALL CheckedValue, NoFolderOptions)",
             "!lolbin-copy = copy of MSBuild, InstallUtil, RegAsm, RegSvcs, AddInProcess, aspnet_compiler, wscript, cscript or mshta (by original name) outside its usual folders, and not validly signed in Windows / Program Files",
             "!msi-script-action = cached Windows Installer package that installs into a LocalAppData folder and runs a script host, cmd, PowerShell or a script it installs as a custom action"

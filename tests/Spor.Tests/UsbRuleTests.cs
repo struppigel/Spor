@@ -54,6 +54,74 @@ namespace Spor.Tests
             Assert.Empty(Usb.WormSigns("Docs.lnk", L(@"E:\docs"), "STICK", new string[0]));
         }
 
+        [Theory]
+        [InlineData("x.exe", 0, false, true)]
+        [InlineData("STICK.lnk", 0, false, true)]
+        [InlineData("a.vbs", 0, false, true)]
+        [InlineData("setup.url", 0, false, true)]
+        [InlineData("Usb Safe Protect.exe", 0, false, true)]
+        [InlineData("x.exe", 1, false, false)]        // E:\Photos\x.exe: not in the root
+        [InlineData("x.exe", 0, true, false)]         // a folder named x.exe
+        [InlineData("autorun.inf", 0, false, false)]
+        [InlineData("cat.jpg", 0, false, false)]
+        [InlineData("pagefile.sys", 0, false, false)]
+        [InlineData("hiberfil.sys", 0, false, false)]
+        public void RootProgram(string name, int depth, bool dir, bool flagged) => Assert.Equal(flagged, Usb.RootProgram(name, depth, dir));
+
+        [Fact]
+        public void RootProgramIsAHint()
+        {
+            Assert.Contains(Usb.RootFlag, Rules.Hints);
+            Assert.Empty(Rules.Strong(new List<string> { Usb.RootFlag }));
+            Assert.Contains(Rules.FlagLegend, l => l.StartsWith(Usb.RootFlag + " = hint:"));
+        }
+
+        const FileAttributes Hidden = FileAttributes.Hidden | FileAttributes.Directory;
+        const FileAttributes Plain = FileAttributes.Directory;
+
+        [Fact]
+        public void SystemDriveEntersOnlyInvisibleNamedRootFolders()
+        {
+            Assert.False(Usb.EnterFolder(false, true, DriveType.Fixed, 0, "OEM", Hidden));
+            Assert.False(Usb.EnterFolder(false, true, DriveType.Fixed, 0, "Intel", Hidden | FileAttributes.System));
+            Assert.False(Usb.EnterFolder(false, true, DriveType.Fixed, 0, "Games", Plain));
+            Assert.True(Usb.EnterFolder(false, true, DriveType.Fixed, 0, "\u00A0", Hidden));
+            Assert.True(Usb.EnterFolder(false, true, DriveType.Fixed, 0, "\u206C\u206C", Plain));
+            Assert.True(Usb.EnterFolder(false, true, DriveType.Fixed, 0, "data ", Plain));   // name ends with a space
+            Assert.True(Usb.EnterFolder(false, true, DriveType.Fixed, 1, "logs", Plain));    // inside an entered folder
+        }
+
+        const FileAttributes HS = FileAttributes.Hidden | FileAttributes.System;
+
+        [Fact]
+        public void HiddenSystemOnSticksAndAllUsbDisks()
+        {
+            // a stick (deep) and a 1 TB USB disk (not deep, on USB): a worm's hidden system folder is flagged on both
+            Assert.True(Usb.HiddenSystem(true, true, 0, "\u00A0", @"E:\" + "\u00A0", HS | FileAttributes.Directory));
+            Assert.True(Usb.HiddenSystem(false, true, 0, "\u206C\u206C", @"D:\" + "\u206C\u206C", HS | FileAttributes.Directory));
+            Assert.True(Usb.HiddenSystem(false, true, 1, "x.exe", @"D:\" + "\u206C\u206C" + @"\x.exe", HS));
+            Assert.True(Usb.HiddenSystem(false, true, 0, "RECYCLER", @"D:\RECYCLER", HS | FileAttributes.Directory));
+            // a fixed disk inside the PC: never
+            Assert.False(Usb.HiddenSystem(false, false, 0, "\u00A0", @"D:\" + "\u00A0", HS | FileAttributes.Directory));
+            // only hidden, or Windows' own
+            Assert.False(Usb.HiddenSystem(false, true, 0, "photos", @"D:\photos", FileAttributes.Hidden | FileAttributes.Directory));
+            Assert.False(Usb.HiddenSystem(false, true, 0, "System Volume Information", @"D:\System Volume Information", HS | FileAttributes.Directory));
+            Assert.False(Usb.HiddenSystem(true, true, 1, "x.dat", @"E:\$RECYCLE.BIN\x.dat", HS));
+            // a USB disk that was a PC's system disk keeps Windows' root folders; on a stick they are still odd
+            Assert.False(Usb.HiddenSystem(false, true, 0, "Recovery", @"D:\Recovery", HS | FileAttributes.Directory));
+            Assert.True(Usb.HiddenSystem(true, true, 0, "Recovery", @"E:\Recovery", HS | FileAttributes.Directory));
+        }
+
+        [Fact]
+        public void OtherDrivesEnterAsBefore()
+        {
+            Assert.True(Usb.EnterFolder(false, false, DriveType.Fixed, 0, "OEM", Hidden));
+            Assert.False(Usb.EnterFolder(false, false, DriveType.Fixed, 0, "Games", Plain));
+            Assert.False(Usb.EnterFolder(false, false, DriveType.Fixed, 0, "System Volume Information", Hidden | FileAttributes.System));
+            Assert.True(Usb.EnterFolder(true, false, DriveType.Removable, 0, "Games", Plain));
+            Assert.False(Usb.EnterFolder(false, false, DriveType.Network, 0, "\u00A0", Hidden));
+        }
+
         [Fact]
         public void HiddenWindowsFoldersAreNoWormSign() =>
             Assert.Empty(Usb.WormSigns("x.lnk", L(@"E:\System Volume Information\x.dat"), null, new[] { "System Volume Information" }));
@@ -159,6 +227,94 @@ namespace Spor.Tests
             Assert.Null(Correlate.UsbDriveOf(@"e:\setup.exe", Connected.AddDays(-21), vols, letters));
             letters["E:"] = ("STICK", null);
             Assert.Null(Correlate.UsbDriveOf(@"e:\_\x.exe", Connected.AddHours(1), vols, letters));   // connect time unknown
+        }
+
+        static byte[] H(string hex) => Usb.FieldBytes(hex.Replace(" ", ""));
+
+        [Fact]
+        public void MountedKeysOfFixedDisks()
+        {
+            // MBR: disk signature (as on disk) + partition offset 1 MiB
+            Assert.Equal("mbr:182E07C3", Usb.MountedKey(H("182E07C3 0000100000000000")));
+            // GPT: "DMIO:ID:" + the partition GUID
+            Assert.Equal("gpt:F45956707A38554DB87215913E8CCDEE", Usb.MountedKey(H("444D494F3A49443A F45956707A38554DB87215913E8CCDEE")));
+            // a removable drive's value is its device path, no key
+            Assert.Null(Usb.MountedKey(Encoding.Unicode.GetBytes(@"_??_USBSTOR#Disk&Ven_Generic&Prod_Flash_Disk&Rev_8.07#52BF6B&0#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}")));
+            Assert.Null(Usb.MountedKey(H("00000000 0000100000000000")));
+            Assert.Null(Usb.MountedKey(null));
+        }
+
+        /// <summary>DRIVE_LAYOUT_INFORMATION_EX as event 1006 writes it: 48-byte header, then 144 bytes per partition.</summary>
+        static byte[] Layout(int style, byte[] signature, params byte[][] partIds)
+        {
+            var b = new byte[48 + 144 * partIds.Length];
+            System.BitConverter.GetBytes(style).CopyTo(b, 0);
+            System.BitConverter.GetBytes(partIds.Length).CopyTo(b, 4);
+            signature?.CopyTo(b, 8);
+            for (int p = 0; p < partIds.Length; p++) partIds[p].CopyTo(b, 48 + 144 * p + 48);
+            return b;
+        }
+
+        [Fact]
+        public void DiskKeysFromTheEvent()
+        {
+            Assert.Equal(new[] { "mbr:182E07C3" }, Usb.DiskKeys(Layout(0, H("182E07C3")), null));
+            var gpt = Layout(1, null, H("FA91E5DD812BDD478B8403349E9F83F2"), H("F45956707A38554DB87215913E8CCDEE"));
+            Assert.Equal(new[] { "gpt:FA91E5DD812BDD478B8403349E9F83F2", "gpt:F45956707A38554DB87215913E8CCDEE" }, Usb.DiskKeys(gpt, null));
+            // no signature in the layout: the MBR's (offset 440, with the 55 AA end mark)
+            var mbr = new byte[512];
+            H("95EF1600").CopyTo(mbr, 440);
+            mbr[510] = 0x55; mbr[511] = 0xAA;
+            Assert.Equal(new[] { "mbr:95EF1600" }, Usb.DiskKeys(Layout(0, null, new byte[0][]), mbr));
+            Assert.Empty(Usb.DiskKeys(Layout(0, null), new byte[512]));   // no signature anywhere
+            Assert.Empty(Usb.DiskKeys(new byte[10], null));                // too short to be a layout
+            Assert.Empty(Usb.DiskKeys(null, null));
+        }
+
+        [Fact]
+        public void TheSameDiskKeyOnBothSides()
+        {
+            var id = H("F967CE7F4ACAA34AB739CCA021568163");
+            var mounted = new byte[24];
+            Encoding.ASCII.GetBytes("DMIO:ID:").CopyTo(mounted, 0);
+            id.CopyTo(mounted, 8);
+            Assert.Contains(Usb.MountedKey(mounted), Usb.DiskKeys(Layout(1, null, id), null));
+        }
+
+        [Fact]
+        public void FieldBytes()
+        {
+            Assert.Equal(new byte[] { 0x18, 0x2E }, Usb.FieldBytes("182e"));
+            Assert.Equal(new byte[] { 1, 2 }, Usb.FieldBytes(new byte[] { 1, 2 }));
+            Assert.Null(Usb.FieldBytes("xyz"));
+            Assert.Null(Usb.FieldBytes("123"));
+            Assert.Null(Usb.FieldBytes(null));
+        }
+
+        [Fact]
+        public void ParentSerial()
+        {
+            Assert.Equal("NA9LV5LQ", Usb.ParentSerial(@"USB\VID_0BC2&PID_2343\NA9LV5LQ"));
+            Assert.Null(Usb.ParentSerial(@"USB\VID_0BC2&PID_2343\6&1a2b3c4d&0&2"));   // Windows made the id up: no serial
+            Assert.Null(Usb.ParentSerial(@"PCI\VEN_1C5C&DEV_1959\4&1799ec7b&0&0030"));
+        }
+
+        [Fact]
+        public void SetupApiLogsOldestFirst()
+        {
+            Assert.Equal(new[] { "setupapi.dev.20250329_003008.log", "setupapi.dev.20261024_215731.log", "setupapi.dev.log" },
+                         Usb.SetupApiOrder(new[] { "setupapi.dev.log", "setupapi.dev.20261024_215731.log", "SETUPAPI.DEV.LOG.txt", "setupapi.dev.20250329_003008.log" }));
+            Assert.Empty(Usb.SetupApiOrder(new string[0]));
+        }
+
+        [Fact]
+        public void OneSerialManyModels()
+        {
+            // a USB-SATA bridge gives every disk the serial 20171120: the event's model picks the device
+            Assert.True(Usb.SameModel("ST1000LM 035-1RK172", "ST1000LM 035-1RK172 USB Device", "ST1000LM 035-1RK172"));
+            Assert.False(Usb.SameModel("ST1000LM 035-1RK172", "ST1000LM 035-1RK172 USB Device", "Generic ATA/ATAPI Device"));
+            Assert.True(Usb.SameModel("Generic ATA/ATAPI Device", "Generic ATA/ATAPI Device USB Device", "Generic ATA/ATAPI Device"));
+            Assert.False(Usb.SameModel("SanDisk Cruzer Blade", null, ""));
         }
     }
 }

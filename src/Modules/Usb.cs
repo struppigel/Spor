@@ -11,7 +11,8 @@ using Microsoft.Win32;
 namespace Spor.Modules
 {
     /// <summary>
-    /// USB worms: the contents of the drives (removable and USB drives in full, other drives their root and hidden root folders) with
+    /// USB worms: the contents of the drives (removable and USB drives in full, other drives their root and hidden root folders, the
+    /// system drive only its flagged root items and invisible-named root folders) with
     /// attributes, hidden and invisible-named items, autorun.inf, shortcuts with target, arguments and icon, Explorer settings that hide
     /// files, MountPoints2, USB device history and files opened from removable drives. Every listed file goes to FILES (hash, version).
     /// </summary>
@@ -22,7 +23,7 @@ namespace Spor.Modules
         public string Description => "drives with hidden and invisible-named items, autorun.inf, shortcuts, USB device history";
 
         public const string WormFlag = "!usb-worm-lnk", IconFlag = "!disguised-icon", AutorunFlag = "!autorun", HiddenSystemFlag = "!hidden-system",
-                            ClsidFlag = "!clsid-folder", AdsFlag = "!ads", ExplorerFlag = "!explorer-hiding";
+                            ClsidFlag = "!clsid-folder", AdsFlag = "!ads", ExplorerFlag = "!explorer-hiding", RootFlag = Rules.RootProgramFlag;
 
         sealed class Drive
         {
@@ -31,6 +32,7 @@ namespace Spor.Modules
             public int Bus = -1;
             public long Size;
             public bool Deep;   // removable or on the USB bus: everything is listed
+            public bool OnUsb;  // removable or on the USB bus, any size (a big USB hard disk too): checked as a USB drive
         }
 
         sealed class Item
@@ -103,7 +105,7 @@ namespace Spor.Modules
         {
             var res = new List<Drive>();
             c.Out.Sub("Drives", "deep = removable or USB drive: listed in full (hidden, system and invisible-named items too); network drives: the root, not hashed;\n" +
-                                "other drives: the root and hidden root folders.");
+                                "other drives: the root and hidden root folders (a USB disk over 256 GB too, its items checked as on a USB drive);\n" +                                "the system drive: flagged root items and invisible-named root folders.");
             var t = new Table("*drive", "type", "bus", "device", "label", "file system", "serial", "size", "=listing");
             foreach (var di in DriveInfo.GetDrives())
             {
@@ -129,8 +131,11 @@ namespace Spor.Modules
                 }
                 // listed file by file: removable drives and USB disks up to 256 GB (sticks, small SSDs: what worms spread on); a big USB
                 // disk (media, backups) gets the root listing other fixed drives get
-                d.Deep = ready && (d.Type == DriveType.Removable || (d.Bus == 7 && d.Size > 0 && d.Size <= DeepMaxBytes)) && !d.Letter.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase);
-                if (d.Deep)
+                d.Deep = ready && (d.Type == DriveType.Removable || (d.Bus == 7 && d.Size > 0 && d.Size <= DeepMaxBytes)) && !IsSystem(d);
+                // a big USB disk is listed like a fixed drive (its root and hidden root folders), but worms spread on it like on a stick:
+                // its hidden system items are flagged, and timeline lines of its files say "on USB drive"
+                d.OnUsb = d.Deep || (ready && d.Bus == 7 && !IsSystem(d));
+                if (d.OnUsb)
                 {
                     if (d.Serial != null) c.UsbVolumes[d.Serial] = d.Label ?? "";
                     c.UsbLetters[d.Letter] = (d.Label ?? "", null);   // the time it was connected: History()
@@ -138,8 +143,10 @@ namespace Spor.Modules
                 t.Add(d.Letter, d.Type.ToString().ToLowerInvariant(), BusName(d.Bus), string.Join(" ", new[] { d.Vendor, d.Product }.Where(x => x != null)),
                       d.Label != null ? Rules.Fix(d.Label) : null, d.Fs, d.Serial, d.Size > 0 ? d.Size + " bytes" : null,
                       timedOut ? $"not reachable (no answer in {NetworkWait} s)" : !ready ? "not ready (no medium)" : d.Deep ? "deep"
-                      : d.Type == DriveType.Network ? "root, not hashed" : d.Type == DriveType.CDRom ? "root" : "root and hidden root folders");
+                      : d.Type == DriveType.Network ? "root, not hashed" : d.Type == DriveType.CDRom ? "root"
+                      : IsSystem(d) ? "root, flagged items only" : d.OnUsb ? "root and hidden root folders (USB disk not listed in full)" : "root and hidden root folders");
                 if (ready && d.Type != DriveType.NoRootDirectory && d.Type != DriveType.Unknown) res.Add(d);
+                if (ready && !d.OnUsb) localLetters.Add(d.Letter);
             }
             t.WriteTo(c.Out);
             return res;
@@ -252,14 +259,19 @@ namespace Spor.Modules
             var hiddenNames = new HashSet<string>(items.Where(i => i.Depth <= 1 && (i.Attr & FileAttributes.Hidden) != 0).Select(i => i.Name), StringComparer.OrdinalIgnoreCase);
             foreach (var it in items) Classify(d, it, items);
 
+            // the system drive: only what is flagged (its hidden root folders are a PC maker's and tools' own; thousands of log files)
+            bool sys = IsSystem(d);
             c.Out.Sub($"Contents of {d.Letter}\\" + (d.Label != null ? " (" + Rules.Fix(d.Label) + ")" : ""),
                       d.Deep ? "Everything on the drive, folders end with \\. Times UTC; hash, signature and version of the files: FILES."
                       : network ? "Network drive: the root, folders end with \\. Times UTC. Files are not hashed and their streams not read (that would go over the network)."
+                      : sys ? "System drive: only root items with flags (programs, scripts and shortcuts, invisible characters, alternate data streams, CLSID folders) " +
+                              "and the contents of invisible-named root folders. Times UTC; hashes: FILES."
                       : "The root of the drive, and the contents of hidden, system or invisible-named root folders (not Windows' own). Times UTC; hashes: FILES.");
             var t = new Table("*item", "!status", "=attributes", "created", "modified", "size", "streams", "=details", "<flags");
             var aggr = Aggr.On ? ListingAggr(items) : new Dictionary<Item, string>();
             foreach (var it in items)
             {
+                if (sys && it.Flags.Count == 0) continue;
                 string status = null;
                 // hashed (FILES): what can run or carry what runs; a drive's films and photos are no evidence
                 bool hashable = !it.Dir && !(d.Letter.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase) && it.Depth == 0 && SystemRootFile.IsMatch(it.Name))
@@ -272,17 +284,23 @@ namespace Spor.Modules
                       streams, it.Details.Count > 0 ? string.Join("; ", it.Details) : null, Rules.FlagCol(it.Flags));
                 if (aggr.TryGetValue(it, out var why)) t.Aggr(why);
                 var strong = Rules.Strong(it.Flags);
+                var hints = Rules.HintsOf(it.Flags);
+                bool isNew = !it.Dir && !EdgeName(it.Name) && !network && it.Created >= c.Since;
                 if (strong.Count > 0)
                 {
                     // a new file goes to the timeline (and from there to the SUMMARY); folders and older files straight to the SUMMARY
-                    if (!it.Dir && !EdgeName(it.Name) && !network && it.Created >= c.Since)
+                    if (isNew)
                         c.Event(it.Created, "NEW", it.Path, string.Join("; ", new[] { "on " + DriveText(d), AttrText(it.Attr) }.Concat(it.Details)),
                                 it.Flags.Where(f => !Rules.Flags(it.Path).Contains(f)).ToList());
                     else
-                        c.Find(it.Created, Log.Item(Shown(it.Path) + (it.Dir ? "\\" : ""), null, AttrText(it.Attr), Rules.FlagCol(strong)), "created");
+                        c.Find(it.Created, Log.Item(Shown(it.Path) + (it.Dir ? "\\" : ""), null, AttrText(it.Attr), Rules.FlagCol(strong.Concat(hints).ToList())), "created");
                 }
+                else if (hints.Count > 0 && isNew)
+                    // a new program, script or shortcut in a drive's root (!root-program): the timeline; the SUMMARY shows it only next to a
+                    // strong flag in the same folder (Scanner.Summary)
+                    c.Event(it.Created, "NEW", it.Path, string.Join("; ", new[] { "on " + DriveText(d), AttrText(it.Attr) }.Concat(it.Details)), hints);
             }
-            t.WriteTo(c.Out, "empty");
+            t.WriteTo(c.Out, sys ? "no flagged items" : "empty");
             if (capped) c.Out.Comment($"Stopped at {c.Opt.UsbMax} items; the rest of the drive is not listed.");
             if (unreachable) c.Out.Comment($"The drive did not answer in {NetworkWait} s; not listed.");
             if (denied > 0) c.Out.Comment($"{denied} of {dirs} folders could not be read (access denied).");
@@ -295,17 +313,32 @@ namespace Spor.Modules
         readonly Dictionary<string, HashSet<string>> hiddenByDrive = new Dictionary<string, HashSet<string>>(Util.IC);
         void AddHiddenNames(Drive d, HashSet<string> names) => hiddenByDrive[d.Letter] = names;
 
-        static string DriveText(Drive d) => (d.Deep ? "USB drive " : "drive ") + d.Letter + (string.IsNullOrEmpty(d.Label) ? "" : " " + Rules.Fix(d.Label));
+        static string DriveText(Drive d) => (d.OnUsb ? "USB drive " : "drive ") + d.Letter + (string.IsNullOrEmpty(d.Label) ? "" : " " + Rules.Fix(d.Label));
 
-        /// <summary>Folders to list: everything on a deep drive; on other drives only hidden, system or oddly named root folders.</summary>
-        bool Enter(Drive d, Item it)
+        bool IsSystem(Drive d) => d.Letter.Equals(c.SystemDrive, StringComparison.OrdinalIgnoreCase);
+
+        bool Enter(Drive d, Item it) => EnterFolder(d.Deep, IsSystem(d), d.Type, it.Depth, it.Name, it.Attr);
+
+        /// <summary>
+        /// (pure) Folders to list: everything on a deep drive; on other drives only hidden, system or oddly named root folders; on the
+        /// system drive only invisible-named root folders (its hidden ones are a PC maker's or a tool's: C:\OEM, C:\Intel, ...).
+        /// </summary>
+        internal static bool EnterFolder(bool deep, bool systemDrive, DriveType type, int depth, string name, FileAttributes attr)
         {
-            if (d.Deep) return true;
-            if (it.Depth > 0) return true;   // inside a root folder that was entered
-            if (d.Type == DriveType.Network || d.Type == DriveType.CDRom) return false;
-            if (KnownRootFolder.IsMatch(it.Name)) return false;
-            return (it.Attr & (FileAttributes.Hidden | FileAttributes.System)) != 0 || Unseen(it.Name) || EdgeName(it.Name);
+            if (deep) return true;
+            if (depth > 0) return true;   // inside a root folder that was entered
+            if (type == DriveType.Network || type == DriveType.CDRom) return false;
+            if (KnownRootFolder.IsMatch(name ?? "")) return false;
+            if (Unseen(name) || EdgeName(name)) return true;
+            return !systemDrive && (attr & (FileAttributes.Hidden | FileAttributes.System)) != 0;
         }
+
+        /// <summary>
+        /// (pure) !root-program: a program, script or shortcut (Rules.ProgramFile) in the root of a drive, where USB worms put their copy
+        /// and shortcuts; not the page, hibernation and swap files of the system drive's root.
+        /// </summary>
+        internal static bool RootProgram(string name, int depth, bool dir) =>
+            !dir && depth == 0 && !string.IsNullOrEmpty(name) && Rules.ProgramFile(name) && !SystemRootFile.IsMatch(name);
 
         /// <summary>Any character that cannot be seen: bidi overrides and every invisible character (also a no-break space).</summary>
         static bool Unseen(string s) => Rules.Bidi.IsMatch(s ?? "") || Rules.Invisible.IsMatch(s ?? "");
@@ -324,8 +357,8 @@ namespace Spor.Modules
         void Classify(Drive d, Item it, List<Item> all)
         {
             it.Flags.AddRange(UsbFlags(it.Path));
-            bool hs = (it.Attr & FileAttributes.Hidden) != 0 && (it.Attr & FileAttributes.System) != 0;
-            if (d.Deep && hs && !WindowsHiddenSystem.IsMatch(it.Name) && !InWindowsHiddenFolder(it.Path)) it.Flags.Add(HiddenSystemFlag);
+            if (HiddenSystem(d.Deep, d.OnUsb, it.Depth, it.Name, it.Path, it.Attr)) it.Flags.Add(HiddenSystemFlag);
+            if (RootProgram(it.Name, it.Depth, it.Dir)) it.Flags.Add(RootFlag);
             if (it.Dir && ClsidName(it.Name)) { it.Flags.Add(ClsidFlag); it.Details.Add("Explorer shows this folder as a shell object (CLSID in the name)"); }
             if (!it.Dir && it.Name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase) && it.Size < 64 * 1024)
             {
@@ -343,7 +376,7 @@ namespace Spor.Modules
             }
             var odd = UnusualStreams(it.Streams.Select(s => s.Name));
             if ((d.Deep || it.Depth == 0) && odd.Count > 0) it.Flags.Add(AdsFlag);
-            if (it.Dir && it.Name.Equals("RECYCLER", StringComparison.OrdinalIgnoreCase) && d.Deep) it.Details.Add("RECYCLER is the recycle bin name of Windows XP; newer Windows use $RECYCLE.BIN");
+            if (it.Dir && it.Name.Equals("RECYCLER", StringComparison.OrdinalIgnoreCase) && d.OnUsb) it.Details.Add("RECYCLER is the recycle bin name of Windows XP; newer Windows use $RECYCLE.BIN");
         }
 
         /// <summary>Archives and disk images: hashed on a drive like programs (a worm's payload can be packed).</summary>
@@ -353,6 +386,18 @@ namespace Spor.Modules
         internal static string EdgeNote(string name) =>
             (name ?? "").EndsWith(" ") || (name ?? "").EndsWith(".") ? "name ends with a space or dot: Windows programs cannot open it"
                                                                    : "name starts with a space: Explorer hides it";
+
+        /// <summary>
+        /// (pure) !hidden-system: a hidden and system item on a removable drive or USB disk (`onUsb`), not one Windows makes itself. On a
+        /// USB disk that is not listed in full (over 256 GB) also not Windows' and common software's root folders (KnownRootFolder): such a
+        /// disk may have been a PC's system disk.
+        /// </summary>
+        internal static bool HiddenSystem(bool deep, bool onUsb, int depth, string name, string path, FileAttributes attr)
+        {
+            if (!onUsb || (attr & FileAttributes.Hidden) == 0 || (attr & FileAttributes.System) == 0) return false;
+            if (WindowsHiddenSystem.IsMatch(name ?? "") || InWindowsHiddenFolder(path)) return false;
+            return deep || depth > 0 || !KnownRootFolder.IsMatch(name ?? "");
+        }
 
         /// <summary>(pure) An item inside a folder Windows itself keeps hidden and system ($RECYCLE.BIN, System Volume Information).</summary>
         internal static bool InWindowsHiddenFolder(string path) =>
@@ -769,6 +814,8 @@ namespace Spor.Modules
 
         /// <summary>SYSTEM\MountedDevices: volume GUID or drive letter -> device ("USBSTOR#Disk&amp;Ven_...#serial&amp;0#...") for USB volumes.</summary>
         Dictionary<string, string> mounted;
+        /// <summary>SYSTEM\MountedDevices values of fixed disks (a USB hard disk): name -> disk key (DiskKey: "mbr:..." / "gpt:...").</summary>
+        readonly Dictionary<string, string> mountedKeys = new Dictionary<string, string>(Util.IC);
         Dictionary<string, string> Mounted()
         {
             if (mounted != null) return mounted;
@@ -778,14 +825,152 @@ namespace Spor.Modules
                 using (var k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\MountedDevices"))
                     if (k != null)
                         foreach (var n in k.GetValueNames())
-                            if (k.GetValue(n) is byte[] b && b.Length > 8 && b[1] == 0)
+                        {
+                            if (!(k.GetValue(n) is byte[] b)) continue;
+                            // a fixed disk's volume: MBR disk signature + offset, or a GPT partition GUID (before the text form: a
+                            // signature's second byte can be 0)
+                            var key = MountedKey(b);
+                            if (key != null) { mountedKeys[n] = key; continue; }
+                            if (b.Length > 8 && b[1] == 0)
                             {
                                 var s = Encoding.Unicode.GetString(b).TrimEnd('\0');
                                 if (s.StartsWith(@"_??_") || s.StartsWith(@"\??\")) mounted[n] = s.Substring(4);
                             }
+                        }
             }
             catch (Exception e) { c.Err.Add("MountedDevices: " + e.Message); }
             return mounted;
+        }
+
+        /// <summary>
+        /// (pure) The disk key of a MountedDevices value of a fixed disk's volume: 12 bytes = MBR disk signature (4 bytes as on disk) and
+        /// the partition's offset -> "mbr:&lt;8 hex digits&gt;"; "DMIO:ID:" and 16 bytes = the GPT partition GUID -> "gpt:&lt;32 hex digits&gt;".
+        /// Null for other values (a removable drive's device path, ...).
+        /// </summary>
+        internal static string MountedKey(byte[] b)
+        {
+            if (b == null) return null;
+            if (b.Length == 12) return NonZero(b, 0, 4) ? "mbr:" + HexOf(b, 0, 4) : null;
+            if (b.Length == 24 && Encoding.ASCII.GetString(b, 0, 8) == "DMIO:ID:") return NonZero(b, 8, 16) ? "gpt:" + HexOf(b, 8, 16) : null;
+            return null;
+        }
+
+        static bool NonZero(byte[] b, int start, int count)
+        {
+            for (int i = start; i < start + count && i < b.Length; i++) if (b[i] != 0) return true;
+            return false;
+        }
+
+        static string HexOf(byte[] b, int start, int count)
+        {
+            var sb = new StringBuilder(count * 2);
+            for (int i = start; i < start + count; i++) sb.Append(b[i].ToString("X2"));
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// (pure) The disk keys of a disk from a Partition/Diagnostic 1006 event: its PartitionTable (DRIVE_LAYOUT_INFORMATION_EX: style,
+        /// count, MBR signature at offset 8; 48-byte header, then 144 bytes per partition with the GPT partition GUID at +48) and its Mbr
+        /// (512 bytes, the signature at offset 440). Keys as MountedKey writes them.
+        /// </summary>
+        internal static List<string> DiskKeys(byte[] table, byte[] mbr)
+        {
+            var res = new List<string>();
+            int style = table != null && table.Length >= 48 ? BitConverter.ToInt32(table, 0) : -1;
+            if (style == 0 && NonZero(table, 8, 4)) res.Add("mbr:" + HexOf(table, 8, 4));
+            if (style == 1)
+            {
+                int count = BitConverter.ToInt32(table, 4);
+                for (int p = 0; p < count && p < 256; p++)
+                {
+                    int o = 48 + 144 * p;
+                    if (o + 64 > table.Length) break;
+                    if (NonZero(table, o + 48, 16)) res.Add("gpt:" + HexOf(table, o + 48, 16));
+                }
+            }
+            if (style != 1 && res.Count == 0 && mbr != null && mbr.Length >= 512 && mbr[510] == 0x55 && mbr[511] == 0xAA && NonZero(mbr, 440, 4))
+                res.Add("mbr:" + HexOf(mbr, 440, 4));
+            return res;
+        }
+
+        /// <summary>(pure) The bytes of a binary event field (byte[], or hex text), or null.</summary>
+        internal static byte[] FieldBytes(object v)
+        {
+            if (v is byte[] b) return b;
+            var s = v as string;
+            if (string.IsNullOrEmpty(s) || s.Length % 2 != 0 || !Regex.IsMatch(s, "^[0-9A-Fa-f]+$")) return null;
+            var res = new byte[s.Length / 2];
+            for (int i = 0; i < res.Length; i++) res[i] = Convert.ToByte(s.Substring(i * 2, 2), 16);
+            return res;
+        }
+
+        /// <summary>A USB disk as a Partition/Diagnostic 1006 event shows it (connected or removed).</summary>
+        sealed class DiskEvent
+        {
+            public DateTime? Time;
+            public bool Removed;
+            public string Device;                                     // manufacturer and model
+            public List<string> Serials = new List<string>();         // the disk's serial, and the serial of its USB parent device
+            public List<string> Keys = new List<string>();            // DiskKeys
+        }
+
+        /// <summary>Events of USB disks read for drive letters and history: up to this many, newest first, any age.</summary>
+        const int MaxDiskEvents = 3000;
+
+        List<DiskEvent> disks;
+        /// <summary>USB disks in the Partition/Diagnostic 1006 events, newest first, of any age (letters of disks connected long ago).</summary>
+        List<DiskEvent> Disks()
+        {
+            if (disks != null) return disks;
+            disks = new List<DiskEvent>();
+            var fields = Ev.Fields("BusType", "Manufacturer", "Model", "SerialNumber", "Capacity", "ParentId", "PartitionTable", "Mbr");
+            foreach (var e in Ev.Query("Microsoft-Windows-Partition/Diagnostic", "EventID=1006", new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc), MaxDiskEvents))
+            {
+                try
+                {
+                    var v = ((System.Diagnostics.Eventing.Reader.EventLogRecord)e).GetPropertyValues(fields);
+                    string S(int i) => i < v.Count && v[i] != null && !(v[i] is byte[]) ? Convert.ToString(v[i]) : null;
+                    var parent = S(5) ?? "";
+                    if (S(0) != "7" && parent.IndexOf("USB", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    var d = new DiskEvent
+                    {
+                        Time = e.TimeCreated?.ToUniversalTime(),
+                        Removed = S(4) == "0",
+                        Device = string.Join(" ", new[] { S(1), S(2) }.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim())),
+                        Keys = DiskKeys(FieldBytes(v.Count > 6 ? v[6] : null), FieldBytes(v.Count > 7 ? v[7] : null)),
+                    };
+                    if (!string.IsNullOrWhiteSpace(S(3))) d.Serials.Add(S(3).Trim());
+                    var ps = ParentSerial(parent);
+                    if (ps != null && !d.Serials.Contains(ps, StringComparer.OrdinalIgnoreCase)) d.Serials.Add(ps);
+                    disks.Add(d);
+                }
+                catch { }
+                finally { e.Dispose(); }
+            }
+            return disks;
+        }
+
+        /// <summary>(pure) The serial of a USB device id ("USB\VID_0BC2&amp;PID_2343\NA9LV5LQ" -> "NA9LV5LQ"); null when it has none (a "&amp;" id).</summary>
+        internal static string ParentSerial(string id)
+        {
+            var m = Regex.Match(id ?? "", @"^USB\\[^\\]+\\([^\\&]+)$", Util.RX);
+            return m.Success ? m.Groups[1].Value : null;
+        }
+
+        /// <summary>Letters of drives mounted now that are not on USB (the system drive, internal disks, network and CD drives): Drives().</summary>
+        readonly HashSet<string> localLetters = new HashSet<string>(Util.IC);
+
+        /// <summary>
+        /// The newest USB disk event of a MountedDevices value of a fixed disk's volume ("\DosDevices\E:", "\??\Volume{...}"), or null.
+        /// Not for a key of a drive mounted now that is not on USB: a USB backup disk cloned from an internal disk has the same MBR
+        /// signature or GPT partition GUIDs.
+        /// </summary>
+        DiskEvent MountedDisk(string name)
+        {
+            Mounted();
+            if (!mountedKeys.TryGetValue(name, out var key)) return null;
+            if (localLetters.Any(l => mountedKeys.TryGetValue(@"\DosDevices\" + l, out var lk) && lk.Equals(key, StringComparison.OrdinalIgnoreCase))) return null;
+            return Disks().FirstOrDefault(d => d.Keys.Contains(key, StringComparer.OrdinalIgnoreCase));
         }
 
         void MountPoints()
@@ -817,8 +1002,17 @@ namespace Spor.Modules
                                 var lw = Native.LastWrite(k);
                                 // all volumes with a USB device or a shell command; others (fixed disks, shares) only in the time window
                                 bool usb = dev != null && dev.StartsWith("USBSTOR", StringComparison.OrdinalIgnoreCase);
+                                var devName = dev != null ? UsbName(dev) : null;
+                                // a volume of a USB hard disk (a fixed disk: MountedDevices has its signature, not a device path)
+                                if (dev == null && MountedDisk(@"\??\Volume" + n) is DiskEvent disk)
+                                {
+                                    usb = true;
+                                    devName = string.Join(" ", new[] { disk.Device, disk.Serials.Count > 0 ? "(serial " + disk.Serials[0] + ")" : null }
+                                                                   .Where(x => !string.IsNullOrEmpty(x)));
+                                    if (devName.Length == 0) devName = null;
+                                }
                                 if (!usb && cmds.Count == 0 && !(lw >= c.Since)) continue;
-                                t.Add(Log.T(lw), n, h.User, dev != null ? UsbName(dev) : null, cmds.Count > 0 ? Rules.Fix(string.Join(" | ", cmds)) : null, Rules.FlagCol(fl));
+                                t.Add(Log.T(lw), n, h.User, devName, cmds.Count > 0 ? Rules.Fix(string.Join(" | ", cmds)) : null, Rules.FlagCol(fl));
                                 if (cmds.Count > 0) c.Find(lw, Log.Item($"[{h.User}] MountPoints2\\{n}", null, "shell command " + Rules.Fix(string.Join(" | ", cmds)), Rules.FlagCol(fl)), "key changed");
                             }
                     }
@@ -838,6 +1032,19 @@ namespace Spor.Modules
             var m = Regex.Match(id ?? "", @"Ven_([^&#\\]*)&Prod_([^&#\\]*)", Util.RX);
             if (!m.Success) return id;
             return string.Join(" ", new[] { m.Groups[1].Value, m.Groups[2].Value }.Select(x => x.Replace('_', ' ').Trim()).Where(x => x.Length > 0));
+        }
+
+        /// <summary>
+        /// (pure) A disk event's or letter's device ("ST1000LM 035-1RK172", manufacturer and model) is the USBSTOR device of this name
+        /// (UsbName of its key, or its FriendlyName): one contains the other, letters and digits only, case ignored. For devices that
+        /// share one serial (USB-SATA bridges).
+        /// </summary>
+        internal static bool SameModel(string usbName, string friendlyName, string device)
+        {
+            string N(string s) => Regex.Replace(s ?? "", "[^A-Za-z0-9]", "").ToLowerInvariant();
+            var d = N(device);
+            if (d.Length == 0) return false;
+            return new[] { N(usbName), N(friendlyName) }.Any(x => x.Length > 0 && (x.Contains(d) || d.Contains(x)));
         }
 
         /// <summary>(pure) The device serial in a USBSTOR id ("...#4C530001231115104383&amp;0#{...}" -> "4C530001231115104383"), or null.</summary>
@@ -871,31 +1078,50 @@ namespace Spor.Modules
             catch { return null; }
         }
 
-        /// <summary>setupapi.dev.log: the first "Device Install" section of each USBSTOR device (local time in the file) -> UTC.</summary>
+        /// <summary>
+        /// setupapi.dev.log and the older ones Windows rotated it into (setupapi.dev.YYYYMMDD_HHMMSS.log): the first "Device Install"
+        /// section of each USBSTOR device (local time in the file) -> UTC.
+        /// </summary>
         Dictionary<string, DateTime> SetupApi()
         {
             var res = new Dictionary<string, DateTime>(Util.IC);
-            var f = Path.Combine(c.WinDir, @"INF\setupapi.dev.log");
-            if (!File.Exists(f)) return res;
-            try
-            {
-                string dev = null;
-                foreach (var line in Util.AllLines(f))
+            var dir = Path.Combine(c.WinDir, "INF");
+            string[] names;
+            try { names = Directory.GetFiles(dir, "setupapi.dev*.log").Select(Path.GetFileName).ToArray(); }
+            catch (Exception e) { c.Err.Add("setupapi.dev.log: " + e.Message); return res; }
+            foreach (var name in SetupApiOrder(names))
+                try
                 {
-                    var m = Regex.Match(line, @"^>>>\s+\[Device Install[^\]]*-\s*(USBSTOR\\[^\]]+)\]", Util.RX);
-                    if (m.Success) { dev = m.Groups[1].Value.Trim(); continue; }
-                    if (dev == null) continue;
-                    var s = Regex.Match(line, @"^>>>\s+Section start (\d{4}/\d\d/\d\d \d\d:\d\d:\d\d)");
-                    if (s.Success && DateTime.TryParseExact(s.Groups[1].Value, "yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t))
+                    string dev = null;
+                    foreach (var line in Util.AllLines(Path.Combine(dir, name)))
                     {
-                        var serial = UsbSerial(dev);
-                        if (serial != null && !res.ContainsKey(serial)) res[serial] = t.ToUniversalTime();
+                        if (!line.StartsWith(">>>")) continue;
+                        var m = Regex.Match(line, @"^>>>\s+\[Device Install[^\]]*-\s*(USBSTOR\\[^\]]+)\]", Util.RX);
+                        if (m.Success) { dev = m.Groups[1].Value.Trim(); continue; }
+                        if (dev == null) continue;
+                        var s = Regex.Match(line, @"^>>>\s+Section start (\d{4}/\d\d/\d\d \d\d:\d\d:\d\d)");
+                        if (s.Success && DateTime.TryParseExact(s.Groups[1].Value, "yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t))
+                        {
+                            var serial = UsbSerial(dev);
+                            if (serial != null && !res.ContainsKey(serial)) res[serial] = t.ToUniversalTime();
+                        }
+                        dev = null;
                     }
-                    dev = null;
                 }
-            }
-            catch (Exception e) { c.Err.Add("setupapi.dev.log: " + e.Message); }
+                catch (Exception e) { c.Err.Add(name + ": " + e.Message); }
             return res;
+        }
+
+        /// <summary>
+        /// (pure) The setupapi.dev logs to read, oldest first: the rotated ones (setupapi.dev.YYYYMMDD_HHMMSS.log) by their time, then
+        /// setupapi.dev.log. Other names (a copy someone saved, setupapi.dev.log.txt) are left out.
+        /// </summary>
+        internal static List<string> SetupApiOrder(IEnumerable<string> names)
+        {
+            var all = (names ?? Enumerable.Empty<string>()).ToList();
+            var rotated = all.Where(n => Regex.IsMatch(n ?? "", @"^setupapi\.dev\.\d{8}_\d{6}\.log$", Util.RX)).OrderBy(n => n.ToLowerInvariant(), StringComparer.Ordinal).ToList();
+            rotated.AddRange(all.Where(n => (n ?? "").Equals("setupapi.dev.log", StringComparison.OrdinalIgnoreCase)));
+            return rotated;
         }
 
         void History()
@@ -930,11 +1156,20 @@ namespace Spor.Modules
             catch (Exception e) { c.Err.Add("EMDMgmt: " + e.Message); }
 
             var setup = SetupApi();
-            var letters = Mounted().Where(kv => kv.Key.StartsWith(@"\DosDevices\", StringComparison.OrdinalIgnoreCase) && kv.Value.StartsWith("USBSTOR", StringComparison.OrdinalIgnoreCase))
-                                   .GroupBy(kv => UsbSerial(kv.Value) ?? "", Util.IC).ToDictionary(g => g.Key, g => string.Join(", ", g.Select(kv => kv.Key.Substring(12))), Util.IC);
+            // drive letters (the last letter each volume had): a removable drive's MountedDevices value names its USBSTOR device; a USB hard
+            // disk's holds its MBR signature or GPT partition GUID, found in the Partition/Diagnostic events of the disk
+            var letterOf = new List<(string Serial, string Letter, string Device)>();
+            foreach (var kv in Mounted())
+                if (kv.Key.StartsWith(@"\DosDevices\", StringComparison.OrdinalIgnoreCase) && kv.Value.StartsWith("USBSTOR", StringComparison.OrdinalIgnoreCase))
+                    letterOf.Add((UsbSerial(kv.Value) ?? "", kv.Key.Substring(12), UsbName(kv.Value)));
+            foreach (var name in mountedKeys.Keys.ToList())
+                if (name.StartsWith(@"\DosDevices\", StringComparison.OrdinalIgnoreCase) && MountedDisk(name) is DiskEvent disk)
+                    foreach (var s in disk.Serials) letterOf.Add((s, name.Substring(12), disk.Device));
 
-            c.Out.Sub("USB storage devices (USBSTOR)", "last connected / removed: from the device's properties (needs SYSTEM rights; else the key time = usually the last connect);\n" +
-                                                       "first installed: setupapi.dev.log or the device's properties. label: volume names seen by Windows Portable Devices and ReadyBoost.");
+            c.Out.Sub("USB storage devices (USBSTOR)", "last connected / removed: from the device's properties (needs SYSTEM rights), else the newest Partition/Diagnostic 1006 event of\n" +
+                                                       "the device (any age the event log keeps), else the key time (usually the last connect);\n" +
+                                                       "first installed: setupapi.dev logs or the device's properties. label: volume names seen by Windows Portable Devices and ReadyBoost.\n" +
+                                                       "letter: the last drive letter (MountedDevices; a USB hard disk's through its disk signature in the 1006 events).");
             var t = new Table("@last connected", "*device", "serial", "first installed", "last removed", "label", "letter", "key written");
             try
             {
@@ -942,6 +1177,9 @@ namespace Spor.Modules
                     if (us != null)
                     {
                         var rows = new List<(DateTime? Last, string[] F)>();
+                        // cheap USB-SATA bridges give many disks one serial: then a disk event or letter belongs to the device of its model
+                        var bySerial = us.GetSubKeyNames().SelectMany(dn => { using (var dk = us.OpenSubKey(dn)) return dk?.GetSubKeyNames() ?? new string[0]; })
+                                         .GroupBy(sn => Regex.Replace(sn, @"&\d+$", ""), Util.IC).ToDictionary(g => g.Key, g => g.Count(), Util.IC);
                         foreach (var dn in us.GetSubKeyNames())
                             using (var dk = us.OpenSubKey(dn))
                                 foreach (var sn in dk?.GetSubKeyNames() ?? new string[0])
@@ -949,13 +1187,21 @@ namespace Spor.Modules
                                     {
                                         var serial = Regex.Replace(sn, @"&\d+$", "");
                                         var name = Val(sk, "FriendlyName");
+                                        bool shared = bySerial.TryGetValue(serial, out var nSerial) && nSerial > 1;
+                                        bool Mine(string device) => !shared || SameModel(UsbName(dn), name, device);
+                                        var mine = Disks().Where(d => d.Serials.Contains(serial, StringComparer.OrdinalIgnoreCase) && Mine(d.Device)).ToList();
                                         var first = PropTime(sk, "0064") ?? (setup.TryGetValue(serial, out var su) ? su : (DateTime?)null);
-                                        var arrival = PropTime(sk, "0066");
-                                        var removal = PropTime(sk, "0067");
+                                        var propArrival = PropTime(sk, "0066");
+                                        var propRemoval = PropTime(sk, "0067");
+                                        // without SYSTEM rights: the newest connect and removal in the Partition/Diagnostic events (Disks: newest first)
+                                        var arrival = propArrival ?? mine.FirstOrDefault(d => !d.Removed)?.Time;
+                                        var removal = propRemoval ?? mine.FirstOrDefault(d => d.Removed)?.Time;
                                         var kw = Native.LastWrite(sk);
                                         var last = arrival ?? kw;
                                         labels.TryGetValue(serial, out var lab);
-                                        letters.TryGetValue(serial, out var let);
+                                        var lets = letterOf.Where(x => x.Serial.Equals(serial, StringComparison.OrdinalIgnoreCase) && Mine(x.Device))
+                                                           .Select(x => x.Letter).Distinct(Util.IC).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+                                        var let = lets.Count > 0 ? string.Join(", ", lets) : null;
                                         // a drive letter this device has now: timeline lines of that letter after this connect are on it
                                         if (let != null && last.HasValue)
                                             foreach (var l in let.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries))
@@ -964,8 +1210,9 @@ namespace Spor.Modules
                                         rows.Add((last, new[] { Log.T(last), string.IsNullOrEmpty(name) ? UsbName(dn) : name + " (" + UsbName(dn) + ")", serial, Log.T(first),
                                                                Log.T(removal), lab != null ? Rules.Fix(lab) : null, let, arrival.HasValue ? Log.T(kw) : null }));
                                         if (first >= c.Since) c.Event(first, "USB", null, text: $"USB storage device first installed: {name ?? UsbName(dn)} (serial {serial})" + (lab != null ? ", label " + Rules.Fix(lab) : ""));
-                                        if (arrival.HasValue) c.Event(arrival, "USB", null, text: $"USB storage device last connected: {name ?? UsbName(dn)} (serial {serial})");
-                                        if (removal.HasValue) c.Event(removal, "USB", null, text: $"USB storage device last removed: {name ?? UsbName(dn)} (serial {serial})");
+                                        // times from the events are in the timeline already (Connects), within the time window
+                                        if (propArrival.HasValue) c.Event(propArrival, "USB", null, text: $"USB storage device last connected: {name ?? UsbName(dn)} (serial {serial})");
+                                        if (propRemoval.HasValue) c.Event(propRemoval, "USB", null, text: $"USB storage device last removed: {name ?? UsbName(dn)} (serial {serial})");
                                     }
                         foreach (var r in rows.OrderByDescending(r => r.Last ?? DateTime.MinValue)) t.Add(r.F);
                     }
