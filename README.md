@@ -17,29 +17,17 @@ Spor started as a set of my PowerShell snippets for malware removal help.
 
 ## Features
 
-* Program runs from Prefetch, Amcache, PCA, UserAssist, BAM, ShimCache and the Compatibility Assistant
-* Files loaded by programs, read from Prefetch
-* New executables, scripts and archives, with the download URL and referrer from `Zone.Identifier`; Mark-of-the-Web removal, padded files
-* DLL side-loading (unsigned DLL imported by a signed program next to it, with proxy-DLL evidence) and renamed signed programs
-* Running processes with parent chains and unsigned modules, proxy execution (forfiles, cmd /c call, pcalua, ...), process creation events (4688, Sysmon)
-* Script-runtime launchers (Ren'Py/Python, AutoIt, Node.js, Java, Lua) with their script files, and loader signs around them
-* Browser downloads, files opened in Explorer, mounted ISO/IMG/VHD files, WinRAR and 7-Zip history
-* Timestomping detection from the NTFS change journal
-* Software installed, updated or removed: Uninstall keys, Windows Installer events, Store/MSIX apps; cached Windows Installer packages that run a script host from a LocalAppData install
-* Drop folder sweep without other evidence: loader project folders (PavinLoader: copied MSBuild.exe, .wsf, large .resx, dummy project files) in Windows cache folders and LocalAppData vendor folders, grouped by creation time; LOLBin copies outside their folders
-* Persistence with times: Run keys, services, scheduled tasks (also deleted ones), Startup folders, WMI subscriptions, reset and setup hooks (C:\Recovery\OEM, ResetConfig.xml, SetupComplete.cmd, unattend.xml / autounattend.xml)
-* Proxy settings, added root certificates, hidden Settings pages, browser extensions not from a store
-* Defender detections, exclusions, setting changes and cloud lookups, cleared event logs
-* ClickFix traces: Run dialog, Explorer address bar, PowerShell history
-* Webcam and microphone use, remote access tools (AnyDesk, TeamViewer, ScreenConnect, ...)
-* Data sent per program (SRUM), current connections, DNS cache (also victim-ID host names and abused TLDs)
-* Local accounts, administrators, hidden accounts, account changes
 * One timeline of all events, oldest first, and a summary of flagged items
-* USB worm profile: the contents of USB drives with hidden and invisible-named items (shown as `<U+00A0>`, ...) and their attributes, autorun.inf, shortcuts with target, arguments and icon (folder icons on programs are flagged), Explorer settings that hide files, MountPoints2, USB device history and connects, files opened from USB drives
-* Autodetect: known malware families (RenLoader, PavinLoader, CountLoader, ...) from a curated pattern database, named in the summary
-* Signature check of every program file (WinVerifyTrust, Windows catalogs, MSIX package signatures), SHA256 and MD5 hashes, version information
-* Whitelist that hides validly signed files in trusted locations, so the log stays readable. You can turn it off.
-* Log format with one line per item, easy to read and to parse
+* Program runs from Prefetch, Amcache, PCA, UserAssist, BAM and ShimCache
+* New and downloaded files with their download URL, browser downloads, mounted ISO/IMG/VHD files
+* DLL side-loading, renamed signed programs, timestomping
+* Running processes with parent chains and unsigned modules
+* Persistence with times: Run keys, services, scheduled tasks (also deleted ones), Startup folders, WMI subscriptions
+* Defender detections and exclusions, proxy settings, root certificates, browser extensions
+* ClickFix traces, remote access tools, network connections and DNS cache
+* USB worm profile: hidden items on USB drives, autorun.inf, shortcuts, USB device history
+* Autodetect of known malware families (RenLoader, PavinLoader, CountLoader, ...)
+* Signature check and hashes of every program file, and a whitelist that hides validly signed files in trusted locations
 
 Details per module are in [docs/MODULES.md](docs/MODULES.md).
 
@@ -47,13 +35,7 @@ Details per module are in [docs/MODULES.md](docs/MODULES.md).
 
 ## Why Spor may use the network
 
-Spor itself never sends anything. It has no update check and no telemetry, and the log stays on the PC until you send it to someone.
-
-But your firewall may still see network traffic while Spor scans. When Spor checks a signature, Windows checks whether the certificate was revoked, e.g., because it was stolen. For that Windows downloads revocation lists (CRL) or asks the certificate authority (OCSP), and it may download missing intermediate certificates. These requests go to the servers of the certificate authorities, e.g., Microsoft, DigiCert or Sectigo. Windows' signature check runs inside Spor's process, so a firewall may show them as coming from Spor.exe.
-
-If one signature check takes longer than 4 seconds, e.g., because the PC is offline, Spor uses only the revocation data Windows has cached for the rest of the scan. A signature whose revocation status could not be checked says `revocation not checked (offline)` in the FILES section.
-
-The NETWORK section reads the connections and the DNS cache that already exist on the PC. It does not make connections of its own.
+Spor itself never sends anything: no update check, no telemetry. Your firewall may still show traffic from Spor.exe, because Windows' signature check runs inside Spor's process and asks the certificate authorities (Microsoft, DigiCert, Sectigo, ...) whether a certificate was revoked. If the PC is offline, Spor uses only cached revocation data and marks those signatures `revocation not checked (offline)`.
 
 ## Reading the logs
 
@@ -69,9 +51,7 @@ Spor.exe [-scan] [-profile default|usb|all] [-days 30] [-nowhitelist] [-noise RE
          [-algo SHA256|SHA1|MD5] [-maxmb 500] [-nohash] [-out FILE] [-noopen]
 ```
 
-Profiles: `default` runs every module except `usb`, `usb` runs the USB worm scan (drives, shortcuts, autorun.inf, USB history, plus prefetch, exec, files, persistence, processes), `all` runs everything. `-modules` replaces the profile. Details: [docs/MODULES.md](docs/MODULES.md).
-
-Spor asks for admin rights (UAC). It writes `Spor.txt` next to the exe, or to the Desktop if that folder isn't writable.
+Profiles: `default` runs every module except `usb`, `usb` runs the USB worm scan, `all` runs everything. `-modules` replaces the profile. Details: [docs/MODULES.md](docs/MODULES.md).
 
 ## Supported OS
 
@@ -90,26 +70,12 @@ Code layout:
 
 ```
 src/Program.cs           entry point: window, or command line options
-src/MainForm.cs          the window
 src/Scanner.cs           module runner, log header, timeline, summary, FILES
 src/Context.cs           options, user profiles and hives, hashing, trust rule
 src/Rules.cs             shared whitelist and flag rules
-src/Whitelist.cs         known-noise locations and names (resources/whitelist.txt)
-src/Correlate.cs         checks across modules after the scan (script-runtime launchers)
-src/Autodetect.cs        known-malware patterns (resources/autodetect.txt) over everything the modules collected
-src/Pe.cs                read-only PE parser (imports, exports, PDB path, overlay)
-src/Sideload.cs          DLL side-loading rule
-src/Names.cs             random-looking and lure names, renamed programs
-src/Padded.cs            padded (inflated) files
-src/HostNames.cs         DNS names with victim IDs, abused TLDs
-src/Native.cs            Windows API calls (registry, volumes, decompression, LSA, processes and modules)
-src/Signature.cs         WinVerifyTrust and catalog lookup
-src/Package.cs           MSIX package signatures
-src/Sqlite.cs            read-only SQLite reader for browser history
-src/Ese.cs               ESE databases through esent.dll (SRUM, WebCache)
-src/Helpers.cs           Zone.Identifier, .lnk parser, event log queries, command lines
-src/Util.cs              text files, folder walk, formatting
-src/Modules/*.cs         one class per module (Usb.cs: the USB worm scan; Drops.cs: the drop folder sweep)
+src/Autodetect.cs        known-malware patterns (resources/autodetect.txt)
+src/Modules/*.cs         one class per module
+src/*.cs                 parsers and helpers (PE, .lnk, SQLite, ESE, signatures, Windows API)
 ```
 
 ## Author

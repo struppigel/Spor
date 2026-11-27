@@ -21,6 +21,16 @@ namespace Spor
             using (var r = new StreamReader(s)) return r.ReadToEnd();
         }
 
+        /// <summary>The bytes of an embedded resource ("Spor.&lt;name&gt;"), null if missing.</summary>
+        public static byte[] EmbeddedBytes(string name)
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            var res = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith(name, StringComparison.OrdinalIgnoreCase));
+            if (res == null) return null;
+            using (var s = asm.GetManifestResourceStream(res))
+            using (var m = new MemoryStream()) { s.CopyTo(m); return m.ToArray(); }
+        }
+
         /// <summary>
         /// A data file: overrideFile next to Spor.exe when it is there (to try changes without a new build), else the built-in one
         /// (Embedded). Each is parsed by parse; an override that cannot be read or parsed falls back to the built-in file.

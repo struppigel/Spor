@@ -217,6 +217,18 @@ namespace Spor
             if (!string.IsNullOrWhiteSpace(value)) Observed.Add((kind, value, t, item));
         }
 
+        /// <summary>Paths for Autodetect that only pass a hit on (to their timeline lines and Related), never a SUMMARY line of their own.</summary>
+        public readonly List<(string Path, DateTime? T)> ObservedQuiet = new List<(string, DateTime?)>();
+
+        /// <summary>
+        /// A path for Autodetect that is no finding by itself: a file a program's prefetch entry loaded (a fake Python's 100 library files
+        /// would fill the SUMMARY). A hit marks the file's timeline lines and the files related to it (Relate: the program that loaded it).
+        /// </summary>
+        public void ObserveQuiet(string path, DateTime? t = null)
+        {
+            if (!string.IsNullOrWhiteSpace(path)) ObservedQuiet.Add((path, t));
+        }
+
         public void Find(string text) => Findings.Add((null, Module, text));
         public void Find(DateTime? t, string text) => Findings.Add((t, Module, text));
         /// <summary>A finding with indented "key: value" sub-lines under its SUMMARY line (a Defender detection's files, ...).</summary>
@@ -319,14 +331,18 @@ namespace Spor
         /// Files that stand for a value Autodetect may match: a Startup shortcut's target, an installed program's folder (ends with "\").
         /// Key: the matched path, or the item text an observation was made with (Observe). A known-malware hit passes its mark on to them.
         /// </summary>
-        public readonly Dictionary<string, List<string>> Related = new Dictionary<string, List<string>>(Util.IC);
+        public readonly Dictionary<string, List<(string Path, string Via)>> Related = new Dictionary<string, List<(string, string)>>(Util.IC);
 
-        /// <summary>See Related.</summary>
-        public void Relate(string key, string path)
+        /// <summary>
+        /// See Related. via: how the mark reads on the related file's lines ("loaded NODE.EXE"); null: "related to &lt;matched file&gt;".
+        /// path: a full path, or a bare program name (a prefetch entry without its path, "CHARMAP.EXE").
+        /// </summary>
+        public void Relate(string key, string path, string via = null)
         {
-            if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(path) || !Rules.DrivePath.IsMatch(path)) return;
-            if (!Related.TryGetValue(key, out var list)) Related[key] = list = new List<string>();
-            if (!list.Contains(path, StringComparer.OrdinalIgnoreCase)) list.Add(path);
+            if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(path)) return;
+            if (!Rules.DrivePath.IsMatch(path) && (path.IndexOf('\\') >= 0 || path.IndexOf('.') < 0)) return;
+            if (!Related.TryGetValue(key, out var list)) Related[key] = list = new List<(string, string)>();
+            if (!list.Any(r => r.Path.Equals(path, StringComparison.OrdinalIgnoreCase) && r.Via == via)) list.Add((path, via));
         }
 
         /// <summary>The flags MarkPath and MarkFolder give a file (empty when none).</summary>

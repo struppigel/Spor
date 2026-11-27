@@ -182,7 +182,8 @@ When a copied file was seen by another source too, there is no `[SC]` line at th
 | `!proxy-exec` | a running program outside Windows and Program Files was started through `forfiles /c`, `cmd /c call`, `pcalua -a`, `conhost --headless`, … | High, used to hide the real parent |
 | `!padded` | a new file is hundreds of MB of one repeated byte | High for programs and for data next to a new program: made too big for scanners and sandboxes. |
 | `!runtime-loader` | a new program that ships a script runtime (Python/Ren'Py, AutoIt, Node.js, Electron unless signed by a well-known publisher, Java, Lua), with loader signs in its folder | High. The code is in the data files listed as `script:` lines, not in the program. |
-| `!known-malware` | the item matches a pattern of a known malware family (Autodetect); the line names the family | High. The patterns are curated from confirmed cases; still read the line: a row can be wrong. |
+| `!known-malware` | the item matches a pattern of a known malware family (Autodetect); the line names the family | High. The patterns are curated from confirmed cases; still read the line: a row can be wrong. `known malware <family>: loaded X` means the program loaded the family's files (Prefetch): a dropper, or the program the malware runs in. |
+| `!injection-host` | calc, charmap or dllhost loaded unsigned code from a user folder, or runs with arguments it never takes | High: these Windows accessories load nothing from AppData. The program itself is Windows' own; the malware is what it loaded (the `loaded:` lines in PREFETCH). Kill the process, remove the loaded files. |
 | `!renamed-program` | **hint**: a signed program under a random-looking or lure name that is not its original name | **Not on its own.** It goes to SUMMARY only with a strong flag on the same file or in the same folder, e.g. as the host of a `!sideload` DLL. |
 | `!abused-tld` | **hint**: downloaded from a host under a cheap TLD (`.lol`, `.top`, `.xyz`, ...) | **Not on its own.** Next to a strong flag it says where the file came from. |
 | `!root-program` | **hint**: a program, script or shortcut in the root of a drive | **Not on its own** (installers are often left in `C:\`). On a USB drive next to a hidden folder or a worm shortcut it is likely the worm's copy. |
@@ -285,7 +286,7 @@ Detections (`1116`), actions (`1117`), failures (`!not-removed`), protection tur
 `Defender detection history deleted N times`: Defender also does this by itself after 15 days. Many deletions right after a detection are suspicious.
 
 ### CLICKFIX
-Run dialog history, Explorer address bar commands and PowerShell history (all suspicious lines and the last 15). PowerShell never saves lines with words like `password` or `token`, so an empty history does not prove that nothing was pasted.
+Run dialog history, Explorer address bar commands and PowerShell history (all suspicious lines and the last 15). PowerShell never saves lines with words like `password` or `token`, so an empty history does not prove that nothing was pasted. A command typed several times is listed once, with `also: lines ...` below it. Lines that only check for a family's files (`Test-Path ...`, often a helper's own check) are no known-malware finding; a comment after the list names them.
 
 ### REMOTE ACCESS
 Webcam and microphone use per program, and traces of AnyDesk, TeamViewer, ScreenConnect, RustDesk, NetSupport, Atera, MeshAgent and others: connection logs, server and account settings, file transfers.

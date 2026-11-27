@@ -46,7 +46,8 @@ namespace Spor.Modules
 
         class Prog
         {
-            public string Path, Raw; public bool IsRun, Noisy;
+            public string Path, Raw; public bool IsRun, Noisy, Injection;
+            public string Exe; public uint? PfHash;   // the name in the .pf header and the path hash in the .pf file name
             public List<DateTime> Times = new List<DateTime>();
             public List<string> Files = new List<string>(), Quiet = new List<string>();
             public DateTime Last => Times.Max();
@@ -73,17 +74,27 @@ namespace Spor.Modules
                 try { var r = Read(f); if (r != null) all.Add(r); }
                 catch (Exception e) { c.Err.Add(Path.GetFileName(f) + ": " + e.Message); }
             }
+            ResolvePathless(all);
             // one entry per program path (a program has one .pf per command line / per process, e.g. Electron apps)
-            var progs = all.GroupBy(r => r.Path, Util.IC).Select(g => new Prog
+            // path and raw path from an entry that has its own image (a resolved name-only entry has the upper-case path, no raw one)
+            var progs = all.GroupBy(r => r.Path, Util.IC).Select(g => (G: g, F: g.FirstOrDefault(r => r.Raw != null) ?? g.First())).Select(x => new Prog
             {
-                Path = g.First().Path, Raw = g.First().Raw, IsRun = g.Any(r => r.IsRun), Noisy = g.All(r => r.Noisy),
-                Times = g.SelectMany(r => r.Times).Distinct().OrderByDescending(t => t).ToList(),
-                Files = g.SelectMany(r => r.Files).Distinct(Util.IC).ToList(),
-                Quiet = g.SelectMany(r => r.Quiet).Distinct(Util.IC).ToList()
+                Path = x.F.Path, Raw = x.F.Raw, IsRun = x.G.Any(r => r.IsRun), Noisy = x.G.All(r => r.Noisy),
+                Times = x.G.SelectMany(r => r.Times).Distinct().OrderByDescending(t => t).ToList(),
+                Files = x.G.SelectMany(r => r.Files).Distinct(Util.IC).ToList(),
+                Quiet = x.G.SelectMany(r => r.Quiet).Distinct(Util.IC).ToList()
             }).ToList();
 
+            // a Windows accessory that loaded unsigned code from outside Windows and Program Files: malware injected into it
+            // (the path and type checks first: dllhost's entries list hundreds of Windows DLLs, signatures only for what passes them)
+            foreach (var p in progs.Where(p => Rules.AccessoryHost(p.Path)))
+                p.Injection = p.Files.Select(Real).Any(f => Rules.InjectedFile(p.Path, f, false)
+                                                           && !(File.Exists(f) && Signature.Applies(f) && c.SignedOk(f)));
+            foreach (var p in progs.Where(p => p.Injection)) c.MarkPath(p.Path, Rules.InjectionHostFlag);   // its other lines too (full paths only)
+
             foreach (var p in progs.Where(p => p.IsRun))
-                foreach (var t in p.Times) c.Event(t, "PF", p.Path, noHash: p.Raw != null && NoHash.IsMatch(p.Path));
+                foreach (var t in p.Times)
+                    c.Event(t, "PF", p.Path, noHash: p.Raw != null && NoHash.IsMatch(p.Path), flags: p.Injection ? new List<string> { Rules.InjectionHostFlag } : null);
 
             var recent = progs.Where(p => p.Last >= c.Since).ToList();
             c.Out.Comment($"{pf.Length} .pf files, {progs.Count} programs, {recent.Count} of them run in the last {c.Opt.Days} days (their runs are in the timeline).");
@@ -101,7 +112,17 @@ namespace Spor.Modules
                 if (f.Count == 0) continue;
                 if (Util.Folder(x.Path).Equals(Util.Folder(Self), StringComparison.OrdinalIgnoreCase) && Util.Leaf(x.Path).StartsWith("spor", StringComparison.OrdinalIgnoreCase)) continue;   // Spor reads files all over the disk: its own list says nothing
                 var pf2 = c.F(x.Path, !NoHash.IsMatch(x.Path));
-                lt.Add(Log.T(x.Last), pf2.Status, Rules.FlagCol(Rules.Flags(x.Path)), pf2.Path);
+                lt.Add(Log.T(x.Last), pf2.Status, Rules.FlagCol(Rules.Flags(x.Path).Concat(x.Injection ? new[] { Rules.InjectionHostFlag } : new string[0])), pf2.Path);
+                // known malware among the loaded files marks the program that loaded them (a dropper, an injected accessory); not a
+                // program in Windows / Program Files (an archiver or a scanner reads such files too), except the accessories
+                bool relate = Rules.AccessoryHost(x.Path) || (Rules.DrivePath.IsMatch(x.Path) && !Rules.InTrustedLocation(x.Path));
+                foreach (var s in f)
+                {
+                    var r = Real(s);
+                    if (!Rules.DrivePath.IsMatch(r)) continue;
+                    c.ObserveQuiet(r, x.Last);
+                    if (relate) c.Relate(r, x.Path, "loaded " + Util.Leaf(r));
+                }
                 foreach (var g in f.GroupBy(Util.Folder, Util.IC))
                 {
                     var fl = g.Where(Sus).ToList(); var rest = g.Where(s => !Sus(s)).ToList();
@@ -154,6 +175,94 @@ namespace Spor.Modules
         }
 
         static bool Sus(string s) => Rules.Disg.IsMatch(s) || Rules.DoubleExt(s) || Rules.OddChars(s);
+
+        // A program whose prefetch file list lacks its own image (code injected into a suspended calc.exe or charmap.exe) has only
+        // its name in the .pf header. The .pf file name holds a hash of the full device path ("\DEVICE\HARDDISKVOLUME3\WINDOWS\
+        // SYSTEM32\CALC.EXE"): the Windows folder candidates whose hash matches give the path back. The hash function is not
+        // documented and differs between Windows versions, so it is taken from this PC's own .pf files (Calibrate): a function counts
+        // only when it gives the file name hash of several programs whose path is known. Without that the entry keeps its bare name.
+
+        /// <summary>(pure) The path hash in a .pf file name ("CALC.EXE-1A2B3C4D.pf" -> 0x1A2B3C4D), null if it has none.</summary>
+        internal static uint? PfNameHash(string pfFile)
+        {
+            var m = Regex.Match(Path.GetFileName(pfFile ?? ""), @"-([0-9A-F]{8})\.pf$", O);
+            return m.Success ? Convert.ToUInt32(m.Groups[1].Value, 16) : (uint?)null;
+        }
+
+        /// <summary>(pure) Prefetch path hash, Vista and later form: 314159, then *37 + each byte of the UTF-16LE upper-case path.</summary>
+        internal static uint HashVista(string devicePath)
+        {
+            uint h = 314159;
+            foreach (var b in Encoding.Unicode.GetBytes((devicePath ?? "").ToUpperInvariant())) h = unchecked(h * 37 + b);
+            return h;
+        }
+
+        /// <summary>(pure) The same per character instead of per byte.</summary>
+        internal static uint HashVistaChars(string devicePath)
+        {
+            uint h = 314159;
+            foreach (var ch in (devicePath ?? "").ToUpperInvariant()) h = unchecked(h * 37 + ch);
+            return h;
+        }
+
+        /// <summary>(pure) Prefetch path hash, Windows XP form.</summary>
+        internal static uint HashXp(string devicePath)
+        {
+            uint h = 0;
+            foreach (var b in Encoding.Unicode.GetBytes((devicePath ?? "").ToUpperInvariant())) h = unchecked(h * 37 + b);
+            long v = (long)((ulong)h * 314159269UL % 0x100000000UL);
+            if (v > 0x80000000L) v = 0x100000000L - v;
+            return (uint)(Math.Abs(v) % 1000000007L);
+        }
+
+        internal static readonly Func<string, uint>[] PathHashes = { HashVista, HashVistaChars, HashXp };
+
+        /// <summary>
+        /// (pure) The index of the path hash function this PC's .pf files use (PathHashes), from programs with a known device path
+        /// and their file name hash: the one that gives the most of them, at least 3 and more than any other; -1 if none does.
+        /// </summary>
+        internal static int Calibrate(IEnumerable<(string DevicePath, uint Hash)> known)
+        {
+            var counts = new int[PathHashes.Length];
+            foreach (var (dp, h) in known)
+                for (int i = 0; i < PathHashes.Length; i++)
+                    if (PathHashes[i](dp) == h) counts[i]++;
+            int best = Array.IndexOf(counts, counts.Max());
+            return counts[best] >= 3 && counts.Where((n, i) => i != best).All(n => n < counts[best]) ? best : -1;
+        }
+
+        /// <summary>
+        /// (pure) The path of a prefetch entry that has only its program name: the Windows folder (System32, SysWOW64, Windows) whose
+        /// device path hashes to the .pf file name's hash; null if none does. deviceRoot: "\Device\HarddiskVolume3", drive: "C:".
+        /// </summary>
+        internal static string ResolvePath(string exe, uint hash, string deviceRoot, string drive, Func<string, uint> fn)
+        {
+            if (string.IsNullOrEmpty(exe) || exe.IndexOf('\\') >= 0 || string.IsNullOrEmpty(deviceRoot) || fn == null) return null;
+            foreach (var dir in new[] { @"\WINDOWS\SYSTEM32\", @"\WINDOWS\SYSWOW64\", @"\WINDOWS\" })
+            {
+                var rel = dir + exe.ToUpperInvariant();
+                if (fn(deviceRoot.TrimEnd('\\') + rel) == hash) return drive + rel;
+            }
+            return null;
+        }
+
+        /// <summary>Prefetch entries with only a program name get their path back where the .pf file name's hash allows (see above).</summary>
+        void ResolvePathless(List<Prog> all)
+        {
+            if (!all.Any(r => r.Raw == null && r.PfHash.HasValue)) return;
+            var root = Native.DosDevice(c.SystemDrive);
+            if (root == null || sysSerial == null) return;
+            var known = new List<(string, uint)>();
+            foreach (var r in all.Where(r => r.Raw != null && r.PfHash.HasValue))
+            {
+                var m = Vol.Match(r.Raw);
+                if (m.Success && m.Groups[1].Value.Equals(sysSerial, StringComparison.OrdinalIgnoreCase)) known.Add((root + m.Groups[2].Value, r.PfHash.Value));
+            }
+            int fn = Calibrate(known);
+            if (fn < 0) return;
+            foreach (var r in all.Where(r => r.Raw == null && r.PfHash.HasValue))
+                if (ResolvePath(r.Exe, r.PfHash.Value, root, c.SystemDrive, PathHashes[fn]) is string p) r.Path = p;
+        }
 
         string Real(string s)
         {
@@ -335,7 +444,7 @@ namespace Spor.Modules
             if (off < 0 || len < 0 || off + len > b.Length) throw new Exception("bad file name table");
             var files = Encoding.Unicode.GetString(b, off, len).Split(new[] { '\0' }, StringSplitOptions.RemoveEmptyEntries);
             var raw = files.FirstOrDefault(f => f.IndexOf("\\" + exe, StringComparison.OrdinalIgnoreCase) >= 0);
-            var r = new Prog { Times = times, Raw = raw, Path = raw != null ? Real(raw) : exe };
+            var r = new Prog { Times = times, Raw = raw, Path = raw != null ? Real(raw) : exe, Exe = exe, PfHash = PfNameHash(path) };
             bool recent = times.Max() >= c.Since;   // signature checks only for programs run in the time window
             foreach (var f in files.Distinct(Util.IC))
             {

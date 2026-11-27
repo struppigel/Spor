@@ -110,8 +110,21 @@ namespace Spor.Modules
                         var lines = Util.AllLines(f); any = true;
                         var hits = Enumerable.Range(0, lines.Count).Where(i => PsSus.IsMatch(lines[i])).ToList();
                         var t = File.GetLastWriteTimeUtc(f);
-                        for (int i = 0; i < lines.Count; i++)
-                            c.Observe("cmd", lines[i], t, $"PowerShell history {c.U(p.User)}{Path.GetFileName(f)} line {i + 1}: {Rules.Fix(Util.Clip(lines[i]))}");
+                        var same = SameLines(lines);
+                        // one Autodetect value per distinct command; read-only checks (a helper looking for a family's files) are no
+                        // known malware: they get a comment after the listing instead
+                        var checks = new List<(int Line, string Families)>();
+                        foreach (var i in same.Keys.OrderBy(i => i))
+                        {
+                            if (ReadOnlyCheck(lines[i]))
+                            {
+                                var fams = Autodetect.Patterns.Match("cmd", lines[i]).Select(m => m.Family).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                                if (fams.Count > 0) checks.Add((i, string.Join(", ", fams)));
+                                continue;
+                            }
+                            var where = "line " + (i + 1) + (same[i].Count > 0 ? " (also " + string.Join(", ", same[i].Select(x => x + 1)) + ")" : "");
+                            c.Observe("cmd", lines[i], t, $"PowerShell history {c.U(p.User)}{Path.GetFileName(f)} {where}: {Rules.Fix(Util.Clip(lines[i]))}");
+                        }
                         c.Out.Sub($"PowerShell console history: {c.U(p.User)}{Path.GetFileName(f)}",
                             $"{f}: {lines.Count} lines, {hits.Count} suspicious, last written {Log.T(t)} UTC.\n" +
                             "All suspicious lines, then the last " + tail + " lines. PowerShell never saves lines with password/token/apikey/secret,\n" +
@@ -120,17 +133,139 @@ namespace Spor.Modules
                         // the SUMMARY line with the suspicious commands themselves (the first few) on command: sub-lines
                         if (hits.Count > 0)
                             c.Find(t, $"PowerShell history {c.U(p.User)}{Path.GetFileName(f)}", $"{hits.Count} suspicious lines", new List<string> { "!suspicious" },
-                                   hits.Take(5).Select(i => ("command", Rules.Fix(Util.Clip(lines[i].Trim(), 200)))).ToList());
+                                   hits.Select(i => lines[i].Trim()).Distinct(StringComparer.Ordinal).Take(5).Select(s => ("command", Rules.Fix(Util.Clip(s, 200)))).ToList());
+                        // a command typed again is one row: the first time in each part, the other line numbers on an also: sub-line
                         var ht = new Table("@line", "[part", "<flags", "*command");
-                        foreach (var i in hits) ht.Add((i + 1).ToString(), "suspicious", "!suspicious", lines[i].Trim());
+                        void Row(int i, string part, string flag, string text)
+                        {
+                            ht.Add((i + 1).ToString(), part, flag, text);
+                            var others = Occurrences(same, lines, i).Where(x => x != i).ToList();
+                            if (others.Count > 0) ht.More("also", (others.Count == 1 ? "line " : "lines ") + string.Join(", ", others.Select(x => x + 1)));
+                        }
+                        var shown = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (var i in hits) if (shown.Add(lines[i].Trim())) Row(i, "suspicious", "!suspicious", lines[i].Trim());
+                        shown.Clear();
                         for (int i = Math.Max(0, lines.Count - tail); i < lines.Count; i++)
-                            ht.Add((i + 1).ToString(), "last", PsSus.IsMatch(lines[i]) ? "!suspicious" : "-", lines[i].TrimEnd());
+                            if (lines[i].Trim().Length == 0 || shown.Add(lines[i].Trim()))
+                                Row(i, "last", PsSus.IsMatch(lines[i]) ? "!suspicious" : "-", lines[i].TrimEnd());
                         ht.WriteTo(c.Out);
+                        if (checks.Count > 0) c.Out.Comment(CheckHint(checks.Select(x => (x.Line + 1, x.Families)).ToList()));
                     }
                     catch (Exception e) { c.Err.Add("PowerShell history " + f + ": " + e.Message); }
                 }
             }
             if (!any) { c.Out.Sub("PowerShell console history"); c.Out.None(); }
+        }
+
+        /// <summary>
+        /// (pure) Identical history lines (trimmed; blank lines left out): the first line of each text -> the later lines with the same
+        /// text (0-based).
+        /// </summary>
+        internal static Dictionary<int, List<int>> SameLines(IList<string> lines)
+        {
+            var first = new Dictionary<string, int>(StringComparer.Ordinal);
+            var res = new Dictionary<int, List<int>>();
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var s = (lines[i] ?? "").Trim();
+                if (s.Length == 0) continue;
+                if (first.TryGetValue(s, out var j)) res[j].Add(i);
+                else { first[s] = i; res[i] = new List<int>(); }
+            }
+            return res;
+        }
+
+        /// <summary>
+        /// (pure) The comment after a history listing for read-only lines that name a known family's traces (1-based line numbers):
+        /// "History line 19 only checks for traces of known malware (VS Code bootstrap loader): ...".
+        /// </summary>
+        internal static string CheckHint(List<(int Line, string Families)> checks)
+        {
+            var one = checks.Count == 1;
+            var what = one ? checks[0].Families : string.Join("; ", checks.Select(x => $"{x.Line}: {x.Families}"));
+            return $"History line{(one ? "" : "s")} {string.Join(", ", checks.Select(x => x.Line))} only check{(one ? "s" : "")} for traces of known malware " +
+                   $"({what}): read-only, like a helper's check, so no known-malware finding.";
+        }
+
+        /// <summary>(pure) Every line (0-based) with the same text as line i, i included, in order.</summary>
+        internal static List<int> Occurrences(Dictionary<int, List<int>> same, IList<string> lines, int i)
+        {
+            var s = (lines[i] ?? "").Trim();
+            if (s.Length == 0) return new List<int> { i };
+            foreach (var kv in same)
+                if (lines[kv.Key].Trim() == s) return new[] { kv.Key }.Concat(kv.Value).ToList();
+            return new List<int> { i };
+        }
+
+        // commands that only read: files, registry, processes, services, Defender state; and the pipeline cmdlets that format or filter
+        static readonly Regex ReadVerb = new Regex(
+            @"^(Test-Path|Get-Item|Get-ItemProperty|Get-ItemPropertyValue|Get-ChildItem|gci|dir|ls|Get-Content|gc|cat|type|Get-FileHash|Get-Acl|" +
+            @"Get-CimInstance|gcim|Get-WmiObject|gwmi|Get-Process|gps|ps|Get-Service|gsv|Get-ScheduledTask|Get-ScheduledTaskInfo|Get-NetTCPConnection|" +
+            @"Resolve-DnsName|Get-DnsClientCache|Get-MpPreference|Get-MpComputerStatus|Get-MpThreatDetection|Get-MpThreat|Get-Date|Get-Location|pwd|" +
+            @"Select-Object|select|Where-Object|where|\?|Sort-Object|sort|Format-\w+|ft|fl|fw|Measure-Object|measure|Group-Object|group|" +
+            @"Select-String|sls|Out-String|Out-Host|Write-Output|Write-Host|echo)(?=$|[\s(])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// (pure) A history line that only reads: every statement and pipeline part starts with a read-only command (Test-Path,
+        /// Get-ItemProperty, Get-Content, Get-CimInstance, Select-Object, Where-Object, ...), or the line is a comment. Nothing that
+        /// downloads, runs or decodes code (Rules.PsSus) and nothing that writes (Add-Content, Set-*, Remove-*, ...). Helpers paste such
+        /// lines to look for a family's files: they name the family's paths without being the malware.
+        /// </summary>
+        internal static bool ReadOnlyCheck(string line)
+        {
+            var s = (line ?? "").Trim().TrimEnd('`').Trim();
+            if (s.Length == 0) return false;
+            if (s.StartsWith("#")) return true;
+            if (PsSus.IsMatch(s) || s.Contains("$(") || s.Contains("& ") || s.StartsWith("&") || s.StartsWith(".")) return false;
+            var parts = TopLevelParts(s);
+            if (parts == null || parts.Count == 0 || !parts.All(p => ReadVerb.IsMatch(p.TrimStart('(', ' ')))) return false;
+            // commands inside ( ) and { } too: Test-Path (iwr ...) runs iwr; quoted text ('Program Files (x86)') is no command.
+            // A redirection (> file) writes; a method call ($_.Delete(), [IO.File]::WriteAllText(...)) can do anything.
+            var unquoted = Regex.Replace(s, @"'[^']*'|""(?:`.|[^""`])*""", "''");
+            if (unquoted.Contains(">") || MethodCall.IsMatch(unquoted)) return false;
+            return Inner.Matches(unquoted).Cast<Match>().All(m => ReadVerb.IsMatch(m.Groups[1].Value));
+        }
+
+        static readonly Regex Inner = new Regex(@"[({]\s*([A-Za-z][\w-]*)", RegexOptions.CultureInvariant);
+        static readonly Regex MethodCall = new Regex(@"(\.|::)\w+\s*\(", RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// (pure) The statements and pipeline parts of a PowerShell line, split at |, ;, &amp;&amp; and || outside quotes, braces,
+        /// brackets and parentheses; a trailing # comment is dropped. null if quotes or brackets do not close.
+        /// </summary>
+        internal static List<string> TopLevelParts(string s)
+        {
+            var parts = new List<string>();
+            var cur = new System.Text.StringBuilder();
+            int depth = 0; char quote = '\0';
+            for (int i = 0; i < s.Length; i++)
+            {
+                char ch = s[i];
+                if (quote != '\0')
+                {
+                    cur.Append(ch);
+                    if (ch == '`' && quote == '"' && i + 1 < s.Length) { cur.Append(s[++i]); continue; }
+                    if (ch == quote) quote = '\0';
+                    continue;
+                }
+                if (ch == '\'' || ch == '"') { quote = ch; cur.Append(ch); continue; }
+                if (ch == '{' || ch == '(' || ch == '[') depth++;
+                else if (ch == '}' || ch == ')' || ch == ']') { if (--depth < 0) return null; }
+                else if (depth == 0 && ch == '#' && (i == 0 || char.IsWhiteSpace(s[i - 1]))) break;   // a comment to the end of the line
+                else if (depth == 0 && (ch == '|' || ch == ';' || (ch == '&' && i + 1 < s.Length && s[i + 1] == '&')))
+                {
+                    if (i + 1 < s.Length && s[i + 1] == ch) i++;   // && and ||
+                    var part = cur.ToString().Trim();
+                    if (part.Length > 0) parts.Add(part);
+                    cur.Clear();
+                    continue;
+                }
+                cur.Append(ch);
+            }
+            if (quote != '\0' || depth != 0) return null;
+            var last = cur.ToString().Trim();
+            if (last.Length > 0) parts.Add(last);
+            return parts;
         }
     }
 }

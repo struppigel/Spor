@@ -60,12 +60,28 @@ path	/\\MEIPreload\\intdb_win64\\[0-9a-f]{16}\\/ key=\meipreload\	NetSupport RAT
 path	/\\AppData\\Local\\(CloudHandler|HelixInspector)\\runtime\\/ key=\runtime\	Node.js RAT	Node.js RAT with Tor (ClickFix)	C:\Users\anna\AppData\Local\CloudHandler\runtime\node.exe	10081,10082,10086,10087,10088
 run	/^(CloudHandler|HelixInspector)$/	Node.js RAT	Run entry	HelixInspector	10082,10088
 path	*\programdata\marketscoutagent\	MarketScoutAgent	Python malware	C:\ProgramData\MarketScoutAgent\MarketScoutAgent.exe	21339,21373,21388,21389,21390,21391,21392,21393,21394,21395,21396,21397,21398,21399,21400,21401
-path	*\vscode-bootstrap.cmd	StoatWaffle	deploy script	C:\Users\anna\AppData\Local\Temp\vscode-bootstrap.cmd	28279
-cmd	*vscode-bootstrap.cmd	StoatWaffle	deploy script	cmd.exe /c C:\Users\anna\AppData\Local\Temp\vscode-bootstrap.cmd	28279
+path	*\vscode-bootstrap.cmd	VS Code bootstrap loader	deploy script (StoatWaffle, OtterCookie, Akira Stealer)	C:\Users\anna\AppData\Local\Temp\vscode-bootstrap.cmd	28279
+cmd	*vscode-bootstrap.cmd	VS Code bootstrap loader	deploy script (StoatWaffle, OtterCookie, Akira Stealer)	cmd.exe /c C:\Users\anna\AppData\Local\Temp\vscode-bootstrap.cmd	28279
 path	/\\AppData\\Local\\Microsoft\\WindowsApps\\p?cAdobeCollabSync\.exe$/ key=adobecollabsync.exe	Python malware	fake AdobeCollabSync in WindowsApps	C:\Users\anna\AppData\Local\Microsoft\WindowsApps\pcAdobeCollabSync.exe	19037,19038,19039,19041
 path	/^[a-z]:\\Windows\\SystemHealth\\/ key=\systemhealth\	Python malware	Python in a fake Windows folder	C:\Windows\SystemHealth\Update\python.exe	18825,18826,18827
 path	*\system32\microsoftsoftwareupdatertask-	Node.js malware	Node.js in a fake System32 folder	C:\Windows\System32\MicrosoftSoftwareUpdaterTask-szpe\node.exe	10829,10830,10831,10832,10833,10834,10835,10836
-path	*\appdata\local\programs\python\python399\	Fake Python	Python 3.99 does not exist	C:\Users\anna\AppData\Local\Programs\Python\Python399\pythonw.exe	14916
+
+# Akira Stealer (2026: fake game mods and launchers; Node.js loader, fake Python 3.99, Go payload injected into calc / charmap / dllhost)
+path	*\appdata\local\programs\python\python399\	Akira Stealer	fake Python 3.99 loader (Python 3.99 does not exist)	C:\Users\anna\AppData\Local\Programs\Python\Python399\pythonw.exe	14916,28603
+path	*\appdata\roaming\remotevnc\	Akira Stealer	hVNC / remote control component	C:\Users\anna\AppData\Roaming\remotevnc\ffmpeg\ffmpeg.exe	28599
+path	*\appdata\roaming\t_id.txt	Akira Stealer	marker file	C:\Users\anna\AppData\Roaming\t_id.txt	28600
+path	*\appdata\roaming\displayupdater.exe	Akira Stealer	copy of the stealer (hidden, system)	C:\Users\anna\AppData\Roaming\DisplayUpdater.exe	28601
+path	*\appdata\roaming\microsoft\internet explorer\wd.pid	Akira Stealer	PID file of its watchdog	C:\Users\anna\AppData\Roaming\Microsoft\Internet Explorer\wd.pid	14916
+path	*\appdata\roaming\microsoft\internet explorer\pidp.log	Akira Stealer	PID file	C:\Users\anna\AppData\Roaming\Microsoft\Internet Explorer\pidp.log	14916
+path	*\appdata\roaming\microsoft\internet explorer\userdata\updater.exe	Akira Stealer	stealer (2025 version, Run entry Realtek Audio)	C:\Users\anna\AppData\Roaming\Microsoft\Internet Explorer\UserData\Updater.exe	14916
+path	*\.vscode\nodejs\	Akira Stealer	Node.js its loader installs	C:\Users\anna\.vscode\nodejs\node-v22.14.0-win-x64\node.exe	14916
+path	/\\AppData\\Local\\Temp\\node_modules\\(koffi|lzma-native)(\\|$)/ key=\temp\node_modules\	Akira Stealer	Node.js modules of its loader	C:\Users\anna\AppData\Local\Temp\node_modules\lzma-native\prebuilds\win32-x64\liblzma.dll	14916
+path	/\\Temp\\ak\d+\.mjs$/ key=\temp\ak	Akira Stealer	script its loader runs with Node.js	C:\Users\anna\AppData\Local\Temp\ak1763712345.mjs	14916
+run	=Microsoft Display Driver Manager	Akira Stealer	Run entry (pythonw.exe exec.py)	Microsoft Display Driver Manager	28598
+cmd	/charmap\.exe"? --wd/ key=--wd	Akira Stealer	watchdog injected into charmap.exe	C:\Windows\System32\charmap.exe --wd	14916
+cmd	/dllhost\.exe"? --obf-args/ key=--obf-args	Akira Stealer	payload injected into dllhost.exe	"C:\Windows\System32\dllhost.exe" --obf-args	14916
+cmd	/calc\.exe"? tunnel --url/ key=tunnel --url	Akira Stealer	Cloudflare tunnel injected into calc.exe	C:\Windows\System32\calc.exe tunnel --url http://localhost:8080	14916
+cmd	*echo %realtekaudio%	Akira Stealer	reads its environment variable	cmd.exe /C "echo %REALTEKAUDIO%"	14916
 
 # LegionLoader / Robot Dropper
 software	/^[^|]+ \| [^|]* \| (Yuvia Loop Cro|Tioao Wesah|Kruaoq Competation Corp|Bitao Solutions|Trix Winqz Ro|Qoopa CaveCv)$/ key= | 	LegionLoader	program of a fake publisher (Robot Dropper)	Niwp App | 6.1.9 | Tioao Wesah	18948,20411,23563,24496,24497,24498,25638

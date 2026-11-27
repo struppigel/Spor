@@ -6,7 +6,7 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>Spor</AssemblyName>
     <RootNamespace>Spor</RootNamespace>
-    <Version>0.11.0</Version>
+    <Version>0.12.0</Version>
     <!-- Version info shown in Explorer > Properties > Details. AssemblyTitle is the "File description". -->
     <Product>Spor</Product>
     <AssemblyTitle>Spor - forensic triage for malware removal helpers</AssemblyTitle>
@@ -41,10 +41,74 @@
     <InternalsVisibleTo Include="Spor.Tests" />
   </ItemGroup>
 
-  <!-- Autodetect: known-malware patterns (src/Autodetect.cs) -->
-  <ItemGroup>
-    <EmbeddedResource Include="resources/autodetect.txt" LogicalName="Spor.autodetect.txt" />
-  </ItemGroup>
+  <!-- Autodetect: known-malware patterns (src/Autodetect.cs), embedded encrypted (src/PatternCrypt.cs): no plain malware
+       paths and command lines in Spor.exe for antivirus engines and strings dumps. resources/autodetect.txt stays the source. -->
+  <PropertyGroup>
+    <PatternSource>$(MSBuildProjectDirectory)\resources\autodetect.txt</PatternSource>
+    <PatternKeySource>$(MSBuildProjectDirectory)\src\PatternCrypt.cs</PatternKeySource>
+  </PropertyGroup>
+
+  <!-- The same format as PatternCrypt.Encrypt (a test decrypts the embedded file and compares it with the source) -->
+  <UsingTask TaskName="EncryptPatterns" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Input ParameterType="System.String" Required="true" />
+      <Output ParameterType="System.String" Required="true" />
+      <KeySource ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Linq" />
+      <Using Namespace="System.Security.Cryptography" />
+      <Using Namespace="System.Text" />
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var m = Regex.Match(File.ReadAllText(KeySource), "KeyHex = \"([0-9a-fA-F]{64})\"");
+        if (!m.Success)
+        {
+            Log.LogError("EncryptPatterns: no KeyHex = \"<64 hex digits>\" in " + KeySource);
+        }
+        else
+        {
+            var hex = m.Groups[1].Value;
+            var key = Enumerable.Range(0, 32).Select(i => Convert.ToByte(hex.Substring(2 * i, 2), 16)).ToArray();
+            var plain = File.ReadAllBytes(Input);
+            byte[] iv, macKey, ct;
+            using (var sha = SHA256.Create())
+            {
+                iv = sha.ComputeHash(plain).Take(16).ToArray();
+                macKey = sha.ComputeHash(key.Concat(Encoding.ASCII.GetBytes("mac")).ToArray());
+            }
+            using (var aes = Aes.Create())
+            {
+                aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7; aes.Key = key; aes.IV = iv;
+                using (var e = aes.CreateEncryptor()) ct = e.TransformFinalBlock(plain, 0, plain.Length);
+            }
+            var body = iv.Concat(ct).ToArray();
+            byte[] mac;
+            using (var h = new HMACSHA256(macKey)) mac = h.ComputeHash(body);
+            Directory.CreateDirectory(Path.GetDirectoryName(Output));
+            File.WriteAllBytes(Output, body.Concat(mac).ToArray());
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <!-- IntermediateOutputPath is only set after this file's properties are read: the output path and the resource item are made
+       when the targets run (PatternOutputPath first, so EncryptPatterns' Inputs/Outputs can use it) -->
+  <Target Name="PatternOutputPath" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <PatternOutput>$(MSBuildProjectDirectory)\$(IntermediateOutputPath)autodetect.bin</PatternOutput>
+    </PropertyGroup>
+    <ItemGroup>
+      <EmbeddedResource Include="$(PatternOutput)" LogicalName="Spor.autodetect.bin" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="EncryptPatterns" AfterTargets="PatternOutputPath" BeforeTargets="PrepareForBuild"
+          Inputs="$(PatternSource);$(PatternKeySource)" Outputs="$(PatternOutput)">
+    <EncryptPatterns Input="$(PatternSource)" Output="$(PatternOutput)" KeySource="$(PatternKeySource)" />
+  </Target>
 
   <!-- Well-known publishers (Rules.TrustedSigners) -->
   <ItemGroup>

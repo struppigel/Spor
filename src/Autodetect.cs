@@ -20,7 +20,12 @@ namespace Spor
     static class Autodetect
     {
         public const string Flag = "!known-malware";
+        /// <summary>Plain patterns next to Spor.exe, used instead of the built-in ones (to try new patterns without a new build).</summary>
         public const string OverrideFile = "Spor.autodetect.txt";
+        /// <summary>Encrypted patterns next to Spor.exe (the build's obj\...\autodetect.bin), used when there is no OverrideFile.</summary>
+        public const string EncryptedOverrideFile = "Spor.autodetect.bin";
+        /// <summary>The embedded resource: resources/autodetect.txt, encrypted by the build (PatternCrypt).</summary>
+        public const string EmbeddedFile = "Spor.autodetect.bin";
         public static readonly string[] Kinds = { "path", "task", "run", "service", "cmd", "software", "company", "domain", "registry" };
         /// <summary>Hits per family in the SUMMARY; the rest are counted on one more line.</summary>
         public const int PerFamily = 10;
@@ -86,15 +91,41 @@ namespace Spor
         static Db db;
         public static Db Patterns => db ?? (db = Load());
 
-        /// <summary>The embedded database, or Spor.autodetect.txt next to Spor.exe instead (to try new patterns without a new build).</summary>
-        static Db Load()
+        /// <summary>
+        /// The embedded database, or instead (to try new patterns without a new build) Spor.autodetect.txt (plain) or
+        /// Spor.autodetect.bin (encrypted) next to Spor.exe. An override that cannot be read, decrypted or parsed falls back to the
+        /// built-in patterns; the reason goes to the errors.
+        /// </summary>
+        static Db Load() => Load(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".", Embedded);
+
+        /// <summary>Load, with the folder to look for overrides in and the built-in text (tests).</summary>
+        internal static Db Load(string dir, Func<string> builtIn)
         {
-            var d = Util.DataFile(OverrideFile, Parse, out var source);
-            if (source != null) d.Source = source;
-            return d;
+            var errors = new List<string>();
+            foreach (var (name, encrypted) in new[] { (OverrideFile, false), (EncryptedOverrideFile, true) })
+            {
+                var file = Path.Combine(dir, name);
+                if (!File.Exists(file)) continue;
+                try
+                {
+                    var d = Parse(encrypted ? PatternCrypt.Decrypt(File.ReadAllBytes(file)) : File.ReadAllText(file));
+                    d.Source = file;
+                    d.Errors.InsertRange(0, errors);
+                    return d;
+                }
+                catch (Exception e) { errors.Add($"autodetect {name}: {e.Message}; not used"); }
+            }
+            var b = Parse(builtIn());
+            b.Errors.InsertRange(0, errors);
+            return b;
         }
 
-        public static string Embedded() => Util.Embedded(OverrideFile);
+        /// <summary>The built-in database as text (decrypted); "" if Spor.exe has none.</summary>
+        public static string Embedded()
+        {
+            var bytes = Util.EmbeddedBytes(EmbeddedFile);
+            return bytes == null ? "" : PatternCrypt.Decrypt(bytes);
+        }
 
         /// <summary>
         /// Tab-separated rows: kind, match, family, note, example, FenrisHub rule ids. match: "=text" (the whole value),
@@ -186,26 +217,28 @@ namespace Spor
             c.Err.AddRange(Patterns.Errors);
             // values: what the modules observed, plus every timeline path (also sub-line paths) and the signer/company of checked files;
             // SRUM times are hourly buckets (Bucket), not exact times
-            var obs = c.Observed.Select(o => (o.Kind, o.Value, o.T, o.Item, Bucket: false)).ToList();
+            var obs = c.Observed.Select(o => (o.Kind, o.Value, o.T, o.Item, Bucket: false, Quiet: false)).ToList();
             foreach (var e in c.Events)
             {
                 bool bucket = e.Src == "SRU";
-                if (e.Path != null) obs.Add(("path", e.Path, e.T, null, bucket));
-                if (e.More != null) foreach (var m in e.More) if (PathOf(m.Value) is string mp) obs.Add(("path", mp, e.T, null, bucket));
+                if (e.Path != null) obs.Add(("path", e.Path, e.T, null, bucket, false));
+                if (e.More != null) foreach (var m in e.More) if (PathOf(m.Value) is string mp) obs.Add(("path", mp, e.T, null, bucket, false));
             }
+            // files prefetch entries loaded: they mark their own lines and the program that loaded them, no SUMMARY line of their own
+            obs.AddRange(c.ObservedQuiet.Select(o => ("path", o.Path, o.T, (string)null, false, true)));
             return Scan(c, obs.Concat(NewCompanies(c)));
         }
 
         /// <summary>After the timeline: signers and companies of the files it checked first (SUMMARY lines only).</summary>
         public static int Companies(Ctx c) => Scan(c, NewCompanies(c).ToList());
 
-        static IEnumerable<(string Kind, string Value, DateTime? T, string Item, bool Bucket)> NewCompanies(Ctx c)
+        static IEnumerable<(string Kind, string Value, DateTime? T, string Item, bool Bucket, bool Quiet)> NewCompanies(Ctx c)
         {
             foreach (var k in c.Signer.Keys.Concat(c.Version.Keys).Distinct(Util.IC).ToList())
             {
                 if (!companiesSeen.Add(k)) continue;
                 c.Signer.TryGetValue(k, out var sg); c.Version.TryGetValue(k, out var ver);
-                yield return ("company", (sg ?? "") + "; " + (ver ?? ""), null, k, false);
+                yield return ("company", (sg ?? "") + "; " + (ver ?? ""), null, k, false, false);
             }
         }
 
@@ -221,12 +254,13 @@ namespace Spor
             return exact ?? bucket;
         }
 
-        static int Scan(Ctx c, IEnumerable<(string Kind, string Value, DateTime? T, string Item, bool Bucket)> obs)
+        static int Scan(Ctx c, IEnumerable<(string Kind, string Value, DateTime? T, string Item, bool Bucket, bool Quiet)> obs)
         {
             var d = Patterns;
             // each distinct value is matched once; every observation of it keeps its own item
             var cache = new Dictionary<(string, string), List<Pattern>>();
-            var hits = new Dictionary<(string Family, string Item), (List<(DateTime?, bool)> Seen, List<Pattern> P, string File)>();
+            // Quiet: seen only as a quiet value (ObserveQuiet), so no SUMMARY line of its own
+            var hits = new Dictionary<(string Family, string Item), (List<(DateTime?, bool)> Seen, List<Pattern> P, string File, bool Quiet)>();
             foreach (var o in obs)
             {
                 if (string.IsNullOrEmpty(o.Value)) continue;
@@ -241,9 +275,9 @@ namespace Spor
                 foreach (var fam in ps.GroupBy(p => p.Family, Util.IC))
                 {
                     var hk = (fam.Key, item);
-                    if (!hits.TryGetValue(hk, out var h)) h = (new List<(DateTime?, bool)>(), new List<Pattern>(), file);
+                    if (!hits.TryGetValue(hk, out var h)) h = (new List<(DateTime?, bool)>(), new List<Pattern>(), file, true);
                     h.Seen.Add((o.T, o.Bucket));   // its time: see When
-                    hits[hk] = (h.Seen, h.P.Concat(fam).Distinct().ToList(), h.File ?? file);
+                    hits[hk] = (h.Seen, h.P.Concat(fam).Distinct().ToList(), h.File ?? file, h.Quiet && o.Quiet);
                 }
             }
             foreach (var p in d.Patterns.Where(p => p.Timeout))
@@ -252,22 +286,30 @@ namespace Spor
                 p.Timeout = false;
             }
 
-            var found = hits.Select(h => (h.Key, Value: (T: When(h.Value.Seen), h.Value.P, h.Value.File)));
+            var found = hits.Select(h => (h.Key, Value: (T: When(h.Value.Seen), h.Value.P, h.Value.File, h.Value.Quiet)));
             foreach (var fam in found.GroupBy(h => h.Key.Family, Util.IC).OrderBy(g => g.Key, Util.IC))
             {
-                string Notes((DateTime? T, List<Pattern> P, string File) h) => string.Join("; ", h.P.Select(p => p.Note).Where(n => n.Length > 0).Distinct());
-                // files on the timeline: their line gets the flag; the rest are SUMMARY lines
-                var findings = fam.Where(h => h.Value.File == null || !Mark(c.Events, h.Value.File, fam.Key, Notes(h.Value)))
+                string Notes((DateTime? T, List<Pattern> P, string File, bool Quiet) h) => string.Join("; ", h.P.Select(p => p.Note).Where(n => n.Length > 0).Distinct());
+                // files on the timeline: their line gets the flag; the rest are SUMMARY lines (a quiet value only marks)
+                var findings = fam.Where(h => !(h.Value.File != null && Mark(c.Events, h.Value.File, fam.Key, Notes(h.Value))) && !h.Value.Quiet)
                                   .OrderBy(h => h.Value.T ?? DateTime.MaxValue).ToList();
-                // what stands for a hit gets its mark too: a Startup shortcut's target, the files in a matched program's folder
+                // what stands for a hit gets its mark too: a Startup shortcut's target, the files in a matched program's folder, the
+                // program that loaded a matched file. One mark per file and family ("loaded NODE.EXE and 3 more"); none for a file that
+                // is a hit of the family itself (a fake Python's pythonw.exe and the library files it loaded)
+                var own = new HashSet<string>(fam.Where(h => h.Value.File != null).Select(h => h.Value.File), Util.IC);
+                var marks = new List<(string Target, string Via)>();
                 foreach (var h in fam)
                     if (c.Related.TryGetValue(h.Value.File ?? h.Key.Item, out var related))
                         foreach (var r in related)
-                        {
-                            var via = "related to " + (h.Value.File != null ? Util.Leaf(h.Value.File) : "a matched installed program");
-                            if (!r.EndsWith("\\")) Mark(c.Events, r, fam.Key, via);
-                            else if (r.TrimEnd('\\').Count(ch => ch == '\\') >= 3) MarkInside(c.Events, r, fam.Key, via);   // not C:\Program Files\
-                        }
+                            if (!own.Contains(r.Path))
+                                marks.Add((r.Path, r.Via ?? "related to " + (h.Value.File != null ? Util.Leaf(h.Value.File) : "a matched installed program")));
+                foreach (var g in marks.GroupBy(m => m.Target, Util.IC))
+                {
+                    var vias = g.Select(m => m.Via).Distinct().ToList();
+                    var via = vias[0] + (vias.Count > 1 ? $" and {vias.Count - 1} more" : "");
+                    if (!g.Key.EndsWith("\\")) Mark(c.Events, g.Key, fam.Key, via);
+                    else if (g.Key.TrimEnd('\\').Count(ch => ch == '\\') >= 3) MarkInside(c.Events, g.Key, fam.Key, via);   // not C:\Program Files\
+                }
                 foreach (var h in findings.Take(PerFamily))
                 {
                     var notes = Notes(h.Value);

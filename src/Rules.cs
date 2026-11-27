@@ -567,6 +567,47 @@ namespace Spor
         /// <summary>Hint: a program, script or shortcut in the root of a drive (USB worms put their copy and shortcuts there).</summary>
         public const string RootProgramFlag = "!root-program";
 
+        /// <summary>A Windows accessory that loaded code from a user-writable folder or runs with arguments it never takes: malware runs in it.</summary>
+        public const string InjectionHostFlag = "!injection-host";
+
+        /// <summary>
+        /// Windows programs malware starts and injects into (Akira Stealer: calc.exe as a Cloudflare tunnel, charmap.exe as a watchdog,
+        /// dllhost.exe for its payload): in System32 / SysWOW64, or a bare name (a prefetch entry without its path).
+        /// Not notepad: it opens any script a user edits, which its prefetch entry lists.
+        /// </summary>
+        static readonly Regex Accessory = new Regex(@"^(?:[A-Z]:\\WINDOWS\\(?:SYSTEM32|SYSWOW64)\\)?(CALC|CHARMAP|DLLHOST)\.EXE$", O);
+
+        public static bool AccessoryHost(string p) => Accessory.IsMatch(p ?? "");
+
+        /// <summary>Code an injected accessory loads from its malware's folder (a fake Python's library zip, a DLL).</summary>
+        static readonly Regex InjectedCode = new Regex(@"\.(DLL|PYD|PYC|PY|PYW|ZIP|NODE|JS)$", O);
+
+        /// <summary>
+        /// (pure) A file a Windows accessory's prefetch entry loaded that shows code injected into it: code (InjectedCode) outside
+        /// Windows and Program Files, not validly signed (signedOk: false also for a file that is gone). For dllhost.exe a DLL only
+        /// from a drop location: as COM surrogate it hosts shell extensions, some of them unsigned in AppData.
+        /// </summary>
+        public static bool InjectedFile(string program, string loaded, bool signedOk)
+        {
+            if (!DrivePath.IsMatch(loaded ?? "") || InTrustedLocation(loaded) || !InjectedCode.IsMatch(loaded) || signedOk) return false;
+            bool dllhost = (program ?? "").EndsWith("DLLHOST.EXE", System.StringComparison.OrdinalIgnoreCase);
+            return !dllhost || !loaded.EndsWith(".DLL", System.StringComparison.OrdinalIgnoreCase) || DropLocation(loaded);
+        }
+
+        /// <summary>
+        /// (pure) A running Windows accessory with arguments it never takes: calc.exe and charmap.exe take none, dllhost.exe only
+        /// /Processid:{CLSID} (Akira Stealer: "calc.exe tunnel --url ...", "charmap.exe --wd", "dllhost.exe --obf-args").
+        /// </summary>
+        public static bool InjectionHostArgs(string path, string commandLine)
+        {
+            var m = Accessory.Match(path ?? "");
+            if (!m.Success) return false;
+            var args = Cmd.Args(commandLine ?? "").Trim();
+            if (args.Length == 0) return false;
+            return !m.Groups[1].Value.Equals("DLLHOST", System.StringComparison.OrdinalIgnoreCase)
+                   || !Regex.IsMatch(args, @"^/Processid:\{[0-9A-F-]{36}\}\s*$", O);
+        }
+
         /// <summary>A file whose signature was revoked or that was changed after signing (a patched or infected signed file).</summary>
         public const string InvalidSignatureFlag = "!invalid-signature";
 
@@ -642,6 +683,7 @@ namespace Spor
             "!padded = new file inflated with one repeated byte against scanner and sandbox size limits: a program (its overlay) or data next to a new program",
             "!runtime-loader = new launcher of a script runtime (Python/Ren'Py, AutoIt, Node.js, Electron unless signed by a well-known publisher, Java, Lua) with loader signs in its folder: padded or encrypted random-named data, a hidden file next to its scripts, a program it started, or a !motw-removed file near a run",
             "!known-malware = matches a pattern of a known malware family (Autodetect, resources/autodetect.txt); the line names the family",
+            "!injection-host = Windows accessory (calc, charmap, dllhost) that loaded unsigned code from outside Windows and Program Files (Prefetch) or runs with arguments it never takes: malware injected into it",
             "!renamed-program = hint: a signed program under a random-looking or lure name that is not its original name (in SUMMARY only with a strong flag nearby)",
             "!abused-tld = hint: downloaded from a host under a cheap TLD malware campaigns favour (.lol, .top, .xyz, ...; in SUMMARY only with a strong flag nearby)",
             "!renamed-persisted = persistence starts a signed program under another name than its original, in a random-looking folder of a user profile or ProgramData (a loader's signed decoy)",

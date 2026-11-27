@@ -80,6 +80,7 @@ namespace Spor.Modules
                 if (Names.RenamedDetail(c, path) != null) extra.Add(Names.RenamedFlag);
                 if ((Rules.Lol.IsMatch(path) || Rules.Interpreter.IsMatch(path)) && Rules.ArgsRunCode(Cmd.Args(p.CommandLine))) extra.Add("!suspicious");
                 if (Rules.HeadlessDebug(path, p.CommandLine) && !extra.Contains("!suspicious")) extra.Add("!suspicious");   // a browser run by another program
+                if (Rules.InjectionHostArgs(path, p.CommandLine)) extra.Add(Rules.InjectionHostFlag);   // calc.exe tunnel --url ..., charmap.exe --wd
                 if (Rules.InterpreterOutside(path, c.WinDir, Rules.HasUninstaller))
                 {
                     extra.Add(Rules.InterpreterOutsideFlag);
